@@ -192,9 +192,9 @@ async function runReview() {
     process.exit(1);
   }
 
-  // Evaluate structured review verdict
-  const isRequestChanges = /verdict[^\n]*request_changes/i.test(reviewBody);
-  const isApproved = /verdict[^\n]*approve/i.test(reviewBody);
+  // Evaluate structured review verdict (pinned to header line)
+  const isRequestChanges = /^\s*(\*\*|#)*\s*verdict\s*(\*\*|#)*\s*:\s*\[?\s*request_changes/im.test(reviewBody);
+  const isApproved = /^\s*(\*\*|#)*\s*verdict\s*(\*\*|#)*\s*:\s*\[?\s*approve/im.test(reviewBody);
 
   if (isRequestChanges) {
     console.error(`Nemotron Auditor issued REQUEST_CHANGES. Gating PR #${PR_NUMBER}.`);
