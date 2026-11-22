@@ -90,17 +90,41 @@ Provide a clear, formatted GitHub Markdown review:
 (Detail specific architectural risks, subtle race conditions, or edge cases with file paths and line references. If clean, state "No architectural vulnerabilities or race conditions detected. Production invariants satisfied.")
 `;
 
+async function getAvailableNvidiaModels(apiKey) {
+  try {
+    const res = await fetch('https://integrate.api.nvidia.com/v1/models', {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.data)) {
+        const ids = data.data.map((m) => m.id);
+        const nemotrons = ids.filter((id) => id.includes('nemotron'));
+        const others = ids.filter((id) => !id.includes('nemotron'));
+        return [...nemotrons, ...others];
+      }
+    }
+  } catch (err) {
+    console.warn('Could not query NVIDIA NIM models dynamically:', err.message || err);
+  }
+  return ['nvidia/nemotron-3-ultra-550b-a55b', 'nvidia/nemotron-4-340b-instruct'];
+}
+
 async function runReview() {
+  const discoveredModels = await getAvailableNvidiaModels(NVIDIA_API_KEY);
+  const preferredModels = ['nvidia/nemotron-3-ultra-550b-a55b'];
   const candidateModels = [
-    'nvidia/nemotron-3-ultra-550b-a55b',
-    'nvidia/llama-3.1-nemotron-70b-instruct'
+    ...preferredModels.filter((m) => discoveredModels.includes(m)),
+    ...discoveredModels.filter((m) => !preferredModels.includes(m))
   ];
+
   const url = 'https://integrate.api.nvidia.com/v1/chat/completions';
 
   let reviewBody = null;
   let lastError = null;
 
-  for (const modelName of candidateModels) {
+  for (const modelName of candidateModels.slice(0, 5)) {
     console.log(`Sending PR #${PR_NUMBER} diff (${diff.length} bytes) to NVIDIA NIM (${modelName})...`);
 
     for (let attempt = 1; attempt <= 2; attempt++) {
@@ -114,7 +138,7 @@ async function runReview() {
             'Authorization': `Bearer ${NVIDIA_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          signal: AbortSignal.timeout(75000),
+          signal: AbortSignal.timeout(90000),
           body: JSON.stringify({
             model: modelName,
             messages: [
