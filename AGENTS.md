@@ -67,9 +67,11 @@ Whenever touching `PhysicalAgent` UI or companion frontend interfaces, run the I
 
 Adapted from the production standards of `reeler` (`instagram-saved-reels`):
 
-1. **No Direct Pushes to Main**:
-   - **NEVER push or commit directly to `main`**. Every single unit of work must live on a dedicated topic branch (`feat/*`, `fix/*`, `refactor/*`, `ui/*`, `hardware/*`, `chore/*`).
-   - All integrations must merge via GitHub Pull Request targeting `main`.
+1. **Protected Branches & Staging-First Promotion (MANDATORY)**:
+   - **`main` and `staging` are protected**. Direct pushes to `main` and `staging` are strictly prohibited for all agents and contributors; only the repository owner (`saurabhk0205`) retains bypass permissions.
+   - **Every unit of work must branch off `staging`**: Never branch off or push directly to `main`.
+   - **PRs always target `staging`**: Open topic pull requests against `staging` for all features, fixes, UI updates, and toolchain changes.
+   - **Promotion to `main`**: Once changes are merged and thoroughly verified on `staging` (including physical hardware testing on iPhone 4S), open a promotion PR from `staging` into `main`. The owner merges `staging` into `main`.
 2. **Multi-Model AI Code Review Gates (BLOCKING)**:
    Every opened or updated PR is automatically audited by four specialized AI reviewers:
    - **CodeRabbit AI**: Real-time architectural and diff analysis via `.coderabbit.yaml`.

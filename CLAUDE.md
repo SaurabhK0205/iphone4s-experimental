@@ -24,19 +24,22 @@
 
 ## 2. Branching & Pull Request Rules (MANDATORY)
 
-1. **No Direct Pushes to Main**:
-   - `main` is protected. Never push directly to `main`.
-   - Every unit of work must live on a dedicated branch (`feat/*`, `fix/*`, `refactor/*`, `ui/*`, `hardware/*`, `chore/*`).
-2. **Pull Request Review Gates**:
-   - All merges to `main` must go through a GitHub Pull Request.
-   - Four automated AI reviewers audit each PR:
+1. **Protected Branches and Access Control**:
+   - `main` and `staging` are protected branches governed by GitHub Rulesets.
+   - Direct pushes to `main` and `staging` are strictly forbidden for everyone except the repository owner (`saurabhk0205`).
+   - Every unit of work must live on a dedicated topic branch (`feat/*`, `fix/*`, `refactor/*`, `ui/*`, `hardware/*`, `chore/*`, `ci/*`).
+2. **Staging-First Promotion Workflow**:
+   - **Step 1 (Topic Branch)**: Branch off `staging` and implement changes.
+   - **Step 2 (PR to Staging)**: Open a Pull Request targeting `staging` (never targeting `main` directly).
+   - **Step 3 (AI Review Gates)**: Pass all 4 automated AI code reviews on the PR:
      1. **CodeRabbit AI** (`.coderabbit.yaml`)
      2. **Qodo PR-Agent** (`.github/workflows/pr-agent.yml`)
      3. **Gemini Code Auditor** (`scripts/gemini-pr-review.mjs`)
      4. **NVIDIA Nemotron 3 Ultra 550B Auditor** (`scripts/nemotron-pr-review.mjs`)
-   - Never merge while reviews or incremental re-checks are in progress.
+   - **Step 4 (Hardware Verification)**: Verify on physical iPhone 4S hardware over USB and Wi-Fi before merging to `staging`.
+   - **Step 5 (Promotion to Main)**: Once verified healthy on `staging`, open a promotion PR from `staging` into `main`. The repository owner merges the promotion PR to update production `main`.
 3. **Anti-AI-Slop Standard**:
-   - Zero em-dashes (\u2014). Use colons (:), standard hyphens (-), or parentheses instead.
+   - Zero em-dashes. Use colons (:), standard hyphens (-), or parentheses instead.
    - Direct, human, concise phrasing. Zero sycophantic filler, apologies, or generic templates.
 
 ---
