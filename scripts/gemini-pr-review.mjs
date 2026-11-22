@@ -61,43 +61,52 @@ if (!diff.trim()) {
 
 function extractVerdict(text) {
   const lines = text.split('\n');
-  const verdictMatches = [];
+  const rawVerdicts = [];
 
   for (const line of lines) {
     const match = line.match(/^\s*(?:[-*+]\s+)?(?:\*{1,2}|#+)?\s*verdict(?:\*{1,2}|#+)?\s*:\s*(.+)$/i);
     if (!match) continue;
 
     const rawValue = match[1].trim();
-    if (rawValue.includes('|')) continue;
+
+    if (rawValue.includes('|')) {
+      rawVerdicts.push(`TEMPLATE_PLACEHOLDER:${rawValue}`);
+      continue;
+    }
 
     const cleaned = rawValue.replace(/^[\s\*\[`"'#]+|[\s\*\]`"'#]+$/g, '').trim().toUpperCase();
 
     if (cleaned === 'APPROVE' || cleaned === 'REQUEST_CHANGES' || cleaned === 'COMMENT') {
-      verdictMatches.push(cleaned);
+      rawVerdicts.push(cleaned);
     } else {
-      verdictMatches.push(`INVALID:${cleaned}`);
+      rawVerdicts.push(`INVALID:${cleaned}`);
     }
   }
 
-  if (verdictMatches.length === 0) {
+  if (rawVerdicts.length === 0) {
     return { verdict: null, reason: 'No valid verdict line found in review output' };
   }
 
-  const invalidMatch = verdictMatches.find((v) => v.startsWith('INVALID:'));
-  if (invalidMatch) {
-    return { verdict: null, reason: `Unrecognized verdict value: "${invalidMatch.slice(8)}"` };
+  if (rawVerdicts.length > 1) {
+    return { verdict: null, reason: `Ambiguous review output: multiple verdict lines detected (${rawVerdicts.join(', ')})` };
   }
 
-  if (verdictMatches.includes('REQUEST_CHANGES')) {
+  const single = rawVerdicts[0];
+  if (single.startsWith('TEMPLATE_PLACEHOLDER:')) {
+    return { verdict: null, reason: `Unrendered template placeholder verdict: "${single.slice(22)}"` };
+  }
+  if (single.startsWith('INVALID:')) {
+    return { verdict: null, reason: `Unrecognized verdict value: "${single.slice(8)}"` };
+  }
+
+  if (single === 'REQUEST_CHANGES') {
     return { verdict: 'REQUEST_CHANGES', reason: 'Reviewer issued REQUEST_CHANGES' };
   }
-
-  const allApproved = verdictMatches.every((v) => v === 'APPROVE');
-  if (allApproved) {
+  if (single === 'APPROVE') {
     return { verdict: 'APPROVE', reason: null };
   }
 
-  return { verdict: verdictMatches[0], reason: `Non-approving verdict: "${verdictMatches.join(', ')}"` };
+  return { verdict: single, reason: `Non-approving verdict: "${single}"` };
 }
 
 async function postCommentWithRetry(commentUrl, body, retries = 3) {
@@ -142,47 +151,61 @@ async function postCommentWithRetry(commentUrl, body, retries = 3) {
 
 const MAX_DIFF_CHARS = 300000;
 if (diff.length > MAX_DIFF_CHARS) {
-  console.warn(`Diff size (${diff.length} chars) exceeds MAX_DIFF_CHARS (${MAX_DIFF_CHARS}). Truncating diff.`);
+  const commentUrl = `https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments`;
+  const errMsg = `### Gemini Code Auditor Review Gate Failed\n\n**Verdict**: REQUEST_CHANGES\n\n#### Diff Exceeds Safety Limit\nThe pull request diff size (${diff.length} characters) exceeds the maximum review limit of ${MAX_DIFF_CHARS} characters. Reviewing truncated diffs is unsafe and strictly prohibited by repository gating rules. Please split this pull request into smaller, reviewable units.`;
+  await postCommentWithRetry(commentUrl, errMsg);
+  console.error(`Diff size (${diff.length} chars) exceeds MAX_DIFF_CHARS (${MAX_DIFF_CHARS}). Failing closed.`);
+  process.exit(1);
 }
-const truncatedDiff = diff.length > MAX_DIFF_CHARS ? diff.slice(0, MAX_DIFF_CHARS) + '\n\n[Diff truncated at 300,000 characters...]' : diff;
 
-const systemPrompt = `You are a Principal Embedded Systems Engineer and Staff Security Auditor performing an automated PR review on "PhysicalAgent", a native multimodal embodied AI companion running on physical iPhone 4S hardware (iOS 6.1.3 ARMv7).
+const systemPrompt = `You are a Principal Security Architect, Embedded Systems Engineer, and Adversarial CI/CD Code Auditor performing an automated PR review on "PhysicalAgent" (iPhone 4S / iOS 6.1.3 ARMv7 desk companion).
 
 YOUR MISSION:
-Ensure ONLY production-grade, hardware-safe, reliable code is merged. Actively eliminate AI slop, conversational filler, race conditions, and memory leaks.
+Be uncompromising, adversarial, and rigorous. Audit this pull request diff across ALL domains (GitHub Actions CI/CD workflows, JavaScript/Node.js scripts, Python backend/tools, Objective-C native app, and shell scripts). Do NOT be polite, lenient, or trusting. If you find ANY vulnerability, workflow injection risk, missing permissions, dependency failure bypass, unhandled error, parser loophole, resource leak, or code style violation, you MUST issue:
+**Verdict**: REQUEST_CHANGES
 
-REVIEW CRITERIA:
-1. STRICT ANTI-AI-SLOP:
-   - Reject any em-dash characters in newly added or modified content (lines starting with '+'). Ignore removed lines (lines starting with '-') since they represent deleted code/text being fixed.
-   - Reject conversational fluff, apologies, sycophantic praise, and generic AI templates.
+AUDIT CHECKLIST & SEVERITY RULES:
 
-2. HARDWARE CONSTRAINTS (Apple A5 / iOS 6.1.3):
-   - 60 FPS CoreAnimation: Animate CALayer transform, bounds, and opacity only. Zero layout thrashing.
-   - Memory Budget: Process memory < 50MB, maintaining >= 150MB free system RAM at all times.
-   - AVCaptureSession: Must be safely stopped when idle to protect the camera sensor from heat and battery drain.
+1. CI/CD & GITHUB ACTIONS SECURITY (CRITICAL):
+   - Principle of Least Privilege: Workflows must specify minimal top-level and job-level permissions. Flag workflows with missing permissions blocks or overly broad write permissions.
+   - Fork PR Protection: Untrusted forks using 'pull_request_target' must be strictly gated by maintainer authorization (e.g., 'safe-to-test' label). Never run unvetted fork code or pass secrets to untrusted forks.
+   - Event Trigger Coverage: Event triggers must align with action configurations. E.g., if a workflow triggers on 'labeled', the action's accepted events must include 'labeled'.
+   - Issue/Comment Gating: Comment-triggered workflows (like 'issue_comment') must verify commenter authorization ('OWNER', 'MEMBER', 'COLLABORATOR') before invoking expensive LLM or privileged tasks.
+   - Job Dependency Failure Modes: When a job depends on prior jobs via 'needs', remember GitHub Actions skips dependent jobs by default on failure. If a secondary auditor or cleanup job must run after a failure, it must check '!cancelled()' rather than silently skipping.
+   - Script Injection: Flag any unquoted or unsafe expressions like \${{ github.event... }} evaluated directly in inline shell run blocks.
 
-3. CONCURRENCY & SOCKET INTEGRITY:
-   - Socket server must never block the main UI thread. Client connections must be handled on background queues.
-   - All network calls on the host Python SDK must enforce explicit socket timeouts.
+2. LOGIC, PARSER & EDGE-CASE ROBUSTNESS (CRITICAL):
+   - Fail-Closed Discipline: In error paths, missing configs, unrecognized values, or ambiguous outputs, the system MUST fail closed (exit code 1 or REQUEST_CHANGES). Never silently ignore errors or fall through to APPROVE.
+   - Diff Integrity: Never allow partial or sliced diffs to receive approval. If a diff exceeds safety limits, it must fail closed.
+   - Parser Ambiguity: Verdict parsers must reject multiple verdict lines, unrendered placeholders with pipe delimiters, or malformed suffixes. Exactly one unambiguous verdict line is required.
+   - Concurrency & Async: Network calls must enforce explicit timeouts (e.g. AbortSignal.timeout), proper retry backoffs, and robust handling of 429/5xx status codes.
 
-4. DUAL-MODE TRANSPORT:
-   - Host bridge must cleanly handle both 30-pin USB (usbmuxd) and Wi-Fi without crashes on disconnect.
+3. EMBEDDED & HARDWARE INVARIANTS (Apple A5 / iOS 6.1.3 ARMv7):
+   - 60 FPS CoreAnimation: Animate CALayer transform, bounds, and opacity only. Zero main-thread layout thrashing.
+   - Memory Budget: Process memory < 50MB, maintaining >= 150MB free system RAM at all times on 512MB device.
+   - Socket Concurrency: BSD socket server must handle client connections asynchronously on background queues. Never block the main run loop.
+   - Camera Sensor Safety: AVCaptureSession must be safely stopped when idle to protect the camera sensor from heat and battery drain.
+   - Dual-Mode Transport: Host bridge must cleanly handle both 30-pin USB (usbmuxd) and Wi-Fi without crashing on disconnect.
 
-OUTPUT FORMAT:
-Provide a clear, formatted GitHub Markdown review:
-### Gemini Production Quality Review
+4. REPOSITORY & TOOLCHAIN STANDARDS:
+   - Python Virtual Environment: Python scripts must run within '.venv' and verify virtual environment isolation.
+   - Mach-O Toolchain: ARMv7 Mach-O binaries targeting iOS 6.1.3 must preserve segment alignments and section file offsets within header padding without shifting __TEXT or __DATA.
+   - Zero AI Slop: Reject any em-dash characters in newly added or modified content (lines starting with '+'). Ignore removed lines (lines starting with '-') since they represent deleted code/text being fixed. Reject conversational fluff, apologies, and sycophantic praise.
 
-**Verdict**: [APPROVE | REQUEST_CHANGES | COMMENT]
+OUTPUT REQUIREMENTS:
+Output MUST contain exactly ONE line specifying the verdict in this exact format:
+**Verdict**: [APPROVE or REQUEST_CHANGES]
+
+Followed by structured sections:
+#### Audit Findings
+(Enumerate every identified flaw with file path, line number, vulnerability/bug description, and suggested fix. If and only if the diff is completely free of any flaws across all checklist areas, state "No critical issues detected. Production standards satisfied.")
 
 #### Production Invariants Check
-- [x or ] Anti-AI-slop & Human Copy (no em-dashes, concise copy)
-- [x or ] iOS 6 GPU & Memory Bounds (CALayer transform/opacity, <50MB RAM)
-- [x or ] Socket Concurrency & Non-blocking Main Thread
-- [x or ] Camera Hardware Safety & Auto-Exposure
-- [x or ] Python Virtual Environment (.venv) Discipline
-
-#### Findings & Recommendations
-(List specific actionable findings with file paths, or state "No critical issues detected. Production standards satisfied." if clean.)
+- [x or ] CI/CD Workflow Security & Least Privilege
+- [x or ] Fail-Closed Robustness & Logic Edge Cases
+- [x or ] Anti-AI-slop & Zero Em-Dashes
+- [x or ] Hardware & Concurrency Safety
+- [x or ] Repository & Toolchain Standards
 `;
 
 async function getAvailableModels(apiKey) {
@@ -236,7 +259,7 @@ async function runReview() {
             {
               role: 'user',
               parts: [
-                { text: `${systemPrompt}\n\n--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${truncatedDiff}` }
+                { text: `${systemPrompt}\n\n--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${diff}` }
               ]
             }
           ],
@@ -281,7 +304,7 @@ async function runReview() {
               {
                 role: 'user',
                 parts: [
-                  { text: `${systemPrompt}\n\n--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${truncatedDiff}` }
+                  { text: `${systemPrompt}\n\n--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${diff}` }
                 ]
               }
             ],

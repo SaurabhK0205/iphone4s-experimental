@@ -60,43 +60,52 @@ if (!diff.trim()) {
 
 function extractVerdict(text) {
   const lines = text.split('\n');
-  const verdictMatches = [];
+  const rawVerdicts = [];
 
   for (const line of lines) {
     const match = line.match(/^\s*(?:[-*+]\s+)?(?:\*{1,2}|#+)?\s*verdict(?:\*{1,2}|#+)?\s*:\s*(.+)$/i);
     if (!match) continue;
 
     const rawValue = match[1].trim();
-    if (rawValue.includes('|')) continue;
+
+    if (rawValue.includes('|')) {
+      rawVerdicts.push(`TEMPLATE_PLACEHOLDER:${rawValue}`);
+      continue;
+    }
 
     const cleaned = rawValue.replace(/^[\s\*\[`"'#]+|[\s\*\]`"'#]+$/g, '').trim().toUpperCase();
 
     if (cleaned === 'APPROVE' || cleaned === 'REQUEST_CHANGES' || cleaned === 'COMMENT') {
-      verdictMatches.push(cleaned);
+      rawVerdicts.push(cleaned);
     } else {
-      verdictMatches.push(`INVALID:${cleaned}`);
+      rawVerdicts.push(`INVALID:${cleaned}`);
     }
   }
 
-  if (verdictMatches.length === 0) {
+  if (rawVerdicts.length === 0) {
     return { verdict: null, reason: 'No valid verdict line found in review output' };
   }
 
-  const invalidMatch = verdictMatches.find((v) => v.startsWith('INVALID:'));
-  if (invalidMatch) {
-    return { verdict: null, reason: `Unrecognized verdict value: "${invalidMatch.slice(8)}"` };
+  if (rawVerdicts.length > 1) {
+    return { verdict: null, reason: `Ambiguous review output: multiple verdict lines detected (${rawVerdicts.join(', ')})` };
   }
 
-  if (verdictMatches.includes('REQUEST_CHANGES')) {
+  const single = rawVerdicts[0];
+  if (single.startsWith('TEMPLATE_PLACEHOLDER:')) {
+    return { verdict: null, reason: `Unrendered template placeholder verdict: "${single.slice(22)}"` };
+  }
+  if (single.startsWith('INVALID:')) {
+    return { verdict: null, reason: `Unrecognized verdict value: "${single.slice(8)}"` };
+  }
+
+  if (single === 'REQUEST_CHANGES') {
     return { verdict: 'REQUEST_CHANGES', reason: 'Reviewer issued REQUEST_CHANGES' };
   }
-
-  const allApproved = verdictMatches.every((v) => v === 'APPROVE');
-  if (allApproved) {
+  if (single === 'APPROVE') {
     return { verdict: 'APPROVE', reason: null };
   }
 
-  return { verdict: verdictMatches[0], reason: `Non-approving verdict: "${verdictMatches.join(', ')}"` };
+  return { verdict: single, reason: `Non-approving verdict: "${single}"` };
 }
 
 async function postCommentWithRetry(commentUrl, body, retries = 3) {
@@ -141,48 +150,60 @@ async function postCommentWithRetry(commentUrl, body, retries = 3) {
 
 const MAX_DIFF_CHARS = 300000;
 if (diff.length > MAX_DIFF_CHARS) {
-  console.warn(`Diff size (${diff.length} chars) exceeds MAX_DIFF_CHARS (${MAX_DIFF_CHARS}). Truncating diff.`);
+  const commentUrl = `https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments`;
+  const errMsg = `### NVIDIA Nemotron 3 Ultra 550B Audit Failed\n\n**Verdict**: REQUEST_CHANGES\n\n#### Diff Exceeds Safety Limit\nThe pull request diff size (${diff.length} characters) exceeds the maximum review limit of ${MAX_DIFF_CHARS} characters. Reviewing truncated diffs is unsafe and strictly prohibited by repository gating rules. Please split this pull request into smaller, reviewable units.`;
+  await postCommentWithRetry(commentUrl, errMsg);
+  console.error(`Diff size (${diff.length} chars) exceeds MAX_DIFF_CHARS (${MAX_DIFF_CHARS}). Failing closed.`);
+  process.exit(1);
 }
-const truncatedDiff = diff.length > MAX_DIFF_CHARS ? diff.slice(0, MAX_DIFF_CHARS) + '\n\n[Diff truncated at 300,000 characters...]' : diff;
 
-const systemPrompt = `You are a Principal Systems Architect and Embedded Security Auditor performing an automated deep reasoning code review on "PhysicalAgent", a native multimodal embodied AI desk companion built for physical iPhone 4S hardware (iOS 6.1.3 ARMv7) communicating with an M5 Mac host over 30-pin USB and Wi-Fi.
+const systemPrompt = `You are a Principal Systems Architect, Deep Concurrency Specialist, and Adversarial Security Auditor performing an automated PR review on "PhysicalAgent" (iPhone 4S / iOS 6.1.3 ARMv7 desk companion communicating with host over USB and Wi-Fi).
 
 YOUR MISSION:
-Perform a deep architectural, concurrency, and hardware security review on the provided Git diff. Identify subtle bugs, race conditions, memory leaks, and production anti-patterns.
-SCOPE NOTE: Evaluate ONLY the files modified in this PR diff. Files already merged into the base branch (such as tools/fix_macho_ios6.py and PhysicalAgent client) are part of the baseline and out of scope for this review.
+Perform an exhaustive, adversarial deep reasoning audit on this pull request diff across ALL modified files (CI/CD workflows, JavaScript/Node.js scripts, Python host/tools, Objective-C native app). Identify subtle race conditions, edge cases, workflow privilege escalation, regex bypasses, fail-open vulnerabilities, and performance regressions. Do NOT be polite or lenient. If you detect ANY issue, vulnerability, or violation, you MUST issue:
+**Verdict**: REQUEST_CHANGES
 
-STRICT FORMATTING & STYLE RULES:
-- Reject any em-dash characters in newly added or modified content (lines starting with '+'). Ignore removed lines (lines starting with '-') since they represent deleted code/text being fixed.
-- Avoid generic AI boilerplate, conversational fluff, and sycophantic praise. Keep comments technical, direct, and concise.
+AUDIT CRITERIA & FAILURE MODES:
 
-AUDIT CRITERIA:
-1. HARDWARE CONSTRAINTS & THREAD SAFETY (iOS 6.1.3):
-   - PowerVR SGX543MP2 GPU: CALayer transform, bounds, and opacity only. Zero layout thrashing.
-   - Memory Budget: Process memory < 50MB; system free RAM >= 150MB.
-   - Concurrency: BSD socket server must dispatch clients asynchronously. Never block the main run loop.
-   - AVCaptureSession: Lock configuration safety, no session leaks, auto-stop on idle.
+1. CI/CD WORKFLOWS & ACTION SECURITY:
+   - Untrusted fork PR containment (pull_request_target vs pull_request, safe-to-test label gating).
+   - Principle of Least Privilege: minimal top-level and job-level permissions, no excessive write tokens.
+   - Job dependency failure chains (needs dependencies bypassing secondary audit jobs on failure without '!cancelled()').
+   - Event triggers & action inputs (ensuring labeled events are accepted by runners).
+   - Comment triggers: verifying commenter permissions ('OWNER', 'MEMBER', 'COLLABORATOR') before executing privileged tasks.
 
-2. MACH-O TOOLCHAIN INTEGRITY:
-   - Header patching in tools/fix_macho_ios6.py must preserve segment alignments and section file offsets within header padding without shifting __TEXT or __DATA.
+2. LOGIC, PARSER & CONCURRENCY RIGOR:
+   - Fail-closed execution: any unexpected status, ambiguous input, or parser failure must exit code 1 / REQUEST_CHANGES.
+   - Verdict parser ambiguity: fail closed on multiple verdict lines, pipe-delimited placeholder templates, or malformed suffixes. Exactly one unambiguous verdict line is required.
+   - Diff integrity: never approve a truncated diff; diffs exceeding limits must fail closed.
+   - Concurrency & timeouts: explicit timeouts (AbortSignal.timeout), exponential backoffs on 429/5xx, safe async execution.
 
-3. DUAL-MODE SOCKET RESILIENCE:
-   - USB vs Wi-Fi transparent failover with explicit socket timeouts. Zero hanging connections.
+3. HARDWARE & EMBEDDED INVARIANTS (Apple A5 / iOS 6.1.3 ARMv7):
+   - 60 FPS CoreAnimation: Animate CALayer transform, bounds, and opacity only. Zero layout thrashing.
+   - Memory Budget: Process memory < 50MB, free system RAM >= 150MB.
+   - Socket server: Non-blocking BSD socket server, asynchronous client dispatch. Never block main run loop.
+   - Camera safety: AVCaptureSession lifecycle management, auto-stop on idle.
+   - Dual-Mode Transport: Transparent USB and Wi-Fi handling, clean recovery on disconnect.
 
-OUTPUT FORMAT:
-Provide a clear, formatted GitHub Markdown review:
-### NVIDIA Nemotron 3 Ultra 550B Deep Reasoning Audit
+4. REPOSITORY & TOOLCHAIN STANDARDS:
+   - Python Virtual Environment: Python scripts must run in '.venv' with explicit environment verification.
+   - Mach-O Toolchain: ARMv7 Mach-O header fixes in tools/fix_macho_ios6.py must preserve segment alignments without shifting __TEXT or __DATA.
+   - Zero AI Slop: Reject any em-dash characters in newly added or modified content (lines starting with '+'). Ignore removed lines (lines starting with '-') since they represent deleted code/text being fixed. Reject conversational fluff, apologies, and sycophantic praise.
 
-**Verdict**: [APPROVE | REQUEST_CHANGES | COMMENT]
+OUTPUT REQUIREMENTS:
+Output MUST contain exactly ONE line specifying the verdict in this exact format:
+**Verdict**: [APPROVE or REQUEST_CHANGES]
+
+Followed by structured sections:
+#### Deep Reasoning Findings
+(Detail specific architectural risks, subtle race conditions, or edge cases with file paths and line references. If clean across all areas, state "No architectural vulnerabilities or race conditions detected. Production invariants satisfied.")
 
 #### Production Invariants Check
-- [x or ] Anti-AI-slop & Human Copy (no em-dashes)
-- [x or ] iOS 6 GPU Acceleration & Memory Limits (< 50MB)
-- [x or ] Socket Concurrency & Thread Isolation
-- [x or ] Mach-O Header Alignment & Toolchain Integrity
-- [x or ] Transport Resilience (USB / Wi-Fi failover)
-
-#### Deep Reasoning Findings
-(Detail specific architectural risks, subtle race conditions, or edge cases with file paths and line references. If clean, state "No architectural vulnerabilities or race conditions detected. Production invariants satisfied.")
+- [x or ] CI/CD Workflow Security & Least Privilege
+- [x or ] Fail-Closed Robustness & Logic Edge Cases
+- [x or ] Anti-AI-slop & Zero Em-Dashes
+- [x or ] Hardware & Concurrency Safety
+- [x or ] Repository & Toolchain Standards
 `;
 
 async function getAvailableNvidiaModels(apiKey) {
@@ -249,7 +270,7 @@ async function runReview() {
             model: modelName,
             messages: [
               { role: 'system', content: systemPrompt },
-              { role: 'user', content: `--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${truncatedDiff}` }
+              { role: 'user', content: `--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${diff}` }
             ],
             temperature: 0.1,
             max_tokens: 4096
