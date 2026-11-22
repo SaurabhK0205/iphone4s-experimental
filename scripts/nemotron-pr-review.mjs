@@ -195,20 +195,31 @@ async function getAvailableNvidiaModels(apiKey) {
       const data = await res.json();
       if (Array.isArray(data?.data)) {
         const ids = data.data.map((m) => m.id);
-        const nemotrons = ids.filter((id) => id.includes('nemotron'));
-        const others = ids.filter((id) => !id.includes('nemotron'));
+        const nonChatKeywords = ['embed', 'safety', 'guard', 'reward', 'rerank'];
+        const isValidChatModel = (id) => !nonChatKeywords.some((keyword) => id.toLowerCase().includes(keyword));
+        const chatModels = ids.filter(isValidChatModel);
+        const nemotrons = chatModels.filter((id) => id.includes('nemotron'));
+        const others = chatModels.filter((id) => !id.includes('nemotron'));
         return [...nemotrons, ...others];
       }
     }
   } catch (err) {
     console.warn('Could not query NVIDIA NIM models dynamically:', err.message || err);
   }
-  return ['nvidia/nemotron-3-ultra-550b-a55b', 'nvidia/nemotron-4-340b-instruct'];
+  return [
+    'nvidia/nemotron-3-ultra-550b-a55b',
+    'nvidia/nemotron-3.5-lightning-30b-a3b',
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning'
+  ];
 }
 
 async function runReview() {
   const discoveredModels = await getAvailableNvidiaModels(NVIDIA_API_KEY);
-  const preferredModels = ['nvidia/nemotron-3-ultra-550b-a55b'];
+  const preferredModels = [
+    'nvidia/nemotron-3-ultra-550b-a55b',
+    'nvidia/nemotron-3.5-lightning-30b-a3b',
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning'
+  ];
   const candidateModels = [
     ...preferredModels.filter((m) => discoveredModels.includes(m)),
     ...discoveredModels.filter((m) => !preferredModels.includes(m))
@@ -233,7 +244,7 @@ async function runReview() {
             'Authorization': `Bearer ${NVIDIA_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          signal: AbortSignal.timeout(60000),
+          signal: AbortSignal.timeout(120000),
           body: JSON.stringify({
             model: modelName,
             messages: [
