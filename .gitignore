@@ -27,5 +27,9 @@ test_native/*_raw
 # Logs
 *.log
 
+# Private local notes & interview playbooks (never commit to public repo)
+INTERVIEW_PLAYBOOK.md
+*.private.md
+
 # macOS
 .DS_Store
