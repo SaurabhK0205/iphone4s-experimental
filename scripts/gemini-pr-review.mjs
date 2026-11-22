@@ -186,8 +186,8 @@ async function runReview() {
   }
 
   // Evaluate structured review verdict
-  const isRequestChanges = /verdict\s*:\s*\**request_changes\**/i.test(reviewBody);
-  const isApproved = /verdict\s*:\s*\**approve\**/i.test(reviewBody);
+  const isRequestChanges = /verdict[^\n]*request_changes/i.test(reviewBody);
+  const isApproved = /verdict[^\n]*approve/i.test(reviewBody);
 
   if (isRequestChanges) {
     console.error(`Gemini Code Auditor issued REQUEST_CHANGES. Gating PR #${PR_NUMBER}.`);
