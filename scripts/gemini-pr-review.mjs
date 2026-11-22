@@ -177,7 +177,7 @@ async function runReview() {
           ],
           generationConfig: {
             temperature: 0.1,
-            maxOutputTokens: 2048
+            maxOutputTokens: 4096
           }
         })
       });
@@ -222,7 +222,7 @@ async function runReview() {
             ],
             generationConfig: {
               temperature: 0.1,
-              maxOutputTokens: 2048
+              maxOutputTokens: 4096
             }
           })
         });

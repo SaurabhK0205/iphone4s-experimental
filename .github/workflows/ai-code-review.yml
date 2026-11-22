@@ -4,18 +4,29 @@ on:
   pull_request:
     types: [opened, reopened, ready_for_review, synchronize]
   pull_request_target:
-    types: [opened, reopened, ready_for_review, synchronize]
+    types: [labeled, synchronize]
 
 concurrency:
   group: ai-code-review-${{ github.event_name }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
+  fork_gatekeeper:
+    name: Fork PR Authorization Gatekeeper
+    if: github.event.pull_request.head.repo.full_name != github.repository && !contains(github.event.pull_request.labels.*.name, 'safe-to-test')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate Untrusted Fork PR
+        run: |
+          echo "Error: Pull requests from external forks require maintainer authorization before running AI reviews with repository secrets."
+          echo "A repository maintainer must review the diff and apply the 'safe-to-test' label to trigger automated AI code reviews."
+          exit 1
+
   gemini_review:
     name: Gemini Code Auditor
     if: >-
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
+      (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && contains(github.event.pull_request.labels.*.name, 'safe-to-test'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -45,9 +56,10 @@ jobs:
 
   nemotron_review:
     name: NVIDIA Nemotron 3 Ultra 550B Auditor
+    needs: gemini_review
     if: >-
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
+      (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && contains(github.event.pull_request.labels.*.name, 'safe-to-test'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
