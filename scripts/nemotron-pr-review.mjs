@@ -92,9 +92,8 @@ Provide a clear, formatted GitHub Markdown review:
 
 async function runReview() {
   const candidateModels = [
-    'nvidia/llama-3.1-nemotron-70b-instruct',
     'nvidia/nemotron-3-ultra-550b-a55b',
-    'meta/llama-3.3-70b-instruct'
+    'nvidia/llama-3.1-nemotron-70b-instruct'
   ];
   const url = 'https://integrate.api.nvidia.com/v1/chat/completions';
 
