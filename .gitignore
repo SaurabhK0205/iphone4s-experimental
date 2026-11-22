@@ -1,0 +1,31 @@
+# Python Virtual Environment
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large SDKs and Disk Images (downloaded separately)
+sdks/
+ddi_9.3/
+
+# Compiled Mach-O binaries & artifacts
+*.o
+*.dSYM/
+PhysicalAgent/PhysicalAgent
+PhysicalAgent/PhysicalAgent_raw
+test_native/hello
+test_native/hello_ios6
+test_native/vibrate
+test_native/vibrate_ios6
+test_native/*_raw
+
+# Snapshots and media
+*.jpg
+*.jpeg
+*.png
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
