@@ -54,6 +54,7 @@ const systemPrompt = `You are a Principal Systems Architect and Embedded Securit
 
 YOUR MISSION:
 Perform a deep architectural, concurrency, and hardware security review on the provided Git diff. Identify subtle bugs, race conditions, memory leaks, and production anti-patterns.
+SCOPE NOTE: Evaluate ONLY the files modified in this PR diff. Files already merged into the base branch (such as tools/fix_macho_ios6.py and PhysicalAgent client) are part of the baseline and out of scope for this review.
 
 STRICT FORMATTING & STYLE RULES:
 - NEVER use em-dash characters. Always use colons (:), standard hyphens (-), or parentheses instead.
@@ -91,8 +92,8 @@ Provide a clear, formatted GitHub Markdown review:
 
 async function runReview() {
   const candidateModels = [
+    'nvidia/llama-3.1-nemotron-70b-instruct',
     'nvidia/nemotron-3-ultra-550b-a55b',
-    'nvidia/nemotron-3-ultra-550b',
     'meta/llama-3.3-70b-instruct'
   ];
   const url = 'https://integrate.api.nvidia.com/v1/chat/completions';

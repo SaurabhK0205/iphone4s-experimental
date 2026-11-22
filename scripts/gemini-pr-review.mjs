@@ -115,7 +115,8 @@ async function getAvailableModels(apiKey) {
 }
 
 async function runReview() {
-  const candidateModels = await getAvailableModels(GEMINI_API_KEY);
+  const preferredModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  let candidateModels = [...preferredModels];
 
   let reviewBody = null;
   let lastError = null;
