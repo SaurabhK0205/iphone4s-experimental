@@ -61,6 +61,7 @@ jobs:
     name: NVIDIA Nemotron 3 Ultra 550B Auditor
     needs: gemini_review
     if: >-
+      always() &&
       !cancelled() &&
       ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
        (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && contains(github.event.pull_request.labels.*.name, 'safe-to-test')))
