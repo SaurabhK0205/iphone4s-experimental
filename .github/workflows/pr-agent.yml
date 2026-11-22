@@ -28,9 +28,12 @@ jobs:
         run: |
           if [ -n "${{ secrets.GEMINI_API_KEY }}" ] || [ -n "${{ secrets.OPENAI_KEY }}" ]; then
             echo "has_key=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "${{ github.event.pull_request.head.repo.full_name != github.repository }}" = "true" ]; then
             echo "has_key=false" >> "$GITHUB_OUTPUT"
-            echo "::notice ::PR-Agent skipped: neither GEMINI_API_KEY nor OPENAI_KEY is configured in GitHub repository secrets."
+            echo "::notice ::PR-Agent skipped: Fork PR without access to repository secrets."
+          else
+            echo "Error: Neither GEMINI_API_KEY nor OPENAI_KEY is configured in GitHub repository secrets."
+            exit 1
           fi
 
       - name: Checkout Code
@@ -40,7 +43,6 @@ jobs:
       - name: Run PR-Agent Action
         if: steps.check_keys.outputs.has_key == 'true'
         uses: qodo-ai/pr-agent@main
-        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -49,5 +51,6 @@ jobs:
           config.fallback_models: '["gemini/gemini-flash-latest", "gemini/gemini-2.0-flash", "gemini/gemini-1.5-flash"]'
           config.custom_model_max_tokens: "32000"
           github_action_config.auto_review: "true"
+          github_action_config.pr_actions: '["opened", "reopened", "ready_for_review", "review_requested", "synchronize"]'
           github_action_config.auto_describe: "false"
           github_action_config.auto_improve: "false"

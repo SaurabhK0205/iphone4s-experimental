@@ -17,10 +17,15 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const PR_NUMBER = process.env.PR_NUMBER;
 const REPO = process.env.GITHUB_REPOSITORY;
 const BASE_REF = process.env.GITHUB_BASE_REF || 'main';
+const IS_FORK = process.env.IS_FORK === 'true';
 
 if (!NVIDIA_API_KEY) {
-  console.log('Notice: NVIDIA_API_KEY secret is not configured. Skipping Nemotron automated PR review.');
-  process.exit(0);
+  if (IS_FORK) {
+    console.log('Notice: PR is from a fork without repository secrets. Skipping Nemotron automated PR review.');
+    process.exit(0);
+  }
+  console.error('Error: NVIDIA_API_KEY secret is not configured in repository settings. Failing closed.');
+  process.exit(1);
 }
 
 if (!GITHUB_TOKEN || !PR_NUMBER || !REPO) {
@@ -42,7 +47,8 @@ if (!diff.trim()) {
   process.exit(0);
 }
 
-const truncatedDiff = diff.length > 100000 ? diff.slice(0, 100000) + '\n\n[Diff truncated...]' : diff;
+const MAX_DIFF_CHARS = 250000;
+const truncatedDiff = diff.length > MAX_DIFF_CHARS ? diff.slice(0, MAX_DIFF_CHARS) + '\n\n[Diff truncated at 250,000 characters...]' : diff;
 
 const systemPrompt = `You are a Principal Systems Architect and Embedded Security Auditor performing an automated deep reasoning code review on "PhysicalAgent", a native multimodal embodied AI desk companion built for physical iPhone 4S hardware (iOS 6.1.3 ARMv7) communicating with an M5 Mac host over 30-pin USB and Wi-Fi.
 
@@ -84,55 +90,62 @@ Provide a clear, formatted GitHub Markdown review:
 `;
 
 async function runReview() {
-  const modelName = 'nvidia/nemotron-3-ultra-550b-a55b';
+  const candidateModels = [
+    'nvidia/nemotron-3-ultra-550b-a55b',
+    'nvidia/nemotron-3-ultra-550b',
+    'meta/llama-3.3-70b-instruct'
+  ];
   const url = 'https://integrate.api.nvidia.com/v1/chat/completions';
-
-  console.log(`Sending PR #${PR_NUMBER} diff (${diff.length} bytes) to NVIDIA NIM (${modelName})...`);
 
   let reviewBody = null;
   let lastError = null;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      if (attempt > 1) {
-        console.log(`Retrying Nemotron review (attempt ${attempt}/2)...`);
-      }
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${NVIDIA_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        signal: AbortSignal.timeout(75000),
-        body: JSON.stringify({
-          model: modelName,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: `--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${truncatedDiff}` }
-          ],
-          temperature: 0.1,
-          max_tokens: 2048
-        })
-      });
+  for (const modelName of candidateModels) {
+    console.log(`Sending PR #${PR_NUMBER} diff (${diff.length} bytes) to NVIDIA NIM (${modelName})...`);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.warn(`NVIDIA API error with model ${modelName} (${response.status}):`, errorText);
-        lastError = errorText;
-        continue;
-      }
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        if (attempt > 1) {
+          console.log(`Retrying Nemotron review on ${modelName} (attempt ${attempt}/2)...`);
+        }
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          signal: AbortSignal.timeout(75000),
+          body: JSON.stringify({
+            model: modelName,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: `--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${truncatedDiff}` }
+            ],
+            temperature: 0.1,
+            max_tokens: 2048
+          })
+        });
 
-      const data = await response.json();
-      reviewBody = data?.choices?.[0]?.message?.content;
-      if (reviewBody) break;
-    } catch (err) {
-      console.warn(`Nemotron request attempt ${attempt} failed:`, err.message || err);
-      lastError = err.message || err;
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.warn(`NVIDIA API error with model ${modelName} (${response.status}):`, errorText);
+          lastError = errorText;
+          continue;
+        }
+
+        const data = await response.json();
+        reviewBody = data?.choices?.[0]?.message?.content;
+        if (reviewBody) break;
+      } catch (err) {
+        console.warn(`Nemotron request on ${modelName} attempt ${attempt} failed:`, err.message || err);
+        lastError = err.message || err;
+      }
     }
+    if (reviewBody) break;
   }
 
   if (!reviewBody) {
-    console.error('Nemotron review failed after attempts. Last error:', lastError);
+    console.error('Nemotron review failed across all candidate models. Last error:', lastError);
     process.exit(1);
   }
 
@@ -154,6 +167,20 @@ async function runReview() {
     console.error(`Failed to post review comment (${postRes.status}):`, await postRes.text());
     process.exit(1);
   }
+
+  // Evaluate structured review verdict
+  const isRequestChanges = /verdict\s*:\s*\**request_changes\**/i.test(reviewBody);
+  const isApproved = /verdict\s*:\s*\**approve\**/i.test(reviewBody);
+
+  if (isRequestChanges) {
+    console.error(`Nemotron Auditor issued REQUEST_CHANGES. Gating PR #${PR_NUMBER}.`);
+    process.exit(1);
+  } else if (!isApproved) {
+    console.warn(`Nemotron Auditor verdict was not explicitly APPROVE. Gating PR #${PR_NUMBER} until clarified.`);
+    process.exit(1);
+  }
+
+  console.log(`Nemotron Auditor passed with APPROVE for PR #${PR_NUMBER}.`);
 }
 
 runReview();

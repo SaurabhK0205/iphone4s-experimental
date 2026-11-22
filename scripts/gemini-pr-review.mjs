@@ -18,10 +18,15 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const PR_NUMBER = process.env.PR_NUMBER;
 const REPO = process.env.GITHUB_REPOSITORY;
 const BASE_REF = process.env.GITHUB_BASE_REF || 'main';
+const IS_FORK = process.env.IS_FORK === 'true';
 
 if (!GEMINI_API_KEY) {
-  console.log('Notice: GEMINI_API_KEY secret is not configured. Skipping Gemini automated PR review.');
-  process.exit(0);
+  if (IS_FORK) {
+    console.log('Notice: PR is from a fork without repository secrets. Skipping Gemini automated PR review.');
+    process.exit(0);
+  }
+  console.error('Error: GEMINI_API_KEY secret is not configured in repository settings. Failing closed.');
+  process.exit(1);
 }
 
 if (!GITHUB_TOKEN || !PR_NUMBER || !REPO) {
@@ -43,7 +48,8 @@ if (!diff.trim()) {
   process.exit(0);
 }
 
-const truncatedDiff = diff.length > 100000 ? diff.slice(0, 100000) + '\n\n[Diff truncated...]' : diff;
+const MAX_DIFF_CHARS = 300000;
+const truncatedDiff = diff.length > MAX_DIFF_CHARS ? diff.slice(0, MAX_DIFF_CHARS) + '\n\n[Diff truncated at 300,000 characters...]' : diff;
 
 const systemPrompt = `You are a Principal Embedded Systems Engineer and Staff Security Auditor performing an automated PR review on "PhysicalAgent", a native multimodal embodied AI companion running on physical iPhone 4S hardware (iOS 6.1.3 ARMv7).
 
@@ -178,6 +184,20 @@ async function runReview() {
     console.error(`Failed to post review comment (${postRes.status}):`, await postRes.text());
     process.exit(1);
   }
+
+  // Evaluate structured review verdict
+  const isRequestChanges = /verdict\s*:\s*\**request_changes\**/i.test(reviewBody);
+  const isApproved = /verdict\s*:\s*\**approve\**/i.test(reviewBody);
+
+  if (isRequestChanges) {
+    console.error(`Gemini Code Auditor issued REQUEST_CHANGES. Gating PR #${PR_NUMBER}.`);
+    process.exit(1);
+  } else if (!isApproved) {
+    console.warn(`Gemini Code Auditor verdict was not explicitly APPROVE. Gating PR #${PR_NUMBER} until clarified.`);
+    process.exit(1);
+  }
+
+  console.log(`Gemini Code Auditor passed with APPROVE for PR #${PR_NUMBER}.`);
 }
 
 runReview();
