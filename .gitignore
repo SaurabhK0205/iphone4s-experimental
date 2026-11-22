@@ -27,5 +27,10 @@ test_native/*_raw
 # Logs
 *.log
 
+# Local architecture reference & private engineering notes
+ARCHITECTURE_REFERENCE.md
+*.local.md
+*.private.md
+
 # macOS
 .DS_Store

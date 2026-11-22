@@ -17,18 +17,18 @@ The PhysicalAgent UI transforms the 3.5" Retina display (`640x960` pixels @ 326 
 - **Gaze Focus Glow** (`--glow-active`): `rgba(46, 212, 250, 0.45)`
 
 ### Semantic Eye & Entity Tints
-- **Cyber Cyan (Neutral / Idle)**: `#2ed4fa` (`rgb(46, 212, 250)`) — Steady, alert, intelligent resting state.
-- **Emerald Green (Happy / Confirmed)**: `#34d399` (`rgb(52, 211, 153)`) — Success, physical touch acknowledgment, positive affirmation.
-- **Amber Gold (Surprised / Inquisitive)**: `#fbbf24` (`rgb(251, 191, 36)`) — Curiosity, attention, unexpected stimulus.
-- **Deep Purple / Violet (Thinking / Processing)**: `#a855f7` (`rgb(168, 85, 247)`) — Deep neural inference, code analysis, complex reasoning.
-- **Crimson Red (Alert / Warning)**: `#ef4444` (`rgb(239, 68, 68)`) — Error, hardware disconnect, build failure.
-- **Dim Sapphire (Sleep / Low Power)**: `rgba(26, 102, 153, 0.60)` — Slit eyes, resting ambient state.
+- **Cyber Cyan (Neutral / Idle)**: `#2ed4fa` (`rgb(46, 212, 250)`): Steady, alert, intelligent resting state.
+- **Emerald Green (Happy / Confirmed)**: `#34d399` (`rgb(52, 211, 153)`): Success, physical touch acknowledgment, positive affirmation.
+- **Amber Gold (Surprised / Inquisitive)**: `#fbbf24` (`rgb(251, 191, 36)`): Curiosity, attention, unexpected stimulus.
+- **Deep Purple / Violet (Thinking / Processing)**: `#a855f7` (`rgb(168, 85, 247)`): Deep neural inference, code analysis, complex reasoning.
+- **Crimson Red (Alert / Warning)**: `#ef4444` (`rgb(239, 68, 68)`): Error, hardware disconnect, build failure.
+- **Dim Sapphire (Sleep / Low Power)**: `rgba(26, 102, 153, 0.60)`: Slit eyes, resting ambient state.
 
 ### HUD & Ink Typography
 - **Primary Ink (Eyes & Active Badges)**: `#ffffff` (20:1+ contrast on obsidian canvas)
 - **Status Emerald Ink**: `#34d399` (14:1 contrast on obsidian)
 - **Telemetry Cyan Ink**: `#38bdf8` (12:1 contrast)
-- **Clock Muted Ink**: `#94a3b8` (7.0:1 contrast — exceeds WCAG AA 4.5:1)
+- **Clock Muted Ink**: `#94a3b8` (7.0:1 contrast: exceeds WCAG AA 4.5:1)
 - **Brand Sub-Label Ink**: `#475569` (Subtle grounding watermark)
 
 ---
