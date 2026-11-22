@@ -3,14 +3,19 @@ name: AI Code Reviewers
 on:
   pull_request:
     types: [opened, reopened, ready_for_review, synchronize]
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
 
 concurrency:
-  group: ai-code-review-${{ github.event.pull_request.number }}
+  group: ai-code-review-${{ github.event_name }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   gemini_review:
     name: Gemini Code Auditor
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -21,6 +26,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || '' }}
           fetch-depth: 100
 
       - name: Set up Node.js
@@ -35,11 +41,13 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_BASE_REF: ${{ github.base_ref }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
         run: node scripts/gemini-pr-review.mjs
 
   nemotron_review:
     name: NVIDIA Nemotron 3 Ultra 550B Auditor
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -50,6 +58,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || '' }}
           fetch-depth: 100
 
       - name: Set up Node.js
@@ -64,5 +73,4 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_BASE_REF: ${{ github.base_ref }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
         run: node scripts/nemotron-pr-review.mjs

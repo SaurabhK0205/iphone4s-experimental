@@ -17,13 +17,8 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const PR_NUMBER = process.env.PR_NUMBER;
 const REPO = process.env.GITHUB_REPOSITORY;
 const BASE_REF = process.env.GITHUB_BASE_REF || 'main';
-const IS_FORK = process.env.IS_FORK === 'true';
 
 if (!NVIDIA_API_KEY) {
-  if (IS_FORK) {
-    console.error('Error: PR is from a fork without repository secrets. Blocking merge until run in trusted repository context.');
-    process.exit(1);
-  }
   console.error('Error: NVIDIA_API_KEY secret is not configured in repository settings. Failing closed.');
   process.exit(1);
 }
@@ -35,16 +30,51 @@ if (!GITHUB_TOKEN || !PR_NUMBER || !REPO) {
 
 let diff = '';
 try {
-  execSync(`git fetch origin ${BASE_REF} --depth=50`, { stdio: 'inherit' });
-  diff = execSync(`git diff origin/${BASE_REF}...HEAD`, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
-} catch (err) {
-  console.error('Failed to compute git diff:', err);
-  process.exit(1);
+  const diffRes = await fetch(`https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}`, {
+    headers: {
+      'Authorization': `Bearer ${GITHUB_TOKEN}`,
+      'Accept': 'application/vnd.github.v3.diff',
+      'User-Agent': 'PhysicalAgent-CI'
+    }
+  });
+  if (diffRes.ok) {
+    diff = await diffRes.text();
+  } else {
+    throw new Error(`GitHub API diff returned HTTP ${diffRes.status}`);
+  }
+} catch (apiErr) {
+  console.warn('API diff fetch failed, falling back to local git diff:', apiErr.message || apiErr);
+  try {
+    execSync(`git fetch origin ${BASE_REF} --depth=50`, { stdio: 'inherit' });
+    diff = execSync(`git diff origin/${BASE_REF}...HEAD`, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+  } catch (err) {
+    console.error('Failed to compute git diff:', err);
+    process.exit(1);
+  }
 }
 
 if (!diff.trim()) {
   console.log('No diff detected against base branch.');
   process.exit(0);
+}
+
+function extractVerdict(text) {
+  const lines = text.split('\n');
+  const verdictLines = lines.filter((line) => /^\s*(?:\*{1,2}|#+)?\s*verdict\s*(?:\*{1,2}|#+)?\s*:/i.test(line));
+  if (verdictLines.length !== 1) {
+    return { verdict: null, reason: `Expected exactly 1 verdict line, found ${verdictLines.length}` };
+  }
+  const rawLine = verdictLines[0];
+  if (rawLine.includes('|')) {
+    return { verdict: null, reason: 'Ambiguous template options found in verdict line' };
+  }
+  const colonIdx = rawLine.indexOf(':');
+  const afterColon = rawLine.slice(colonIdx + 1).trim();
+  const cleaned = afterColon.replace(/^[\s\*\[`_]+|[\s\*\]`_]+$/g, '').trim().toUpperCase();
+  if (cleaned === 'APPROVE' || cleaned === 'REQUEST_CHANGES' || cleaned === 'COMMENT') {
+    return { verdict: cleaned, reason: null };
+  }
+  return { verdict: null, reason: `Unrecognized verdict value: "${cleaned}"` };
 }
 
 const MAX_DIFF_CHARS = 250000;
@@ -192,9 +222,8 @@ async function runReview() {
     process.exit(1);
   }
 
-  // Extract structured review verdict token
-  const verdictLineMatch = reviewBody.match(/^\s*(?:\*{1,2}|#+)?\s*verdict(?:\*{1,2}|#+)?\s*:\s*\[?(?:\*{1,2})?\s*([A-Za-z_]+)\b/im);
-  const verdict = verdictLineMatch ? verdictLineMatch[1].toUpperCase() : null;
+  // Extract and validate structured review verdict
+  const { verdict, reason } = extractVerdict(reviewBody);
 
   if (verdict === 'REQUEST_CHANGES') {
     console.error(`Nemotron Auditor issued REQUEST_CHANGES. Gating PR #${PR_NUMBER}.`);
@@ -202,7 +231,7 @@ async function runReview() {
   } else if (verdict === 'APPROVE') {
     console.log(`Nemotron Auditor passed with APPROVE for PR #${PR_NUMBER}.`);
   } else {
-    console.error(`Nemotron Auditor verdict was not APPROVE (found: "${verdict}"). Gating PR #${PR_NUMBER}.`);
+    console.error(`Nemotron Auditor verdict was not APPROVE (${reason || `found: "${verdict}"`}). Gating PR #${PR_NUMBER}.`);
     process.exit(1);
   }
 }
