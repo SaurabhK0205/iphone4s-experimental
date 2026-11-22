@@ -27,8 +27,9 @@ test_native/*_raw
 # Logs
 *.log
 
-# Private local notes & interview playbooks (never commit to public repo)
-INTERVIEW_PLAYBOOK.md
+# Local architecture reference & private engineering notes
+ARCHITECTURE_REFERENCE.md
+*.local.md
 *.private.md
 
 # macOS
