@@ -22,8 +22,8 @@ const IS_FORK = process.env.IS_FORK === 'true';
 
 if (!GEMINI_API_KEY) {
   if (IS_FORK) {
-    console.log('Notice: PR is from a fork without repository secrets. Skipping Gemini automated PR review.');
-    process.exit(0);
+    console.error('Error: PR is from a fork without repository secrets. Blocking merge until run in trusted repository context.');
+    process.exit(1);
   }
   console.error('Error: GEMINI_API_KEY secret is not configured in repository settings. Failing closed.');
   process.exit(1);
@@ -231,19 +231,19 @@ async function runReview() {
     process.exit(1);
   }
 
-  // Evaluate structured review verdict (pinned to header line)
-  const isRequestChanges = /^\s*(\*\*|#)*\s*verdict\s*(\*\*|#)*\s*:\s*\[?\s*request_changes/im.test(reviewBody);
-  const isApproved = /^\s*(\*\*|#)*\s*verdict\s*(\*\*|#)*\s*:\s*\[?\s*approve/im.test(reviewBody);
+  // Extract structured review verdict token
+  const verdictLineMatch = reviewBody.match(/^\s*(?:\*{1,2}|#+)?\s*verdict(?:\*{1,2}|#+)?\s*:\s*\[?(?:\*{1,2})?\s*([A-Za-z_]+)\b/im);
+  const verdict = verdictLineMatch ? verdictLineMatch[1].toUpperCase() : null;
 
-  if (isRequestChanges) {
+  if (verdict === 'REQUEST_CHANGES') {
     console.error(`Gemini Code Auditor issued REQUEST_CHANGES. Gating PR #${PR_NUMBER}.`);
     process.exit(1);
-  } else if (!isApproved) {
-    console.warn(`Gemini Code Auditor verdict was not explicitly APPROVE. Gating PR #${PR_NUMBER} until clarified.`);
+  } else if (verdict === 'APPROVE') {
+    console.log(`Gemini Code Auditor passed with APPROVE for PR #${PR_NUMBER}.`);
+  } else {
+    console.error(`Gemini Code Auditor verdict was not APPROVE (found: "${verdict}"). Gating PR #${PR_NUMBER}.`);
     process.exit(1);
   }
-
-  console.log(`Gemini Code Auditor passed with APPROVE for PR #${PR_NUMBER}.`);
 }
 
 runReview();
