@@ -1,0 +1,11 @@
+[pr_reviewer]
+enable_auto_approval = false
+require_focused_review = true
+extra_instructions = """
+STRICT CODE REVIEW INVARIANTS FOR PHYSICAL AGENT (iPhone 4S / iOS 6.1.3):
+1. ZERO AI SLOP: Strictly reject em-dashes (—). Phrasing must remain concise, direct, and human.
+2. NATIVE MEMORY & GPU: On iOS 6 (Apple A5), all animations must animate CALayer transform/opacity only. No layout thrashing. Process memory must remain under 50MB.
+3. CONCURRENCY & THREAD SAFETY: Socket server must dispatch client connections asynchronously. Never block the main UI thread with network reads or camera I/O.
+4. ERROR HANDLING: Socket parsing must handle malformed JSON gracefully with zero crashes.
+5. VIRTUAL ENVIRONMENT: Python scripts must run inside .venv. Never suggest global pip installs.
+"""

@@ -1,0 +1,64 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+# ==============================================================================
+# CodeRabbit Configuration — PhysicalAgent (Production-Grade Hardware Invariants)
+# ==============================================================================
+
+language: "en-US"
+early_access: false
+
+tone_instructions: "Be concise, technical, and rigorous. Flag AI slop and boilerplate. Reject em-dashes (—). Focus on iOS 6 memory bounds, GPU acceleration on PowerVR SGX543MP2, socket concurrency, Mach-O header integrity, and hardware safety."
+
+reviews:
+  profile: "chill"
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "^main$"
+      - "^staging$"
+      - "^release/.*$"
+
+  auto_approvals:
+    enabled: false
+
+  tools:
+    actionlint:
+      enabled: true
+
+  path_filters:
+    - "!sdks/**"
+    - "!.venv/**"
+    - "!*.jpg"
+    - "!*.png"
+    - "!.git/**"
+
+  path_instructions:
+    # 1. Native iOS 6 Objective-C Application
+    - path: "PhysicalAgent/**"
+      instructions: |
+        - GPU PERFORMANCE: Animate CALayer transform, bounds, and opacity only. Never animate layout properties (width, height, top, left, margin, padding) or thrash views.
+        - MEMORY BUDGET: The Apple A5 has 512MB RAM total. Maintain process memory under 50MB and ensure overall free RAM stays above 150MB.
+        - CONCURRENCY: Never block the main run loop. Socket accept/read/write must be dispatched to background queues; camera capture must complete asynchronously.
+        - ZERO AI SLOP: Strictly ban em-dashes (—). Real strings on screen must be restrained (3 to 7 strings max). No decorative fluff.
+        - TOUCH SAFETY: Interactive controls must provide immediate tactile feedback (< 10ms haptic vibration + acoustic click).
+        - HARDWARE SAFETY: Camera session configuration must be lock-safe and release cleanly to prevent sensor overheating or battery drain.
+
+    # 2. Host Python Companion & Shell
+    - path: "desk_companion.py"
+      instructions: |
+        - DUAL-MODE RESILIENCE: Auto-detect USB vs Wi-Fi transparently. Never crash when USB is disconnected or when Wi-Fi drops packets.
+        - SOCKET TIMEOUTS: All TCP calls must use explicit socket timeouts (never hang indefinitely).
+        - ERROR HANDLING: Handle malformed JSON, truncated buffers, and ECONNRESET cleanly.
+        - VIRTUAL ENVIRONMENT: Must run with `.venv/bin/python3`. No global dependencies.
+
+    # 3. Toolchain & Mach-O Header Converter
+    - path: "tools/**"
+      instructions: |
+        - MACH-O INTEGRITY: Header patching must strictly preserve file offsets, segment alignments, and section bounds within header padding.
+        - ZERO DATA SHIFT: Never insert bytes that displace __TEXT or __DATA offsets.

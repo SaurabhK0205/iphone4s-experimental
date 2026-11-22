@@ -46,9 +46,9 @@ Whenever touching `PhysicalAgent` UI or companion frontend interfaces, run the I
 | Pass | Focus | Applied to PhysicalAgent |
 |------|-------|--------------------------|
 | **Critique** | Contrast, spacing, hierarchy | Contrast ratio >= 7:1 against obsidian `#030406` canvas. Clear visual hierarchy between eyes, HUD, and clock. |
-| **Layout** | Grid density, focal point | 320x480pt Retina stage; focal point placed at optical center (Y: 185pt). Generous breathing room. |
+| **Layout** | Grid density, focal point | 320x480pt Retina stage; focal point placed at optical center (Y: 175pt). Generous breathing room. |
 | **Typeset** | Font hierarchy, tabular figures | Courier monospace for telemetry and clock (`font-variant-numeric: tabular-nums`). Helvetica Neue for brand labels. |
-| **Animate** | Micro-interactions & transitions | Organic eye blinks (80ms close, 100ms open), directional eye saccades, spring morphing between emotions. |
+| **Animate** | Micro-interactions & transitions | Organic eye blinks (80ms close, 110ms open), directional eye saccades, spring morphing between emotions. |
 | **Adapt** | Display ergonomics & angles | Optimized for 45° to 60° desk dock viewing angles. Legible from 2 to 3 feet away. Touch targets >= 44x44pt. |
 | **Harden** | Disconnections & edge cases | Graceful fallback when USB/Wi-Fi drops. Zero crashing on malformed socket JSON. Screen stays awake (`idleTimerDisabled = YES`). |
 | **Polish** | Final craft pass | Glow radius, shadow opacity, sub-pixel layer alignment, zero text clipping. |
@@ -63,7 +63,30 @@ Whenever touching `PhysicalAgent` UI or companion frontend interfaces, run the I
 
 ---
 
-## 5. Strict Repository & Runtime Invariants
+## 5. Branching, Pull Requests & AI Review Gates (MANDATORY & BLOCKING)
+
+Adapted from the production standards of `reeler` (`instagram-saved-reels`):
+
+1. **No Direct Pushes to Main**:
+   - **NEVER push or commit directly to `main`**. Every single unit of work must live on a dedicated topic branch (`feat/*`, `fix/*`, `refactor/*`, `ui/*`, `hardware/*`, `chore/*`).
+   - All integrations must merge via GitHub Pull Request targeting `main`.
+2. **Multi-Model AI Code Review Gates (BLOCKING)**:
+   Every opened or updated PR is automatically audited by four specialized AI reviewers:
+   - **CodeRabbit AI**: Real-time architectural and diff analysis via `.coderabbit.yaml`.
+   - **Qodo PR-Agent**: Automated code review powered by Gemini via `.github/workflows/pr-agent.yml` and `.pr_agent.toml`.
+   - **Gemini Code Auditor**: Production quality, anti-AI-slop, and hardware constraint review via `.github/workflows/ai-code-review.yml`.
+   - **NVIDIA Nemotron 3 Ultra 550B Auditor**: Deep architectural, concurrency, and security reasoning via `.github/workflows/ai-code-review.yml`.
+3. **Addressing Review Findings**:
+   - **NEVER merge while an automated review or re-check is running**.
+   - Review every finding: for valid issues, fix and push to the topic branch; for false positives, provide documented technical reasoning.
+   - All reviewer checks must be completed and passing before merge.
+4. **Zero AI Slop Rule**:
+   - Strictly ban em-dashes (`—`) in code, documentation, strings, or commit messages. Use colons (:), standard hyphens (-), or parentheses instead.
+   - Ban sycophantic praise, robot apologies, conversational filler, and generic boilerplate.
+
+---
+
+## 6. Strict Repository & Runtime Invariants
 
 1. **Python Virtual Environment**:
    - ALWAYS run Python scripts and tools using the dedicated project virtual environment at `.venv/bin/python3`.
