@@ -63,13 +63,13 @@ function extractVerdict(text) {
   const verdictMatches = [];
 
   for (const line of lines) {
-    const match = line.match(/^\s*(?:\*{1,2}|#+)?\s*verdict(?:\*{1,2}|#+)?\s*:\s*(.+)$/i);
+    const match = line.match(/^\s*(?:[-*+]\s+)?(?:\*{1,2}|#+)?\s*verdict(?:\*{1,2}|#+)?\s*:\s*(.+)$/i);
     if (!match) continue;
 
     const rawValue = match[1].trim();
     if (rawValue.includes('|')) continue;
 
-    const cleaned = rawValue.replace(/^[\s\*\[`_]+|[\s\*\]`_]+$/g, '').trim().toUpperCase();
+    const cleaned = rawValue.replace(/^[\s\*\[`"'#]+|[\s\*\]`"'#]+$/g, '').trim().toUpperCase();
 
     if (cleaned === 'APPROVE' || cleaned === 'REQUEST_CHANGES' || cleaned === 'COMMENT') {
       verdictMatches.push(cleaned);
@@ -140,6 +140,9 @@ async function postCommentWithRetry(commentUrl, body, retries = 3) {
 }
 
 const MAX_DIFF_CHARS = 300000;
+if (diff.length > MAX_DIFF_CHARS) {
+  console.warn(`Diff size (${diff.length} chars) exceeds MAX_DIFF_CHARS (${MAX_DIFF_CHARS}). Truncating diff.`);
+}
 const truncatedDiff = diff.length > MAX_DIFF_CHARS ? diff.slice(0, MAX_DIFF_CHARS) + '\n\n[Diff truncated at 300,000 characters...]' : diff;
 
 const systemPrompt = `You are a Principal Systems Architect and Embedded Security Auditor performing an automated deep reasoning code review on "PhysicalAgent", a native multimodal embodied AI desk companion built for physical iPhone 4S hardware (iOS 6.1.3 ARMv7) communicating with an M5 Mac host over 30-pin USB and Wi-Fi.
@@ -149,7 +152,7 @@ Perform a deep architectural, concurrency, and hardware security review on the p
 SCOPE NOTE: Evaluate ONLY the files modified in this PR diff. Files already merged into the base branch (such as tools/fix_macho_ios6.py and PhysicalAgent client) are part of the baseline and out of scope for this review.
 
 STRICT FORMATTING & STYLE RULES:
-- NEVER use em-dash characters. Always use colons (:), standard hyphens (-), or parentheses instead.
+- Reject any em-dash characters in newly added or modified content (lines starting with '+'). Ignore removed lines (lines starting with '-') since they represent deleted code/text being fixed.
 - Avoid generic AI boilerplate, conversational fluff, and sycophantic praise. Keep comments technical, direct, and concise.
 
 AUDIT CRITERIA:
@@ -230,7 +233,7 @@ async function runReview() {
             'Authorization': `Bearer ${NVIDIA_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          signal: AbortSignal.timeout(90000),
+          signal: AbortSignal.timeout(60000),
           body: JSON.stringify({
             model: modelName,
             messages: [

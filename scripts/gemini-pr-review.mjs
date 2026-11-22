@@ -64,13 +64,13 @@ function extractVerdict(text) {
   const verdictMatches = [];
 
   for (const line of lines) {
-    const match = line.match(/^\s*(?:\*{1,2}|#+)?\s*verdict(?:\*{1,2}|#+)?\s*:\s*(.+)$/i);
+    const match = line.match(/^\s*(?:[-*+]\s+)?(?:\*{1,2}|#+)?\s*verdict(?:\*{1,2}|#+)?\s*:\s*(.+)$/i);
     if (!match) continue;
 
     const rawValue = match[1].trim();
     if (rawValue.includes('|')) continue;
 
-    const cleaned = rawValue.replace(/^[\s\*\[`_]+|[\s\*\]`_]+$/g, '').trim().toUpperCase();
+    const cleaned = rawValue.replace(/^[\s\*\[`"'#]+|[\s\*\]`"'#]+$/g, '').trim().toUpperCase();
 
     if (cleaned === 'APPROVE' || cleaned === 'REQUEST_CHANGES' || cleaned === 'COMMENT') {
       verdictMatches.push(cleaned);
@@ -141,6 +141,9 @@ async function postCommentWithRetry(commentUrl, body, retries = 3) {
 }
 
 const MAX_DIFF_CHARS = 300000;
+if (diff.length > MAX_DIFF_CHARS) {
+  console.warn(`Diff size (${diff.length} chars) exceeds MAX_DIFF_CHARS (${MAX_DIFF_CHARS}). Truncating diff.`);
+}
 const truncatedDiff = diff.length > MAX_DIFF_CHARS ? diff.slice(0, MAX_DIFF_CHARS) + '\n\n[Diff truncated at 300,000 characters...]' : diff;
 
 const systemPrompt = `You are a Principal Embedded Systems Engineer and Staff Security Auditor performing an automated PR review on "PhysicalAgent", a native multimodal embodied AI companion running on physical iPhone 4S hardware (iOS 6.1.3 ARMv7).
@@ -150,7 +153,7 @@ Ensure ONLY production-grade, hardware-safe, reliable code is merged. Actively e
 
 REVIEW CRITERIA:
 1. STRICT ANTI-AI-SLOP:
-   - Reject any em-dash characters in code, strings, documentation, or messages. Use hyphens, colons, or parentheses.
+   - Reject any em-dash characters in newly added or modified content (lines starting with '+'). Ignore removed lines (lines starting with '-') since they represent deleted code/text being fixed.
    - Reject conversational fluff, apologies, sycophantic praise, and generic AI templates.
 
 2. HARDWARE CONSTRAINTS (Apple A5 / iOS 6.1.3):
