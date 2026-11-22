@@ -115,7 +115,13 @@ async function getAvailableModels(apiKey) {
 }
 
 async function runReview() {
-  const preferredModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  const preferredModels = [
+    'gemini-flash-lite-latest',
+    'gemini-2.0-flash',
+    'gemini-2.5-flash',
+    'gemini-1.5-flash',
+    'gemini-flash-latest'
+  ];
   let candidateModels = [...preferredModels];
 
   let reviewBody = null;
@@ -159,6 +165,45 @@ async function runReview() {
     } catch (err) {
       console.warn(`Gemini model ${modelName} failed:`, err.message || err);
       lastError = err.message || err;
+    }
+  }
+
+  // If preferred static models failed, try dynamic discovery as backup
+  if (!reviewBody) {
+    console.log('Preferred models failed, attempting dynamic model discovery...');
+    const discoveredModels = await getAvailableModels(GEMINI_API_KEY);
+    for (const modelName of discoveredModels) {
+      if (preferredModels.includes(modelName)) continue;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
+      console.log(`Retrying with discovered model (${modelName})...`);
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(25000),
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { text: `${systemPrompt}\n\n--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${truncatedDiff}` }
+                ]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: 2048
+            }
+          })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          reviewBody = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (reviewBody) break;
+        }
+      } catch (err) {
+        console.warn(`Discovered model ${modelName} failed:`, err.message || err);
+      }
     }
   }
 
