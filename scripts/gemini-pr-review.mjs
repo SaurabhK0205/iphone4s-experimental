@@ -46,8 +46,8 @@ try {
 } catch (apiErr) {
   console.warn('API diff fetch failed, falling back to local git diff:', apiErr.message || apiErr);
   try {
-    execSync(`git fetch origin ${BASE_REF} --depth=50`, { stdio: 'inherit' });
-    diff = execSync(`git diff origin/${BASE_REF}...HEAD`, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+    execSync(`git fetch origin ${BASE_REF}:${BASE_REF} --depth=100`, { stdio: 'inherit' });
+    diff = execSync(`git diff ${BASE_REF}...HEAD`, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
   } catch (err) {
     console.error('Failed to compute git diff:', err);
     process.exit(1);
@@ -61,21 +61,83 @@ if (!diff.trim()) {
 
 function extractVerdict(text) {
   const lines = text.split('\n');
-  const verdictLines = lines.filter((line) => /^\s*(?:\*{1,2}|#+)?\s*verdict\s*(?:\*{1,2}|#+)?\s*:/i.test(line));
-  if (verdictLines.length !== 1) {
-    return { verdict: null, reason: `Expected exactly 1 verdict line, found ${verdictLines.length}` };
+  const verdictMatches = [];
+
+  for (const line of lines) {
+    const match = line.match(/^\s*(?:\*{1,2}|#+)?\s*verdict(?:\*{1,2}|#+)?\s*:\s*(.+)$/i);
+    if (!match) continue;
+
+    const rawValue = match[1].trim();
+    if (rawValue.includes('|')) continue;
+
+    const cleaned = rawValue.replace(/^[\s\*\[`_]+|[\s\*\]`_]+$/g, '').trim().toUpperCase();
+
+    if (cleaned === 'APPROVE' || cleaned === 'REQUEST_CHANGES' || cleaned === 'COMMENT') {
+      verdictMatches.push(cleaned);
+    } else {
+      verdictMatches.push(`INVALID:${cleaned}`);
+    }
   }
-  const rawLine = verdictLines[0];
-  if (rawLine.includes('|')) {
-    return { verdict: null, reason: 'Ambiguous template options found in verdict line' };
+
+  if (verdictMatches.length === 0) {
+    return { verdict: null, reason: 'No valid verdict line found in review output' };
   }
-  const colonIdx = rawLine.indexOf(':');
-  const afterColon = rawLine.slice(colonIdx + 1).trim();
-  const cleaned = afterColon.replace(/^[\s\*\[`_]+|[\s\*\]`_]+$/g, '').trim().toUpperCase();
-  if (cleaned === 'APPROVE' || cleaned === 'REQUEST_CHANGES' || cleaned === 'COMMENT') {
-    return { verdict: cleaned, reason: null };
+
+  const invalidMatch = verdictMatches.find((v) => v.startsWith('INVALID:'));
+  if (invalidMatch) {
+    return { verdict: null, reason: `Unrecognized verdict value: "${invalidMatch.slice(8)}"` };
   }
-  return { verdict: null, reason: `Unrecognized verdict value: "${cleaned}"` };
+
+  if (verdictMatches.includes('REQUEST_CHANGES')) {
+    return { verdict: 'REQUEST_CHANGES', reason: 'Reviewer issued REQUEST_CHANGES' };
+  }
+
+  const allApproved = verdictMatches.every((v) => v === 'APPROVE');
+  if (allApproved) {
+    return { verdict: 'APPROVE', reason: null };
+  }
+
+  return { verdict: verdictMatches[0], reason: `Non-approving verdict: "${verdictMatches.join(', ')}"` };
+}
+
+async function postCommentWithRetry(commentUrl, body, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const postRes = await fetch(commentUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${GITHUB_TOKEN}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'PhysicalAgent-CI'
+        },
+        signal: AbortSignal.timeout(15000),
+        body: JSON.stringify({ body })
+      });
+
+      if (postRes.ok) {
+        console.log(`Successfully posted review to PR #${PR_NUMBER} (attempt ${attempt})`);
+        return true;
+      }
+
+      const status = postRes.status;
+      const errorText = await postRes.text();
+      console.warn(`GitHub API post attempt ${attempt}/${retries} failed (${status}):`, errorText);
+
+      if (status !== 429 && status < 500) {
+        return false;
+      }
+    } catch (err) {
+      console.warn(`GitHub API post network error on attempt ${attempt}/${retries}:`, err.message || err);
+    }
+
+    if (attempt < retries) {
+      const delayMs = Math.pow(2, attempt) * 1000;
+      console.log(`Waiting ${delayMs}ms before retry...`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  return false;
 }
 
 const MAX_DIFF_CHARS = 300000;
@@ -242,22 +304,11 @@ async function runReview() {
     process.exit(1);
   }
 
-  // Post review comment to GitHub PR
+  // Post review comment to GitHub PR with exponential backoff retry
   const commentUrl = `https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments`;
-  const postRes = await fetch(commentUrl, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${GITHUB_TOKEN}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ body: reviewBody })
-  });
-
-  if (postRes.ok) {
-    console.log(`Successfully posted Gemini review to PR #${PR_NUMBER}`);
-  } else {
-    console.error(`Failed to post review comment (${postRes.status}):`, await postRes.text());
+  const posted = await postCommentWithRetry(commentUrl, reviewBody);
+  if (!posted) {
+    console.error(`Failed to post review comment to GitHub PR #${PR_NUMBER} after multiple attempts.`);
     process.exit(1);
   }
 

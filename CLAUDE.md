@@ -62,7 +62,33 @@
 
 ---
 
-## 4. BLOCK Violations (Strictly Prohibited)
+## 4. Toolchain & Native ARMv7 Compilation Workflow
+
+To rebuild and redeploy `PhysicalAgent.app` from Apple Silicon M5:
+
+```bash
+# 1. Compile native ARMv7 binary with custom CRT start stub
+clang -target armv7-apple-ios6.0 \
+  -isysroot sdks/iPhoneOS9.3.sdk \
+  -marm -fno-objc-arc \
+  -framework UIKit -framework Foundation -framework CoreGraphics \
+  -framework QuartzCore -framework AVFoundation -framework AudioToolbox \
+  -framework CoreMedia -framework CoreVideo \
+  -Wl,-e,_start \
+  test_native/start.s PhysicalAgent/main.m \
+  -o PhysicalAgent/PhysicalAgent_raw
+
+# 2. Patch Mach-O header (LC_MAIN -> LC_UNIXTHREAD)
+.venv/bin/python3 tools/fix_macho_ios6.py PhysicalAgent/PhysicalAgent_raw PhysicalAgent/PhysicalAgent
+
+# 3. Deploy, sign, and launch on device
+scp -i ~/.ssh/id_rsa_iphone -P 2222 PhysicalAgent/PhysicalAgent root@127.0.0.1:/Applications/PhysicalAgent.app/PhysicalAgent
+ssh iphone "chmod +x /Applications/PhysicalAgent.app/PhysicalAgent && ldid -S /Applications/PhysicalAgent.app/PhysicalAgent && killall PhysicalAgent 2>/dev/null; sleep 1; uiopen physicalagent://"
+```
+
+---
+
+## 5. BLOCK Violations (Strictly Prohibited)
 
 1. **No Direct Pushes to Main**: All code must merge through reviewed PRs.
 2. **No Em-Dashes**: Strictly ban em-dash characters across code, docs, and strings.
