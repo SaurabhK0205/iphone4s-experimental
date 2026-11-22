@@ -52,7 +52,7 @@ Ensure ONLY production-grade, hardware-safe, reliable code is merged. Actively e
 
 REVIEW CRITERIA:
 1. STRICT ANTI-AI-SLOP:
-   - Reject any em-dashes (—) in code, strings, documentation, or messages. Use hyphens, colons, or parentheses.
+   - Reject any em-dash characters in code, strings, documentation, or messages. Use hyphens, colons, or parentheses.
    - Reject conversational fluff, apologies, sycophantic praise, and generic AI templates.
 
 2. HARDWARE CONSTRAINTS (Apple A5 / iOS 6.1.3):

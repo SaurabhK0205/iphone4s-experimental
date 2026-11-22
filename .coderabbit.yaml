@@ -1,13 +1,13 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 
 # ==============================================================================
-# CodeRabbit Configuration — PhysicalAgent (Production-Grade Hardware Invariants)
+# CodeRabbit Configuration: PhysicalAgent (Production-Grade Hardware Invariants)
 # ==============================================================================
 
 language: "en-US"
 early_access: false
 
-tone_instructions: "Be concise, technical, and rigorous. Flag AI slop and boilerplate. Reject em-dashes (—). Focus on iOS 6 memory bounds, GPU acceleration on PowerVR SGX543MP2, socket concurrency, Mach-O header integrity, and hardware safety."
+tone_instructions: "Be concise, technical, and rigorous. Flag AI slop and boilerplate. Reject em-dash characters. Focus on iOS 6 memory bounds, GPU acceleration on PowerVR SGX543MP2, socket concurrency, Mach-O header integrity, and hardware safety."
 
 reviews:
   profile: "chill"
@@ -45,7 +45,7 @@ reviews:
         - GPU PERFORMANCE: Animate CALayer transform, bounds, and opacity only. Never animate layout properties (width, height, top, left, margin, padding) or thrash views.
         - MEMORY BUDGET: The Apple A5 has 512MB RAM total. Maintain process memory under 50MB and ensure overall free RAM stays above 150MB.
         - CONCURRENCY: Never block the main run loop. Socket accept/read/write must be dispatched to background queues; camera capture must complete asynchronously.
-        - ZERO AI SLOP: Strictly ban em-dashes (—). Real strings on screen must be restrained (3 to 7 strings max). No decorative fluff.
+        - ZERO AI SLOP: Strictly ban em-dash characters. Real strings on screen must be restrained (3 to 7 strings max). No decorative fluff.
         - TOUCH SAFETY: Interactive controls must provide immediate tactile feedback (< 10ms haptic vibration + acoustic click).
         - HARDWARE SAFETY: Camera session configuration must be lock-safe and release cleanly to prevent sensor overheating or battery drain.
 

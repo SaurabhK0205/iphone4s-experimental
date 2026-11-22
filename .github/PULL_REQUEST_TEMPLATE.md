@@ -16,5 +16,5 @@
 - [ ] Verified over Wi-Fi (`192.168.0.158`)
 - [ ] 60 FPS locked Retina rendering (zero layout thrashing)
 - [ ] Free RAM >= 150MB maintained on device
-- [ ] Strict Anti-AI-Slop: zero em-dashes (—), human copy, no filler
+- [ ] Strict Anti-AI-Slop: zero em-dashes, human copy, no filler
 - [ ] Virtual environment used (`.venv/bin/python3`)

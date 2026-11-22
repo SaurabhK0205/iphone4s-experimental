@@ -1,10 +1,10 @@
-# PHYSICAL AGENT // DESK COMPANION — Agent Instructions & Operating Rules
+# PHYSICAL AGENT // DESK COMPANION: Agent Instructions & Operating Rules
 
 See [CLAUDE.md](./CLAUDE.md) for the complete, canonical rules and conventions governing this repository, and [DESIGN.md](./DESIGN.md) for the visual and motion design system.
 
 ---
 
-## 1. Engineering Reliability — GRAVITAS Workflow (MANDATORY)
+## 1. Engineering Reliability: GRAVITAS Workflow (MANDATORY)
 
 Follow GRAVITAS invariants for all implementation, debugging, refactoring, toolchain updates, and hardware interaction:
 
@@ -17,7 +17,7 @@ Follow GRAVITAS invariants for all implementation, debugging, refactoring, toolc
 
 ---
 
-## 2. Design Engineering & Motion — Emil Kowalski Rules (MANDATORY)
+## 2. Design Engineering & Motion: Emil Kowalski Rules (MANDATORY)
 
 Applied to both the iOS 6 Retina display UI (`PhysicalAgent.app`) and any host companion GUI/Web surfaces:
 
@@ -39,7 +39,7 @@ Applied to both the iOS 6 Retina display UI (`PhysicalAgent.app`) and any host c
 
 ---
 
-## 3. Visual Craft & UI Quality — Impeccable 7-Pass Review (MANDATORY)
+## 3. Visual Craft & UI Quality: Impeccable 7-Pass Review (MANDATORY)
 
 Whenever touching `PhysicalAgent` UI or companion frontend interfaces, run the Impeccable review passes before committing:
 
@@ -55,7 +55,7 @@ Whenever touching `PhysicalAgent` UI or companion frontend interfaces, run the I
 
 ---
 
-## 4. Believable Product UI & Restraint — Benji Taylor Rules (MANDATORY)
+## 4. Believable Product UI & Restraint: Benji Taylor Rules (MANDATORY)
 
 1. **Restraint over Slop**: Real words only where the story is about. Budget of 3 to 7 real strings on screen. No filler slop, no stock AI tropes (no purple sparkles, no decorative fluff).
 2. **Every Motion has a Cause**: The companion blinks because living eyes dry out; eyes glance left because an alert occurred on the left; pupils contract because bright light was detected. No random frantic animations.
@@ -81,7 +81,7 @@ Adapted from the production standards of `reeler` (`instagram-saved-reels`):
    - Review every finding: for valid issues, fix and push to the topic branch; for false positives, provide documented technical reasoning.
    - All reviewer checks must be completed and passing before merge.
 4. **Zero AI Slop Rule**:
-   - Strictly ban em-dashes (`—`) in code, documentation, strings, or commit messages. Use colons (:), standard hyphens (-), or parentheses instead.
+   - Strictly ban em-dash characters in code, documentation, strings, or commit messages. Use colons (:), standard hyphens (-), or parentheses instead.
    - Ban sycophantic praise, robot apologies, conversational filler, and generic boilerplate.
 
 ---

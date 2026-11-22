@@ -1,4 +1,4 @@
-# PhysicalAgent: iPhone 4S Desk Companion — CLAUDE.md
+# PhysicalAgent: iPhone 4S Desk Companion: CLAUDE.md
 
 **Hardware Target**: Physical iPhone 4S (Apple A5, ARMv7, 512MB RAM, 3.5" Retina 960x640) running iOS 6.1.3 (Build 10B329).  
 **Host Controller**: MacBook Air M5 (Apple Silicon) running macOS.  
@@ -36,7 +36,7 @@
      4. **NVIDIA Nemotron 3 Ultra 550B Auditor** (`scripts/nemotron-pr-review.mjs`)
    - Never merge while reviews or incremental re-checks are in progress.
 3. **Anti-AI-Slop Standard**:
-   - Zero em-dashes (`—`). Use colons (:), standard hyphens (-), or parentheses instead.
+   - Zero em-dashes (\u2014). Use colons (:), standard hyphens (-), or parentheses instead.
    - Direct, human, concise phrasing. Zero sycophantic filler, apologies, or generic templates.
 
 ---
@@ -62,7 +62,7 @@
 ## 4. BLOCK Violations (Strictly Prohibited)
 
 1. **No Direct Pushes to Main**: All code must merge through reviewed PRs.
-2. **No Em-Dashes**: Strictly ban `—` across code, docs, and strings.
+2. **No Em-Dashes**: Strictly ban em-dash characters across code, docs, and strings.
 3. **No Global Python Packages**: Never run `pip install` without active `.venv`.
 4. **No Web CRUD Wrappers**: The desk companion must remain a native ARMv7 C / Objective-C system application on iOS 6.
 5. **No Unanchored Animations**: Never animate layout properties (`width`, `height`, `margin`, `padding`). Only animate `transform`, `opacity`, and `bounds` on `CALayer`.
