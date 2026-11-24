@@ -2,6 +2,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import <CoreMotion/CoreMotion.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -11,14 +12,12 @@
 #include <mach/mach.h>
 #include <signal.h>
 #include <libkern/OSAtomic.h>
+#include <dlfcn.h>
 
 // ========================================================
-// 1. ATMOSPHERIC CANVAS DEPTH (Radial Gradient Background)
+// 1. ATMOSPHERIC CANVAS DEPTH (Pure Obsidian Black Canvas)
 // ========================================================
-@interface RadialGradientBackgroundView : UIView {
-    CGGradientRef _gradient;
-    CGColorSpaceRef _colorSpace;
-}
+@interface RadialGradientBackgroundView : UIView
 @end
 
 @implementation RadialGradientBackgroundView
@@ -26,39 +25,930 @@
 - (id)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        _colorSpace = CGColorSpaceCreateDeviceRGB();
-        if (_colorSpace) {
-            CGFloat components[8] = {
-                0.032f, 0.047f, 0.086f, 1.0f, // Optical center core
-                0.004f, 0.007f, 0.016f, 1.0f  // Obsidian canvas perimeter
-            };
-            CGFloat locations[2] = { 0.0f, 1.0f };
-            _gradient = CGGradientCreateWithColorComponents(_colorSpace, components, locations, 2);
-        }
+        self.backgroundColor = [UIColor blackColor];
     }
     return self;
 }
 
 - (void)drawRect:(CGRect)rect {
-    if (!_gradient) return;
+    // Pitch black canvas (#000000) merging seamlessly with iPhone 4S black bezels
     CGContextRef ctx = UIGraphicsGetCurrentContext();
-    CGPoint focalCenter = CGPointMake(self.bounds.size.width / 2.0f, 175.0f);
-    CGFloat endRadius = 320.0f;
-    CGContextDrawRadialGradient(ctx, _gradient, focalCenter, 0.0f, focalCenter, endRadius, kCGGradientDrawsAfterEndLocation);
+    if (ctx) {
+        CGContextSetRGBFillColor(ctx, 0.0f, 0.0f, 0.0f, 1.0f);
+        CGContextFillRect(ctx, rect);
+    }
+}
+@end
+
+// ========================================================
+// 2. PROCEDURAL EYE CONFIGURATION & MATHEMATICAL UTILITIES
+// ========================================================
+typedef struct {
+    CGFloat centerX;
+    CGFloat centerY;
+    CGFloat scaleX;
+    CGFloat scaleY;
+    CGFloat angle;
+    CGFloat lowerInnerRadiusX;
+    CGFloat lowerInnerRadiusY;
+    CGFloat upperInnerRadiusX;
+    CGFloat upperInnerRadiusY;
+    CGFloat upperOuterRadiusX;
+    CGFloat upperOuterRadiusY;
+    CGFloat lowerOuterRadiusX;
+    CGFloat lowerOuterRadiusY;
+    CGFloat upperLidY;
+    CGFloat upperLidAngle;
+    CGFloat upperLidBend;
+    CGFloat lowerLidY;
+    CGFloat lowerLidAngle;
+    CGFloat lowerLidBend;
+    CGFloat saturation;
+    CGFloat lightness;
+    CGFloat glowSize;
+    CGFloat hotSpotCenterX;
+    CGFloat hotSpotCenterY;
+    CGFloat glowLightness;
+} ProceduralEyeConfig;
+
+static inline CGFloat ClampF(CGFloat v, CGFloat minV, CGFloat maxV) {
+    if (v < minV) return minV;
+    if (v > maxV) return maxV;
+    return v;
+}
+
+static inline CGFloat LerpF(CGFloat a, CGFloat b, CGFloat t) {
+    return a + (b - a) * t;
+}
+
+static inline ProceduralEyeConfig ProceduralEyeConfigDefault(void) {
+    ProceduralEyeConfig c;
+    c.centerX = 0.0f;
+    c.centerY = 0.0f;
+    c.scaleX = 1.0f;
+    c.scaleY = 1.0f;
+    c.angle = 0.0f;
+    c.lowerInnerRadiusX = 0.55f;
+    c.lowerInnerRadiusY = 0.55f;
+    c.upperInnerRadiusX = 0.55f;
+    c.upperInnerRadiusY = 0.55f;
+    c.upperOuterRadiusX = 0.55f;
+    c.upperOuterRadiusY = 0.55f;
+    c.lowerOuterRadiusX = 0.55f;
+    c.lowerOuterRadiusY = 0.55f;
+    c.upperLidY = 0.0f;
+    c.upperLidAngle = 0.0f;
+    c.upperLidBend = 0.0f;
+    c.lowerLidY = 0.0f;
+    c.lowerLidAngle = 0.0f;
+    c.lowerLidBend = 0.0f;
+    c.saturation = 0.0f;
+    c.lightness = 0.0f;
+    c.glowSize = 1.0f;
+    c.hotSpotCenterX = 0.0f;
+    c.hotSpotCenterY = 0.0f;
+    c.glowLightness = 0.85f;
+    return c;
+}
+
+static inline ProceduralEyeConfig ProceduralEyeConfigLerp(ProceduralEyeConfig a, ProceduralEyeConfig b, CGFloat t) {
+    ProceduralEyeConfig c;
+    c.centerX = LerpF(a.centerX, b.centerX, t);
+    c.centerY = LerpF(a.centerY, b.centerY, t);
+    c.scaleX = LerpF(a.scaleX, b.scaleX, t);
+    c.scaleY = LerpF(a.scaleY, b.scaleY, t);
+    c.angle = LerpF(a.angle, b.angle, t);
+    c.lowerInnerRadiusX = LerpF(a.lowerInnerRadiusX, b.lowerInnerRadiusX, t);
+    c.lowerInnerRadiusY = LerpF(a.lowerInnerRadiusY, b.lowerInnerRadiusY, t);
+    c.upperInnerRadiusX = LerpF(a.upperInnerRadiusX, b.upperInnerRadiusX, t);
+    c.upperInnerRadiusY = LerpF(a.upperInnerRadiusY, b.upperInnerRadiusY, t);
+    c.upperOuterRadiusX = LerpF(a.upperOuterRadiusX, b.upperOuterRadiusX, t);
+    c.upperOuterRadiusY = LerpF(a.upperOuterRadiusY, b.upperOuterRadiusY, t);
+    c.lowerOuterRadiusX = LerpF(a.lowerOuterRadiusX, b.lowerOuterRadiusX, t);
+    c.lowerOuterRadiusY = LerpF(a.lowerOuterRadiusY, b.lowerOuterRadiusY, t);
+    c.upperLidY = LerpF(a.upperLidY, b.upperLidY, t);
+    c.upperLidAngle = LerpF(a.upperLidAngle, b.upperLidAngle, t);
+    c.upperLidBend = LerpF(a.upperLidBend, b.upperLidBend, t);
+    c.lowerLidY = LerpF(a.lowerLidY, b.lowerLidY, t);
+    c.lowerLidAngle = LerpF(a.lowerLidAngle, b.lowerLidAngle, t);
+    c.lowerLidBend = LerpF(a.lowerLidBend, b.lowerLidBend, t);
+    c.saturation = LerpF(a.saturation, b.saturation, t);
+    c.lightness = LerpF(a.lightness, b.lightness, t);
+    c.glowSize = LerpF(a.glowSize, b.glowSize, t);
+    c.hotSpotCenterX = LerpF(a.hotSpotCenterX, b.hotSpotCenterX, t);
+    c.hotSpotCenterY = LerpF(a.hotSpotCenterY, b.hotSpotCenterY, t);
+    c.glowLightness = LerpF(a.glowLightness, b.glowLightness, t);
+    return c;
+}
+
+static CGFloat SafeFloatFromArray(NSArray *arr, NSUInteger index, CGFloat fallback) {
+    if (!arr || index >= [arr count]) return fallback;
+    id obj = [arr objectAtIndex:index];
+    if ([obj respondsToSelector:@selector(floatValue)]) {
+        CGFloat val = (CGFloat)[obj floatValue];
+        if (isnan(val) || isinf(val)) return fallback;
+        return val;
+    }
+    return fallback;
+}
+
+static ProceduralEyeConfig ProceduralEyeConfigFromArray(NSArray *arr, ProceduralEyeConfig fallback) {
+    if (!arr || ![arr isKindOfClass:[NSArray class]] || [arr count] < 25) {
+        return fallback;
+    }
+    ProceduralEyeConfig c;
+    c.centerX = ClampF(SafeFloatFromArray(arr, 0, fallback.centerX), -200.0f, 200.0f);
+    c.centerY = ClampF(SafeFloatFromArray(arr, 1, fallback.centerY), -200.0f, 200.0f);
+    c.scaleX = ClampF(SafeFloatFromArray(arr, 2, fallback.scaleX), 0.05f, 3.0f);
+    c.scaleY = ClampF(SafeFloatFromArray(arr, 3, fallback.scaleY), 0.05f, 3.0f);
+    c.angle = ClampF(SafeFloatFromArray(arr, 4, fallback.angle), -180.0f, 180.0f);
+    c.lowerInnerRadiusX = ClampF(SafeFloatFromArray(arr, 5, fallback.lowerInnerRadiusX), 0.05f, 1.0f);
+    c.lowerInnerRadiusY = ClampF(SafeFloatFromArray(arr, 6, fallback.lowerInnerRadiusY), 0.05f, 1.0f);
+    c.upperInnerRadiusX = ClampF(SafeFloatFromArray(arr, 7, fallback.upperInnerRadiusX), 0.05f, 1.0f);
+    c.upperInnerRadiusY = ClampF(SafeFloatFromArray(arr, 8, fallback.upperInnerRadiusY), 0.05f, 1.0f);
+    c.upperOuterRadiusX = ClampF(SafeFloatFromArray(arr, 9, fallback.upperOuterRadiusX), 0.05f, 1.0f);
+    c.upperOuterRadiusY = ClampF(SafeFloatFromArray(arr, 10, fallback.upperOuterRadiusY), 0.05f, 1.0f);
+    c.lowerOuterRadiusX = ClampF(SafeFloatFromArray(arr, 11, fallback.lowerOuterRadiusX), 0.05f, 1.0f);
+    c.lowerOuterRadiusY = ClampF(SafeFloatFromArray(arr, 12, fallback.lowerOuterRadiusY), 0.05f, 1.0f);
+    c.upperLidY = ClampF(SafeFloatFromArray(arr, 13, fallback.upperLidY), 0.0f, 1.0f);
+    c.upperLidAngle = ClampF(SafeFloatFromArray(arr, 14, fallback.upperLidAngle), -90.0f, 90.0f);
+    c.upperLidBend = ClampF(SafeFloatFromArray(arr, 15, fallback.upperLidBend), -2.0f, 2.0f);
+    c.lowerLidY = ClampF(SafeFloatFromArray(arr, 16, fallback.lowerLidY), 0.0f, 1.0f);
+    c.lowerLidAngle = ClampF(SafeFloatFromArray(arr, 17, fallback.lowerLidAngle), -90.0f, 90.0f);
+    c.lowerLidBend = ClampF(SafeFloatFromArray(arr, 18, fallback.lowerLidBend), -2.0f, 2.0f);
+    c.saturation = ClampF(SafeFloatFromArray(arr, 19, fallback.saturation), -1.0f, 1.0f);
+    c.lightness = ClampF(SafeFloatFromArray(arr, 20, fallback.lightness), -1.0f, 1.0f);
+    c.glowSize = ClampF(SafeFloatFromArray(arr, 21, fallback.glowSize), 0.1f, 3.0f);
+    c.hotSpotCenterX = ClampF(SafeFloatFromArray(arr, 22, fallback.hotSpotCenterX), -1.0f, 1.0f);
+    c.hotSpotCenterY = ClampF(SafeFloatFromArray(arr, 23, fallback.hotSpotCenterY), -1.0f, 1.0f);
+    c.glowLightness = ClampF(SafeFloatFromArray(arr, 24, fallback.glowLightness), 0.0f, 1.0f);
+    return c;
+}
+
+static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
+    return @[
+        @(c.centerX), @(c.centerY), @(c.scaleX), @(c.scaleY), @(c.angle),
+        @(c.lowerInnerRadiusX), @(c.lowerInnerRadiusY), @(c.upperInnerRadiusX), @(c.upperInnerRadiusY),
+        @(c.upperOuterRadiusX), @(c.upperOuterRadiusY), @(c.lowerOuterRadiusX), @(c.lowerOuterRadiusY),
+        @(c.upperLidY), @(c.upperLidAngle), @(c.upperLidBend),
+        @(c.lowerLidY), @(c.lowerLidAngle), @(c.lowerLidBend),
+        @(c.saturation), @(c.lightness), @(c.glowSize),
+        @(c.hotSpotCenterX), @(c.hotSpotCenterY), @(c.glowLightness)
+    ];
+}
+
+// ========================================================
+// 3. RETRO CRT SCANLINE OVERLAY
+// ========================================================
+@interface ScanlineOverlayView : UIView {
+    CGFloat _scanlineOpacity;
+}
+@property (nonatomic, assign) CGFloat scanlineOpacity;
+@end
+
+@implementation ScanlineOverlayView
+@synthesize scanlineOpacity = _scanlineOpacity;
+
+- (id)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.userInteractionEnabled = NO;
+        _scanlineOpacity = 0.20f; // Authentic retro CRT TV raster scanline depth
+    }
+    return self;
+}
+
+- (void)setScanlineOpacity:(CGFloat)opacity {
+    _scanlineOpacity = opacity;
+    [self setNeedsDisplay];
+}
+
+- (void)drawRect:(CGRect)rect {
+    if (_scanlineOpacity <= 0.001f) return;
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (!ctx) return;
+    CGContextSetRGBFillColor(ctx, 0.0f, 0.0f, 0.0f, _scanlineOpacity);
+    for (CGFloat y = 0.0f; y < rect.size.height; y += 3.0f) {
+        CGContextFillRect(ctx, CGRectMake(0.0f, y, rect.size.width, 1.0f));
+    }
+}
+@end
+
+// ========================================================
+// 4. PROCEDURAL EYE VIEW (Vector & Cozmo Geometry Engine)
+// ========================================================
+@interface ProceduralEyeView : UIView {
+    BOOL _isLeftEye;
+    CGPoint _defaultCenter;
+    ProceduralEyeConfig _config;
+
+    CGGradientRef _irisGradient;
+    CGGradientRef _hotSpotGradient;
+    CGColorSpaceRef _rgbColorSpace;
+}
+@property (nonatomic, assign) ProceduralEyeConfig config;
+@property (nonatomic, assign) CGPoint defaultCenter;
+
+- (id)initWithFrame:(CGRect)frame isLeft:(BOOL)isLeft;
+- (void)applyConfig:(ProceduralEyeConfig)config;
+- (void)setGradientColors:(NSArray *)colors;
+- (void)setGlowColor:(UIColor *)color;
+@end
+
+@implementation ProceduralEyeView
+@synthesize config = _config;
+@synthesize defaultCenter = _defaultCenter;
+
+- (id)initWithFrame:(CGRect)frame isLeft:(BOOL)isLeft {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _isLeftEye = isLeft;
+        _defaultCenter = CGPointMake(frame.origin.x + frame.size.width / 2.0f, frame.origin.y + frame.size.height / 2.0f);
+        self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
+
+        _rgbColorSpace = CGColorSpaceCreateDeviceRGB();
+        if (_rgbColorSpace) {
+            CGFloat irisComponents[8] = {
+                0.02f, 0.88f, 1.0f, 1.0f, // Top: electric cyan
+                0.00f, 0.62f, 0.88f, 1.0f  // Bottom: deep cyber cyan
+            };
+            CGFloat irisLocs[2] = { 0.0f, 1.0f };
+            _irisGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, irisComponents, irisLocs, 2);
+
+            CGFloat hotComponents[8] = {
+                1.0f, 1.0f, 1.0f, 0.95f, // Center: pure glowing white-hot core
+                0.02f, 0.88f, 1.0f, 0.0f  // Outer: seamless blend into cyan
+            };
+            CGFloat hotLocs[2] = { 0.0f, 1.0f };
+            _hotSpotGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, hotComponents, hotLocs, 2);
+        }
+
+        // High-contrast retro display: zero shadow blur silhouette
+        self.layer.shadowColor = nil;
+        self.layer.shadowOpacity = 0.0f;
+        self.layer.shadowRadius = 0.0f;
+
+        _config = ProceduralEyeConfigDefault();
+        [self applyConfig:_config];
+    }
+    return self;
+}
+
+- (void)setGradientColors:(NSArray *)colors {
+    if (colors && [colors count] >= 2 && _rgbColorSpace) {
+        id obj1 = [colors objectAtIndex:0];
+        id obj2 = [colors objectAtIndex:1];
+        CGColorRef cg1 = [obj1 isKindOfClass:[UIColor class]] ? [(UIColor *)obj1 CGColor] : (CGColorRef)obj1;
+        CGColorRef cg2 = [obj2 isKindOfClass:[UIColor class]] ? [(UIColor *)obj2 CGColor] : (CGColorRef)obj2;
+
+        const CGFloat *comp1 = cg1 ? CGColorGetComponents(cg1) : NULL;
+        const CGFloat *comp2 = cg2 ? CGColorGetComponents(cg2) : NULL;
+        size_t n1 = cg1 ? CGColorGetNumberOfComponents(cg1) : 0;
+        size_t n2 = cg2 ? CGColorGetNumberOfComponents(cg2) : 0;
+
+        CGFloat r1 = (n1 >= 3 && comp1) ? comp1[0] : 0.02f;
+        CGFloat g1 = (n1 >= 3 && comp1) ? comp1[1] : 0.88f;
+        CGFloat b1 = (n1 >= 3 && comp1) ? comp1[2] : 1.0f;
+        CGFloat a1 = (n1 >= 4 && comp1) ? comp1[3] : 1.0f;
+
+        CGFloat r2 = (n2 >= 3 && comp2) ? comp2[0] : 0.00f;
+        CGFloat g2 = (n2 >= 3 && comp2) ? comp2[1] : 0.62f;
+        CGFloat b2 = (n2 >= 3 && comp2) ? comp2[2] : 0.88f;
+        CGFloat a2 = (n2 >= 4 && comp2) ? comp2[3] : 1.0f;
+
+        if (_irisGradient) {
+            CGGradientRelease(_irisGradient);
+            _irisGradient = NULL;
+        }
+        CGFloat irisComponents[8] = { r1, g1, b1, a1, r2, g2, b2, a2 };
+        CGFloat irisLocs[2] = { 0.0f, 1.0f };
+        _irisGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, irisComponents, irisLocs, 2);
+
+        if (_hotSpotGradient) {
+            CGGradientRelease(_hotSpotGradient);
+            _hotSpotGradient = NULL;
+        }
+        CGFloat hotComponents[8] = { 1.0f, 1.0f, 1.0f, 0.95f, r1, g1, b1, 0.0f };
+        CGFloat hotLocs[2] = { 0.0f, 1.0f };
+        _hotSpotGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, hotComponents, hotLocs, 2);
+
+        [self setNeedsDisplay];
+    }
+}
+
+- (void)setGlowColor:(UIColor *)color {
+    // Zero-shadow invariant: pure high-contrast retro display
+}
+
+- (void)applyConfig:(ProceduralEyeConfig)config {
+    BOOL pathChanged = (
+        fabsf(_config.upperLidY - config.upperLidY) > 0.005f ||
+        fabsf(_config.upperLidAngle - config.upperLidAngle) > 0.1f ||
+        fabsf(_config.upperLidBend - config.upperLidBend) > 0.01f ||
+        fabsf(_config.lowerLidY - config.lowerLidY) > 0.005f ||
+        fabsf(_config.lowerLidAngle - config.lowerLidAngle) > 0.1f ||
+        fabsf(_config.lowerLidBend - config.lowerLidBend) > 0.01f ||
+        fabsf(_config.upperInnerRadiusX - config.upperInnerRadiusX) > 0.01f ||
+        fabsf(_config.upperOuterRadiusX - config.upperOuterRadiusX) > 0.01f ||
+        fabsf(_config.lowerInnerRadiusX - config.lowerInnerRadiusX) > 0.01f ||
+        fabsf(_config.lowerOuterRadiusX - config.lowerOuterRadiusX) > 0.01f ||
+        fabsf(_config.hotSpotCenterX - config.hotSpotCenterX) > 0.01f ||
+        fabsf(_config.hotSpotCenterY - config.hotSpotCenterY) > 0.01f ||
+        fabsf(_config.glowSize - config.glowSize) > 0.01f
+    );
+
+    _config = config;
+
+    // Hardware-accelerated GPU layer transform: translate, rotate, and scale on PowerVR SGX GPU
+    // Mutates CALayer affineTransform exclusively with zero main-thread layout thrashing
+    CGFloat rad = config.angle * (CGFloat)(M_PI / 180.0);
+    CGAffineTransform t = CGAffineTransformMakeTranslation(config.centerX, config.centerY);
+    t = CGAffineTransformRotate(t, rad);
+    t = CGAffineTransformScale(t, ClampF(config.scaleX, 0.05f, 3.0f), ClampF(config.scaleY, 0.05f, 3.0f));
+    self.layer.affineTransform = t;
+
+    if (pathChanged) {
+        [self setNeedsDisplay];
+    }
+}
+
+- (void)drawRect:(CGRect)rect {
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (!ctx) return;
+
+    CGFloat W = self.bounds.size.width;
+    CGFloat H = self.bounds.size.height;
+    if (W <= 0.0f || H <= 0.0f) return;
+
+    // 1. Base Squircle Corner Radii (Authentic PyCozmo Proportions)
+    CGFloat cornerBase = W * 0.38f;
+    CGFloat cTL, cTR, cBR, cBL;
+    if (_isLeftEye) {
+        cTL = _config.upperOuterRadiusX;
+        cTR = _config.upperInnerRadiusX;
+        cBR = _config.lowerInnerRadiusX;
+        cBL = _config.lowerOuterRadiusX;
+    } else {
+        cTL = _config.upperInnerRadiusX;
+        cTR = _config.upperOuterRadiusX;
+        cBR = _config.lowerOuterRadiusX;
+        cBL = _config.lowerInnerRadiusX;
+    }
+
+    CGFloat maxCorner = fminf(W * 0.5f, H * 0.5f);
+    CGFloat rTL = ClampF(cTL * cornerBase, 4.0f, maxCorner);
+    CGFloat rTR = ClampF(cTR * cornerBase, 4.0f, maxCorner);
+    CGFloat rBR = ClampF(cBR * cornerBase, 4.0f, maxCorner);
+    CGFloat rBL = ClampF(cBL * cornerBase, 4.0f, maxCorner);
+
+    UIBezierPath *eyePath = [UIBezierPath bezierPath];
+    [eyePath moveToPoint:CGPointMake(rTL, 0.0f)];
+    [eyePath addLineToPoint:CGPointMake(W - rTR, 0.0f)];
+    [eyePath addArcWithCenter:CGPointMake(W - rTR, rTR) radius:rTR startAngle:(CGFloat)(1.5 * M_PI) endAngle:0.0f clockwise:YES];
+    [eyePath addLineToPoint:CGPointMake(W, H - rBR)];
+    [eyePath addArcWithCenter:CGPointMake(W - rBR, H - rBR) radius:rBR startAngle:0.0f endAngle:(CGFloat)(0.5 * M_PI) clockwise:YES];
+    [eyePath addLineToPoint:CGPointMake(rBL, H)];
+    [eyePath addArcWithCenter:CGPointMake(rBL, H - rBL) radius:rBL startAngle:(CGFloat)(0.5 * M_PI) endAngle:(CGFloat)M_PI clockwise:YES];
+    [eyePath addLineToPoint:CGPointMake(0.0f, rTL)];
+    [eyePath addArcWithCenter:CGPointMake(rTL, rTL) radius:rTL startAngle:(CGFloat)M_PI endAngle:(CGFloat)(1.5 * M_PI) clockwise:YES];
+    [eyePath closePath];
+
+    // Clip to the base squircle eye shape
+    CGContextSaveGState(ctx);
+    [eyePath addClip];
+
+    // 2. Base Linear Gradient (Electric Cyber Cyan Body)
+    if (_irisGradient) {
+        CGContextDrawLinearGradient(ctx, _irisGradient, CGPointMake(0, 0), CGPointMake(0, H), 0);
+    }
+
+    // 3. Luminous Radial HotSpot (Radiant glowing white-cyan core)
+    CGFloat pupilDx = ClampF(_config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.25f);
+    CGFloat pupilDy = ClampF(_config.hotSpotCenterY, -1.0f, 1.0f) * (H * 0.25f);
+    CGPoint hotSpotCenter = CGPointMake(W * 0.5f + pupilDx, H * 0.5f + pupilDy);
+    CGFloat glowR = (W * 0.55f) * ClampF(_config.glowSize, 0.4f, 2.5f);
+
+    if (_hotSpotGradient) {
+        CGContextDrawRadialGradient(ctx, _hotSpotGradient, hotSpotCenter, 0.0f, hotSpotCenter, glowR, kCGGradientDrawsAfterEndLocation);
+    }
+
+    // 4. Upper Eyelid Mask (Black Cutout with Rotation and Parabolic Bend)
+    if (_config.upperLidY > 0.001f) {
+        CGContextSaveGState(ctx);
+        CGFloat cx = W * 0.5f;
+        CGFloat cy = H * 0.5f;
+        CGFloat rotSign = _isLeftEye ? 1.0f : -1.0f;
+        CGFloat rotRad = _config.upperLidAngle * rotSign * (CGFloat)(M_PI / 180.0);
+
+        CGContextTranslateCTM(ctx, cx, cy);
+        CGContextRotateCTM(ctx, rotRad);
+        CGContextTranslateCTM(ctx, -cx, -cy);
+
+        CGFloat lidY = ClampF(_config.upperLidY, 0.0f, 1.0f) * H;
+        CGFloat bendH = H * (1.0f - ClampF(_config.upperLidY, 0.0f, 1.0f)) * _config.upperLidBend;
+
+        UIBezierPath *upperLid = [UIBezierPath bezierPath];
+        [upperLid moveToPoint:CGPointMake(-W, -H)];
+        [upperLid addLineToPoint:CGPointMake(W * 2.0f, -H)];
+        [upperLid addLineToPoint:CGPointMake(W * 2.0f, lidY)];
+
+        if (fabsf(_config.upperLidBend) > 0.01f) {
+            [upperLid addQuadCurveToPoint:CGPointMake(-W, lidY) controlPoint:CGPointMake(cx, lidY + bendH)];
+        } else {
+            [upperLid addLineToPoint:CGPointMake(-W, lidY)];
+        }
+        [upperLid closePath];
+
+        CGContextSetBlendMode(ctx, kCGBlendModeClear);
+        [upperLid fill];
+        CGContextSetBlendMode(ctx, kCGBlendModeNormal);
+
+        CGContextRestoreGState(ctx);
+    }
+
+    // 5. Lower Eyelid Mask (Black Cutout with Rotation and Parabolic Bend)
+    if (_config.lowerLidY > 0.001f) {
+        CGContextSaveGState(ctx);
+        CGFloat cx = W * 0.5f;
+        CGFloat cy = H * 0.5f;
+        CGFloat rotSign = _isLeftEye ? 1.0f : -1.0f;
+        CGFloat rotRad = _config.lowerLidAngle * rotSign * (CGFloat)(M_PI / 180.0);
+
+        CGContextTranslateCTM(ctx, cx, cy);
+        CGContextRotateCTM(ctx, rotRad);
+        CGContextTranslateCTM(ctx, -cx, -cy);
+
+        CGFloat lidY = H - ClampF(_config.lowerLidY, 0.0f, 1.0f) * H;
+        CGFloat bendH = H * (1.0f - ClampF(_config.lowerLidY, 0.0f, 1.0f)) * _config.lowerLidBend;
+
+        UIBezierPath *lowerLid = [UIBezierPath bezierPath];
+        [lowerLid moveToPoint:CGPointMake(-W, H * 2.0f)];
+        [lowerLid addLineToPoint:CGPointMake(W * 2.0f, H * 2.0f)];
+        [lowerLid addLineToPoint:CGPointMake(W * 2.0f, lidY)];
+
+        if (fabsf(_config.lowerLidBend) > 0.01f) {
+            [lowerLid addQuadCurveToPoint:CGPointMake(-W, lidY) controlPoint:CGPointMake(cx, lidY - bendH)];
+        } else {
+            [lowerLid addLineToPoint:CGPointMake(-W, lidY)];
+        }
+        [lowerLid closePath];
+
+        CGContextSetBlendMode(ctx, kCGBlendModeClear);
+        [lowerLid fill];
+        CGContextSetBlendMode(ctx, kCGBlendModeNormal);
+
+        CGContextRestoreGState(ctx);
+    }
+
+    CGContextRestoreGState(ctx);
 }
 
 - (void)dealloc {
-    if (_gradient) {
-        CGGradientRelease(_gradient);
-        _gradient = NULL;
+    if (_irisGradient) {
+        CGGradientRelease(_irisGradient);
+        _irisGradient = NULL;
     }
-    if (_colorSpace) {
-        CGColorSpaceRelease(_colorSpace);
-        _colorSpace = NULL;
+    if (_hotSpotGradient) {
+        CGGradientRelease(_hotSpotGradient);
+        _hotSpotGradient = NULL;
+    }
+    if (_rgbColorSpace) {
+        CGColorSpaceRelease(_rgbColorSpace);
+        _rgbColorSpace = NULL;
     }
     [super dealloc];
 }
 @end
+
+// ========================================================
+// 5. EMOTION PRESET GENERATOR (Official Cozmo & Vector 21 Rig)
+// ========================================================
+static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, ProceduralEyeConfig *outRight, UIColor **outTop, UIColor **outBottom) {
+    ProceduralEyeConfig left = ProceduralEyeConfigDefault();
+    ProceduralEyeConfig right = ProceduralEyeConfigDefault();
+
+    // Semantic Accents (Electric Cyber Palette)
+    UIColor *cyanTop = [UIColor colorWithRed:0.02 green:0.88 blue:1.0 alpha:1.0];
+    UIColor *cyanBottom = [UIColor colorWithRed:0.0 green:0.65 blue:0.92 alpha:1.0];
+
+    UIColor *emeraldTop = [UIColor colorWithRed:0.10 green:0.95 blue:0.65 alpha:1.0];
+    UIColor *emeraldBottom = [UIColor colorWithRed:0.02 green:0.75 blue:0.45 alpha:1.0];
+
+    UIColor *amberTop = [UIColor colorWithRed:0.98 green:0.75 blue:0.18 alpha:1.0];
+    UIColor *amberBottom = [UIColor colorWithRed:0.85 green:0.52 blue:0.02 alpha:1.0];
+
+    UIColor *crimsonAmberTop = [UIColor colorWithRed:0.98 green:0.48 blue:0.12 alpha:1.0];
+    UIColor *crimsonAmberBottom = [UIColor colorWithRed:0.80 green:0.28 blue:0.05 alpha:1.0];
+
+    UIColor *crimsonTop = [UIColor colorWithRed:0.98 green:0.25 blue:0.25 alpha:1.0];
+    UIColor *crimsonBottom = [UIColor colorWithRed:0.75 green:0.08 blue:0.08 alpha:1.0];
+
+    UIColor *amethystTop = [UIColor colorWithRed:0.75 green:0.45 blue:0.98 alpha:1.0];
+    UIColor *amethystBottom = [UIColor colorWithRed:0.48 green:0.18 blue:0.85 alpha:1.0];
+
+    UIColor *slateBlueTop = [UIColor colorWithRed:0.22 green:0.42 blue:0.58 alpha:0.85];
+    UIColor *slateBlueBottom = [UIColor colorWithRed:0.08 green:0.18 blue:0.28 alpha:0.85];
+
+    UIColor *topColor = cyanTop;
+    UIColor *bottomColor = cyanBottom;
+
+    NSString *n = [name lowercaseString];
+
+    if ([n isEqualToString:@"happy"]) {
+        // Cozmo Happy: Domed upper eyelids, smiling upward lower crescent, glowing emerald
+        left.upperOuterRadiusX = 1.0f;
+        left.upperInnerRadiusX = 1.0f;
+        left.lowerLidY = 0.40f;
+        left.lowerLidBend = 0.42f;
+        left.hotSpotCenterY = -0.15f;
+
+        right.upperOuterRadiusX = 1.0f;
+        right.upperInnerRadiusX = 1.0f;
+        right.lowerLidY = 0.40f;
+        right.lowerLidBend = 0.42f;
+        right.hotSpotCenterY = -0.15f;
+
+        topColor = emeraldTop;
+        bottomColor = emeraldBottom;
+    } else if ([n isEqualToString:@"glee"]) {
+        // Squeezed joy crescent (⌒ ⌒), radiant emerald
+        left.scaleY = 0.75f;
+        left.scaleX = 1.05f;
+        left.upperOuterRadiusX = 1.0f;
+        left.upperInnerRadiusX = 1.0f;
+        left.lowerLidY = 0.52f;
+        left.lowerLidBend = 0.55f;
+
+        right.scaleY = 0.75f;
+        right.scaleX = 1.05f;
+        right.upperOuterRadiusX = 1.0f;
+        right.upperInnerRadiusX = 1.0f;
+        right.lowerLidY = 0.52f;
+        right.lowerLidBend = 0.55f;
+
+        topColor = emeraldTop;
+        bottomColor = emeraldBottom;
+    } else if ([n isEqualToString:@"blink_high"] || [n isEqualToString:@"blink-high"] || [n isEqualToString:@"blinkhigh"]) {
+        // Thin horizontal squircle slit high in socket
+        left.scaleY = 0.06f;
+        left.scaleX = 1.05f;
+        left.centerY = -18.0f;
+
+        right.scaleY = 0.06f;
+        right.scaleX = 1.05f;
+        right.centerY = -18.0f;
+    } else if ([n isEqualToString:@"blink_low"] || [n isEqualToString:@"blink-low"] || [n isEqualToString:@"blinklow"]) {
+        // Thin horizontal squircle slit low in socket
+        left.scaleY = 0.06f;
+        left.scaleX = 1.05f;
+        left.centerY = 18.0f;
+
+        right.scaleY = 0.06f;
+        right.scaleX = 1.05f;
+        right.centerY = 18.0f;
+    } else if ([n isEqualToString:@"sad_down"] || [n isEqualToString:@"sad_looking_down"] || [n isEqualToString:@"sad"]) {
+        // Cozmo Sad: Drooping eyelids (/ \) with gaze shifted down
+        left.upperLidY = 0.48f;
+        left.upperLidAngle = -20.0f;
+        left.hotSpotCenterY = 0.35f;
+        left.centerY = 14.0f;
+
+        right.upperLidY = 0.48f;
+        right.upperLidAngle = -20.0f;
+        right.hotSpotCenterY = 0.35f;
+        right.centerY = 14.0f;
+
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    } else if ([n isEqualToString:@"sad_up"] || [n isEqualToString:@"sad_looking_up"] || [n isEqualToString:@"pleading"]) {
+        // Pleading Sad (/ \) with gaze shifted up
+        left.upperLidAngle = -28.0f;
+        left.lowerLidY = 0.45f;
+        left.hotSpotCenterY = -0.40f;
+        left.centerY = -12.0f;
+
+        right.upperLidAngle = -28.0f;
+        right.lowerLidY = 0.45f;
+        right.hotSpotCenterY = -0.40f;
+        right.centerY = -12.0f;
+
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    } else if ([n isEqualToString:@"worried"]) {
+        // Upper lids slanted (/ \) inner corners high, outer drooped, warm amber
+        left.upperLidY = 0.35f;
+        left.upperLidAngle = -15.0f;
+        left.lowerLidY = 0.15f;
+
+        right.upperLidY = 0.35f;
+        right.upperLidAngle = -15.0f;
+        right.lowerLidY = 0.15f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"focused"] || [n isEqualToString:@"determined"] || [n isEqualToString:@"focused_determined"]) {
+        // Sharp horizontal squircle bars (flat lids)
+        left.scaleY = 0.65f;
+        left.scaleX = 1.05f;
+        left.upperLidY = 0.35f;
+        left.lowerLidY = 0.35f;
+
+        right.scaleY = 0.65f;
+        right.scaleX = 1.05f;
+        right.upperLidY = 0.35f;
+        right.lowerLidY = 0.35f;
+    } else if ([n isEqualToString:@"annoyed"]) {
+        // Upper lids drooped flat halfway down, fiery amber
+        left.upperLidY = 0.50f;
+        left.scaleY = 0.90f;
+
+        right.upperLidY = 0.50f;
+        right.scaleY = 0.90f;
+
+        topColor = crimsonAmberTop;
+        bottomColor = crimsonAmberBottom;
+    } else if ([n isEqualToString:@"surprised"]) {
+        // Tall rounded squircles, wide open, luminous amber
+        left.scaleX = 1.05f;
+        left.scaleY = 1.25f;
+        left.glowSize = 1.35f;
+        left.upperOuterRadiusX = 0.85f;
+        left.upperInnerRadiusX = 0.85f;
+        left.lowerOuterRadiusX = 0.85f;
+        left.lowerInnerRadiusX = 0.85f;
+
+        right.scaleX = 1.05f;
+        right.scaleY = 1.25f;
+        right.glowSize = 1.35f;
+        right.upperOuterRadiusX = 0.85f;
+        right.upperInnerRadiusX = 0.85f;
+        right.lowerOuterRadiusX = 0.85f;
+        right.lowerInnerRadiusX = 0.85f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"skeptic"] || [n isEqualToString:@"skepticism"]) {
+        // Asymmetric: left open, right squinted lowered brow, curious amber
+        left.scaleY = 1.0f;
+        left.upperLidY = 0.0f;
+        left.hotSpotCenterX = 0.15f;
+
+        right.scaleY = 0.85f;
+        right.upperLidY = 0.42f;
+        right.upperLidAngle = -12.0f;
+        right.lowerLidY = 0.18f;
+        right.hotSpotCenterX = 0.15f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"frustrated"] || [n isEqualToString:@"bored"] || [n isEqualToString:@"frustrated_bored"]) {
+        // Half-closed flat eyelids
+        left.upperLidY = 0.45f;
+        left.lowerLidY = 0.20f;
+        left.scaleY = 0.88f;
+
+        right.upperLidY = 0.45f;
+        right.lowerLidY = 0.20f;
+        right.scaleY = 0.88f;
+
+        topColor = crimsonAmberTop;
+        bottomColor = crimsonAmberBottom;
+    } else if ([n isEqualToString:@"unimpressed"]) {
+        // Flat drooped deadpan upper lids
+        left.upperLidY = 0.55f;
+        left.scaleY = 0.85f;
+
+        right.upperLidY = 0.55f;
+        right.scaleY = 0.85f;
+    } else if ([n isEqualToString:@"sleepy"] || [n isEqualToString:@"sleepy_eyes"] || [n isEqualToString:@"sleep"]) {
+        // Tired drooped eyelids with outward slant, twilight slate blue
+        left.upperLidY = 0.65f;
+        left.upperLidAngle = -8.0f;
+        left.lowerLidY = 0.15f;
+        left.scaleY = 0.80f;
+
+        right.upperLidY = 0.65f;
+        right.upperLidAngle = -8.0f;
+        right.lowerLidY = 0.15f;
+        right.scaleY = 0.80f;
+
+        topColor = slateBlueTop;
+        bottomColor = slateBlueBottom;
+    } else if ([n isEqualToString:@"suspicious"]) {
+        // Narrow horizontal squint with slight inward slant
+        left.upperLidY = 0.42f;
+        left.upperLidAngle = 10.0f;
+        left.lowerLidY = 0.45f;
+        left.scaleY = 0.75f;
+
+        right.upperLidY = 0.42f;
+        right.upperLidAngle = 10.0f;
+        right.lowerLidY = 0.45f;
+        right.scaleY = 0.75f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"squint"]) {
+        // Tight horizontal slits
+        left.upperLidY = 0.46f;
+        left.lowerLidY = 0.46f;
+        left.scaleY = 0.55f;
+
+        right.upperLidY = 0.46f;
+        right.lowerLidY = 0.46f;
+        right.scaleY = 0.55f;
+    } else if ([n isEqualToString:@"angry"] || [n isEqualToString:@"anger"]) {
+        // Authentic Cozmo Angry: Grounded flat baseline, steep inward-slanted upper brow, fiery crimson
+        left.scaleX = 1.0f;
+        left.scaleY = 0.95f;
+        left.upperLidY = 0.55f;
+        left.upperLidAngle = 28.0f;
+
+        right.scaleX = 1.0f;
+        right.scaleY = 0.95f;
+        right.upperLidY = 0.55f;
+        right.upperLidAngle = 28.0f;
+
+        topColor = crimsonTop;
+        bottomColor = crimsonBottom;
+    } else if ([n isEqualToString:@"furious"] || [n isEqualToString:@"fury"]) {
+        // Cozmo Furious: Deeper inward brow, tight lower baseline, deep intense crimson
+        left.scaleX = 1.0f;
+        left.scaleY = 0.88f;
+        left.upperLidY = 0.65f;
+        left.upperLidAngle = 34.0f;
+        left.lowerLidY = 0.15f;
+
+        right.scaleX = 1.0f;
+        right.scaleY = 0.88f;
+        right.upperLidY = 0.65f;
+        right.upperLidAngle = 34.0f;
+        right.lowerLidY = 0.15f;
+
+        topColor = crimsonTop;
+        bottomColor = crimsonBottom;
+    } else if ([n isEqualToString:@"scared"] || [n isEqualToString:@"fear"]) {
+        // Wide tall eyes with bottom lid cut, warning amber-crimson
+        left.scaleX = 0.95f;
+        left.scaleY = 1.15f;
+        left.upperLidAngle = -28.0f;
+        left.upperLidBend = 0.10f;
+        left.lowerLidY = 0.40f;
+        left.lowerLidAngle = -10.0f;
+
+        right.scaleX = 0.95f;
+        right.scaleY = 1.15f;
+        right.upperLidAngle = -28.0f;
+        right.upperLidBend = 0.10f;
+        right.lowerLidY = 0.40f;
+        right.lowerLidAngle = -10.0f;
+
+        topColor = crimsonAmberTop;
+        bottomColor = crimsonAmberBottom;
+    } else if ([n isEqualToString:@"awe"] || [n isEqualToString:@"amazement"]) {
+        // Huge rounded glowing eyes
+        left.scaleX = 1.15f;
+        left.scaleY = 1.25f;
+        left.glowSize = 1.50f;
+        left.lowerLidY = 0.20f;
+        left.upperOuterRadiusX = 0.90f;
+        left.upperInnerRadiusX = 0.90f;
+        left.lowerOuterRadiusX = 0.90f;
+        left.lowerInnerRadiusX = 0.90f;
+
+        right.scaleX = 1.15f;
+        right.scaleY = 1.25f;
+        right.glowSize = 1.50f;
+        right.lowerLidY = 0.20f;
+        right.upperOuterRadiusX = 0.90f;
+        right.upperInnerRadiusX = 0.90f;
+        right.lowerOuterRadiusX = 0.90f;
+        right.lowerInnerRadiusX = 0.90f;
+
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    } else if ([n isEqualToString:@"disgust"]) {
+        // Asymmetric disgusted reaction
+        left.upperLidY = 0.40f;
+        left.upperLidAngle = 10.0f;
+        left.lowerLidY = 0.25f;
+
+        right.upperLidY = 0.30f;
+        right.upperLidAngle = -20.0f;
+        right.lowerLidY = 0.20f;
+
+        topColor = crimsonAmberTop;
+        bottomColor = crimsonAmberBottom;
+    } else if ([n isEqualToString:@"curious"]) {
+        // Tilted inquiry
+        left.scaleX = 1.08f;
+        left.scaleY = 1.12f;
+        left.angle = -5.0f;
+        left.hotSpotCenterX = 0.30f;
+        left.hotSpotCenterY = -0.25f;
+
+        right.scaleX = 0.95f;
+        right.scaleY = 0.95f;
+        right.upperLidY = 0.15f;
+        right.angle = -3.0f;
+        right.hotSpotCenterX = 0.30f;
+        right.hotSpotCenterY = -0.25f;
+
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    } else if ([n isEqualToString:@"thinking"]) {
+        left.scaleX = 0.92f;
+        left.scaleY = 0.92f;
+        left.upperLidY = 0.22f;
+        left.angle = 4.0f;
+        left.hotSpotCenterX = 0.35f;
+        left.hotSpotCenterY = -0.55f;
+
+        right.scaleX = 0.95f;
+        right.scaleY = 0.95f;
+        right.upperLidY = 0.12f;
+        right.angle = 4.0f;
+        right.hotSpotCenterX = 0.35f;
+        right.hotSpotCenterY = -0.55f;
+
+        topColor = amethystTop;
+        bottomColor = amethystBottom;
+    } else if ([n isEqualToString:@"alert"]) {
+        left.scaleX = 1.05f;
+        left.scaleY = 1.15f;
+        left.upperLidY = 0.18f;
+        left.upperLidAngle = 12.0f;
+        left.glowSize = 0.85f;
+
+        right.scaleX = 1.05f;
+        right.scaleY = 1.15f;
+        right.upperLidY = 0.18f;
+        right.upperLidAngle = 12.0f;
+        right.glowSize = 0.85f;
+
+        topColor = crimsonTop;
+        bottomColor = crimsonBottom;
+    } else if ([n isEqualToString:@"asleep"]) {
+        left.scaleY = 0.35f;
+        left.upperLidY = 0.80f;
+        left.lowerLidY = 0.20f;
+        left.centerY = 20.0f;
+
+        right.scaleY = 0.35f;
+        right.upperLidY = 0.80f;
+        right.lowerLidY = 0.20f;
+        right.centerY = 20.0f;
+
+        topColor = slateBlueTop;
+        bottomColor = slateBlueBottom;
+    } else if ([n isEqualToString:@"confused"]) {
+        left.scaleX = 1.05f;
+        left.scaleY = 1.10f;
+        left.angle = 6.0f;
+        left.upperLidY = 0.15f;
+        left.lowerLidY = 0.20f;
+        left.lowerLidBend = 0.20f;
+
+        right.scaleX = 0.90f;
+        right.scaleY = 0.85f;
+        right.angle = -8.0f;
+        right.upperLidY = 0.30f;
+        right.upperLidAngle = -10.0f;
+        right.lowerLidY = 0.20f;
+        right.lowerLidAngle = 5.0f;
+        right.lowerLidBend = 0.20f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"glance_left"]) {
+        left.hotSpotCenterX = -0.65f;
+        left.centerX = -8.0f;
+        right.hotSpotCenterX = -0.65f;
+        right.centerX = -8.0f;
+
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    } else if ([n isEqualToString:@"glance_right"]) {
+        left.hotSpotCenterX = 0.65f;
+        left.centerX = 8.0f;
+        right.hotSpotCenterX = 0.65f;
+        right.centerX = 8.0f;
+
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    } else {
+        // Default Neutral: pure electric cyan rounded squircles
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    }
+
+    if (outLeft) *outLeft = left;
+    if (outRight) *outRight = right;
+    if (outTop) *outTop = topColor;
+    if (outBottom) *outBottom = bottomColor;
+}
 
 // ========================================================
 // DISK & MEMORY HYGIENE (/tmp Artifact Pruner)
@@ -109,7 +999,7 @@ static void PruneOldTmpArtifacts(void) {
 @class DeskCompanionViewController;
 static DeskCompanionViewController *g_viewController = nil;
 
-@interface DeskCompanionViewController : UIViewController <UIGestureRecognizerDelegate, AVAudioRecorderDelegate> {
+@interface DeskCompanionViewController : UIViewController <UIGestureRecognizerDelegate, AVAudioRecorderDelegate, AVAudioPlayerDelegate> {
     // Canvas Background
     RadialGradientBackgroundView *_bgView;
 
@@ -123,20 +1013,27 @@ static DeskCompanionViewController *g_viewController = nil;
     UIView *_leftSocket;
     UIView *_rightSocket;
 
-    // Entity Elements: Eyes, Iris & Dilating Pupil Core
+    // Entity Elements: Procedural Vector Eyes (Vector & Cozmo Architecture)
     UIView *_eyeContainer;
-    UIView *_leftEye;
-    UIView *_rightEye;
-    CAGradientLayer *_leftIrisGradient;
-    CAGradientLayer *_rightIrisGradient;
-    UIView *_leftPupilCore;
-    UIView *_rightPupilCore;
+    ProceduralEyeView *_leftEye;
+    ProceduralEyeView *_rightEye;
+    ScanlineOverlayView *_scanlineOverlay;
 
-    // Cornea Specular Highlights (Curved Crescent + Micro Glint)
-    UIView *_leftSpecularPrimary;
-    UIView *_leftSpecularSecondary;
-    UIView *_rightSpecularPrimary;
-    UIView *_rightSpecularSecondary;
+    // Procedural Interpolator State
+    CADisplayLink *_proceduralDisplayLink;
+    ProceduralEyeConfig _leftCurrentConfig;
+    ProceduralEyeConfig _leftTargetConfig;
+    ProceduralEyeConfig _leftStartConfig;
+    ProceduralEyeConfig _rightCurrentConfig;
+    ProceduralEyeConfig _rightTargetConfig;
+    ProceduralEyeConfig _rightStartConfig;
+    ProceduralEyeConfig _leftTargetExpressionConfig;
+    ProceduralEyeConfig _rightTargetExpressionConfig;
+    NSTimeInterval _animStartTime;
+    NSTimeInterval _animDuration;
+    BOOL _isInterpolating;
+    BOOL _interpolateEaseOut;
+    void (^_interpolationCompletion)(void);
 
     // Audio Visualizer Waveform (5 bars)
     UIView *_waveformContainer;
@@ -155,65 +1052,91 @@ static DeskCompanionViewController *g_viewController = nil;
     NSTimer *_blinkTimer;
     NSTimer *_saccadeTimer;
     NSTimer *_pruneTimer;
+    NSTimer *_reactionTimer;
+    NSUInteger _saccadeGeneration;
     BOOL _isBlinking;
     BOOL _isPanning;
     BOOL _zenMode;
     BOOL _reducedMotion;
     BOOL _observersAdded;
     NSString *_currentExpression;
-    CGAffineTransform _expressionTransformLeft;
-    CGAffineTransform _expressionTransformRight;
     CGPoint _defaultEyePositionLeft;
     CGPoint _defaultEyePositionRight;
     CGRect _defaultEyeFrameLeft;
     CGRect _defaultEyeFrameRight;
 
-    // Audio Microphone Hardware
+    // Audio Microphone & Speaker Hardware
     AVAudioRecorder *_audioRecorder;
+    AVAudioPlayer *_audioPlayer;
     NSTimer *_audioTimeoutTimer;
+    NSTimer *_micMeterTimer;
     BOOL _isRecording;
     void (^_audioRecordCompletion)(NSString *path, NSUInteger size, NSError *err);
+
+    // Motion & Orientation Sensors (CoreMotion)
+    CMMotionManager *_motionManager;
+    NSTimeInterval _lastShakeTime;
+    CMAcceleration _lastAccel;
 }
 
+- (void)setupProceduralEngine;
+- (void)onProceduralDisplayLink:(CADisplayLink *)link;
+- (void)interpolateToLeft:(ProceduralEyeConfig)left right:(ProceduralEyeConfig)right duration:(NSTimeInterval)dur easeOut:(BOOL)easeOut completion:(void (^)(void))completion;
 - (void)setExpression:(NSString *)expression;
+- (void)setExpression:(NSString *)expression duration:(NSTimeInterval)dur;
+- (void)lookAtX:(CGFloat)x y:(CGFloat)y duration:(NSTimeInterval)dur;
+- (void)setProceduralParamsLeft:(NSArray *)left right:(NSArray *)right duration:(NSTimeInterval)dur;
+- (void)setScanlineOpacity:(CGFloat)opacity;
 - (void)setStatusTitle:(NSString *)title subtitle:(NSString *)subtitle;
 - (void)blink;
 - (BOOL)setTorch:(BOOL)enable;
 - (void)setSpeaking:(BOOL)speaking;
 - (void)playSoundNamed:(NSString *)name;
+- (BOOL)playAudioFilePath:(NSString *)path;
+- (void)handleProximityChange:(NSNotification *)notification;
+- (void)handleMotionData:(CMAcceleration)accel;
+- (void)updateAudioMeters:(NSTimer *)timer;
 - (void)setReducedMotion:(BOOL)reduced;
 - (void)takeSnapshot:(NSString *)cameraPosition completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion;
 - (void)recordAudioDuration:(NSTimeInterval)duration completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion;
 - (void)captureScreenToPath:(NSString *)path completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion;
 - (NSDictionary *)getTelemetry;
 - (void)toggleZenMode;
+- (void)updateLayout;
+- (void)updateLayoutForOrientation:(UIInterfaceOrientation)orientation;
+- (void)revertToNeutral;
+- (void)handleSingleTap:(UITapGestureRecognizer *)gesture;
+- (void)handleDoubleTap:(UITapGestureRecognizer *)gesture;
+- (void)handleTwoFingerTap:(UITapGestureRecognizer *)gesture;
+- (void)handleLongPress:(UILongPressGestureRecognizer *)gesture;
 @end
 
 @implementation DeskCompanionViewController
 
 - (void)loadView {
     [super loadView];
-    // Radial gradient obsidian depth background
-    _bgView = [[RadialGradientBackgroundView alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-    _bgView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.view = _bgView;
+    self.view = [[[UIView alloc] initWithFrame:[[UIScreen mainScreen] bounds]] autorelease];
+    self.view.backgroundColor = [UIColor blackColor];
+    self.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     g_viewController = self;
+    self.view.backgroundColor = [UIColor blackColor];
 
     CGFloat screenW = 320.0;
     CGFloat screenH = 480.0;
 
     // ========================================================
-    // 1. TOP STATUS BAR PILL (Frosted Hairline Card)
+    // 1. TOP STATUS BAR PILL (Frosted Hairline Card - Hidden in Zen)
     // ========================================================
     _statusBarPill = [[UIView alloc] initWithFrame:CGRectMake(16, 14, screenW - 32, 28)];
     _statusBarPill.backgroundColor = [UIColor colorWithRed:0.04 green:0.06 blue:0.09 alpha:0.88];
     _statusBarPill.layer.cornerRadius = 14.0;
     _statusBarPill.layer.borderWidth = 1.0;
     _statusBarPill.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.08].CGColor;
+    _statusBarPill.alpha = 0.0;
     [self.view addSubview:_statusBarPill];
 
     // Left Connection Badge
@@ -242,118 +1165,44 @@ static DeskCompanionViewController *g_viewController = nil;
     [_statusBarPill addSubview:_batteryLabel];
 
     // ========================================================
-    // 2. CENTRAL ENTITY: LIVING VECTOR EYES WITH ANATOMY
+    // 2. CENTRAL ENTITY: LIVING COZMO & VECTOR RETRO EYES
     // ========================================================
     _eyeContainer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, screenW, screenH)];
     _eyeContainer.backgroundColor = [UIColor clearColor];
     [self.view addSubview:_eyeContainer];
 
-    CGFloat eyeW = 50.0;
-    CGFloat eyeH = 76.0;
-    CGFloat eyeSpacing = 54.0;
-    CGFloat eyeY = 175.0; // Optical center on 320x480 Retina stage
+    // Authentic Cozmo squircle proportions (0.70 vertical aspect ratio)
+    CGFloat eyeW = 84.0;
+    CGFloat eyeH = 120.0;
+    CGFloat eyeSpacing = 36.0;
+    CGFloat eyeY = 190.0; // Optical center on 320x480 Retina stage
 
-    CGRect leftFrame = CGRectMake(screenW/2.0 - eyeSpacing - eyeW/2.0, eyeY, eyeW, eyeH);
-    CGRect rightFrame = CGRectMake(screenW/2.0 + eyeSpacing - eyeW/2.0, eyeY, eyeW, eyeH);
+    CGFloat totalW = eyeW * 2.0 + eyeSpacing;
+    CGRect leftFrame = CGRectMake((screenW - totalW) / 2.0, eyeY, eyeW, eyeH);
+    CGRect rightFrame = CGRectMake(leftFrame.origin.x + eyeW + eyeSpacing, eyeY, eyeW, eyeH);
 
     _defaultEyeFrameLeft = leftFrame;
     _defaultEyeFrameRight = rightFrame;
 
-    // Recessed Eye Sockets (Believable Spatial Enclosure)
-    _leftSocket = [[UIView alloc] initWithFrame:CGRectMake(leftFrame.origin.x - 3.0, leftFrame.origin.y - 3.0, eyeW + 6.0, eyeH + 6.0)];
-    _leftSocket.backgroundColor = [UIColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.35];
-    _leftSocket.layer.cornerRadius = (eyeW + 6.0) / 2.0;
-    _leftSocket.layer.borderWidth = 1.0;
-    _leftSocket.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.04].CGColor;
-    [_eyeContainer addSubview:_leftSocket];
-
-    _rightSocket = [[UIView alloc] initWithFrame:CGRectMake(rightFrame.origin.x - 3.0, rightFrame.origin.y - 3.0, eyeW + 6.0, eyeH + 6.0)];
-    _rightSocket.backgroundColor = [UIColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.35];
-    _rightSocket.layer.cornerRadius = (eyeW + 6.0) / 2.0;
-    _rightSocket.layer.borderWidth = 1.0;
-    _rightSocket.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.04].CGColor;
-    [_eyeContainer addSubview:_rightSocket];
-
-    // --- Left Eye Iris & Anatomy ---
-    _leftEye = [[UIView alloc] initWithFrame:leftFrame];
-    _leftEye.backgroundColor = [UIColor clearColor];
-    _leftEye.layer.cornerRadius = eyeW / 2.0;
-    _leftEye.layer.shadowColor = [UIColor colorWithRed:0.22 green:0.75 blue:0.98 alpha:1.0].CGColor;
-    _leftEye.layer.shadowOffset = CGSizeZero;
-    _leftEye.layer.shadowRadius = 14.0;
-    _leftEye.layer.shadowOpacity = 0.85;
-    _leftEye.clipsToBounds = YES;
+    // Procedural Vector & Cozmo Eyes (OLED radiant core, Bézier squircles)
+    _leftEye = [[ProceduralEyeView alloc] initWithFrame:leftFrame isLeft:YES];
     [_eyeContainer addSubview:_leftEye];
 
-    _leftIrisGradient = [[CAGradientLayer alloc] init];
-    _leftIrisGradient.frame = CGRectMake(0, 0, eyeW, eyeH);
-    _leftIrisGradient.cornerRadius = eyeW / 2.0;
-    _leftIrisGradient.colors = @[
-        (id)[UIColor colorWithRed:0.22 green:0.75 blue:0.98 alpha:1.0].CGColor,
-        (id)[UIColor colorWithRed:0.01 green:0.48 blue:0.80 alpha:1.0].CGColor
-    ];
-    [_leftEye.layer insertSublayer:_leftIrisGradient atIndex:0];
-
-    // Left Dilating Pupil Core
-    _leftPupilCore = [[UIView alloc] initWithFrame:CGRectMake((eyeW - 22.0)/2.0, (eyeH - 34.0)/2.0, 22.0, 34.0)];
-    _leftPupilCore.backgroundColor = [UIColor colorWithRed:0.015 green:0.025 blue:0.045 alpha:0.95];
-    _leftPupilCore.layer.cornerRadius = 11.0;
-    [_leftEye addSubview:_leftPupilCore];
-
-    // Left Specular Catchlights (Curved Crescent Primary + Micro Ambient Glint)
-    _leftSpecularPrimary = [[UIView alloc] initWithFrame:CGRectMake(eyeW - 17.0, 11.0, 9.0, 7.0)];
-    _leftSpecularPrimary.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.85];
-    _leftSpecularPrimary.layer.cornerRadius = 3.5;
-    [_leftEye addSubview:_leftSpecularPrimary];
-
-    _leftSpecularSecondary = [[UIView alloc] initWithFrame:CGRectMake(11.0, eyeH - 19.0, 4.0, 4.0)];
-    _leftSpecularSecondary.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.40];
-    _leftSpecularSecondary.layer.cornerRadius = 2.0;
-    [_leftEye addSubview:_leftSpecularSecondary];
-
-    // --- Right Eye Iris & Anatomy ---
-    _rightEye = [[UIView alloc] initWithFrame:rightFrame];
-    _rightEye.backgroundColor = [UIColor clearColor];
-    _rightEye.layer.cornerRadius = eyeW / 2.0;
-    _rightEye.layer.shadowColor = [UIColor colorWithRed:0.22 green:0.75 blue:0.98 alpha:1.0].CGColor;
-    _rightEye.layer.shadowOffset = CGSizeZero;
-    _rightEye.layer.shadowRadius = 14.0;
-    _rightEye.layer.shadowOpacity = 0.85;
-    _rightEye.clipsToBounds = YES;
+    _rightEye = [[ProceduralEyeView alloc] initWithFrame:rightFrame isLeft:NO];
     [_eyeContainer addSubview:_rightEye];
-
-    _rightIrisGradient = [[CAGradientLayer alloc] init];
-    _rightIrisGradient.frame = CGRectMake(0, 0, eyeW, eyeH);
-    _rightIrisGradient.cornerRadius = eyeW / 2.0;
-    _rightIrisGradient.colors = @[
-        (id)[UIColor colorWithRed:0.22 green:0.75 blue:0.98 alpha:1.0].CGColor,
-        (id)[UIColor colorWithRed:0.01 green:0.48 blue:0.80 alpha:1.0].CGColor
-    ];
-    [_rightEye.layer insertSublayer:_rightIrisGradient atIndex:0];
-
-    // Right Dilating Pupil Core
-    _rightPupilCore = [[UIView alloc] initWithFrame:CGRectMake((eyeW - 22.0)/2.0, (eyeH - 34.0)/2.0, 22.0, 34.0)];
-    _rightPupilCore.backgroundColor = [UIColor colorWithRed:0.015 green:0.025 blue:0.045 alpha:0.95];
-    _rightPupilCore.layer.cornerRadius = 11.0;
-    [_rightEye addSubview:_rightPupilCore];
-
-    // Right Specular Catchlights
-    _rightSpecularPrimary = [[UIView alloc] initWithFrame:CGRectMake(eyeW - 17.0, 11.0, 9.0, 7.0)];
-    _rightSpecularPrimary.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.85];
-    _rightSpecularPrimary.layer.cornerRadius = 3.5;
-    [_rightEye addSubview:_rightSpecularPrimary];
-
-    _rightSpecularSecondary = [[UIView alloc] initWithFrame:CGRectMake(11.0, eyeH - 19.0, 4.0, 4.0)];
-    _rightSpecularSecondary.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.40];
-    _rightSpecularSecondary.layer.cornerRadius = 2.0;
-    [_rightEye addSubview:_rightSpecularSecondary];
 
     _defaultEyePositionLeft = _leftEye.layer.position;
     _defaultEyePositionRight = _rightEye.layer.position;
-    _expressionTransformLeft = CGAffineTransformIdentity;
-    _expressionTransformRight = CGAffineTransformIdentity;
+
+    // Scanline CRT Overlay (Retro Screen Texture)
+    _scanlineOverlay = [[ScanlineOverlayView alloc] initWithFrame:CGRectMake(0, 0, screenW, screenH)];
+    [self.view addSubview:_scanlineOverlay];
+
+    // Initialize Procedural Interpolator Engine
+    [self setupProceduralEngine];
 
     _reducedMotion = [[NSUserDefaults standardUserDefaults] boolForKey:@"PhysicalAgentReducedMotion"];
+    _zenMode = YES; // Default to pure face mode: 100% black canvas with glowing eyes
 
     // ========================================================
     // 3. SUB-PERCEPTUAL BREATHING CYCLE (PowerVR SGX GPU)
@@ -381,7 +1230,7 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 
     // ========================================================
-    // 5. BOTTOM THOUGHT CARD (Refined Hairline Linear Card)
+    // 5. BOTTOM THOUGHT CARD (Refined Hairline Linear Card - Hidden in Zen)
     // ========================================================
     CGFloat cardW = screenW - 32.0;
     CGFloat cardH = 52.0;
@@ -390,6 +1239,7 @@ static DeskCompanionViewController *g_viewController = nil;
     _thoughtCard.layer.cornerRadius = 14.0;
     _thoughtCard.layer.borderWidth = 1.0;
     _thoughtCard.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.07].CGColor;
+    _thoughtCard.alpha = 0.0;
     [self.view addSubview:_thoughtCard];
 
     // Glowing Status Dot
@@ -425,13 +1275,22 @@ static DeskCompanionViewController *g_viewController = nil;
     pan.delegate = self;
     [self.view addGestureRecognizer:pan];
 
-    UITapGestureRecognizer *singleTap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleSingleTap:)] autorelease];
-    [self.view addGestureRecognizer:singleTap];
+    UITapGestureRecognizer *twoFingerTap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTwoFingerTap:)] autorelease];
+    twoFingerTap.numberOfTouchesRequired = 2;
+    [self.view addGestureRecognizer:twoFingerTap];
 
     UITapGestureRecognizer *doubleTap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleDoubleTap:)] autorelease];
     doubleTap.numberOfTapsRequired = 2;
     [self.view addGestureRecognizer:doubleTap];
+
+    UITapGestureRecognizer *singleTap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleSingleTap:)] autorelease];
+    singleTap.numberOfTapsRequired = 1;
     [singleTap requireGestureRecognizerToFail:doubleTap];
+    [self.view addGestureRecognizer:singleTap];
+
+    UILongPressGestureRecognizer *longPress = [[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)] autorelease];
+    longPress.minimumPressDuration = 0.5;
+    [self.view addGestureRecognizer:longPress];
 
     // Timers & Observers
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -448,6 +1307,123 @@ static DeskCompanionViewController *g_viewController = nil;
 
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
+    [UIScreen mainScreen].brightness = 0.70f; // Mitigate IPS LCD backlight bleed on pitch black canvas
+
+    // ========================================================
+    // 7. HARDWARE SENSORS: PROXIMITY & COREMOTION ACCELEROMETER
+    // ========================================================
+    _lastAccel = (CMAcceleration){0.0, 0.0, -1.0};
+    _lastShakeTime = 0.0;
+
+    // Enable hardware proximity monitoring for hand hover reactions
+    [UIDevice currentDevice].proximityMonitoringEnabled = YES;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleProximityChange:)
+                                                 name:UIDeviceProximityStateDidChangeNotification
+                                               object:nil];
+
+    _motionManager = [[CMMotionManager alloc] init];
+    if ([_motionManager isAccelerometerAvailable]) {
+        _motionManager.accelerometerUpdateInterval = 1.0 / 25.0; // 25 Hz responsive desk motion
+        __unsafe_unretained DeskCompanionViewController *weakSelf = self;
+        [_motionManager startAccelerometerUpdatesToQueue:[NSOperationQueue mainQueue] withHandler:^(CMAccelerometerData *data, NSError *err) {
+            if (!weakSelf || !data) return;
+            [weakSelf handleMotionData:data.acceleration];
+        }];
+    }
+}
+
+- (void)viewWillLayoutSubviews {
+    [super viewWillLayoutSubviews];
+    [self updateLayoutForOrientation:self.interfaceOrientation];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self updateLayoutForOrientation:self.interfaceOrientation];
+}
+
+- (BOOL)shouldAutorotate {
+    return YES;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return UIInterfaceOrientationMaskAll;
+}
+
+- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)interfaceOrientation {
+    return YES;
+}
+
+- (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
+    [self updateLayoutForOrientation:toInterfaceOrientation];
+}
+
+- (void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)fromInterfaceOrientation {
+    [self updateLayoutForOrientation:self.interfaceOrientation];
+}
+
+- (void)updateLayout {
+    [self updateLayoutForOrientation:self.interfaceOrientation];
+}
+
+- (void)updateLayoutForOrientation:(UIInterfaceOrientation)orientation {
+    BOOL isLandscape = UIInterfaceOrientationIsLandscape(orientation);
+    CGRect screenBounds = [[UIScreen mainScreen] bounds];
+    CGFloat screenMax = MAX(screenBounds.size.width, screenBounds.size.height);
+    CGFloat screenMin = MIN(screenBounds.size.width, screenBounds.size.height);
+
+    CGFloat W = isLandscape ? screenMax : screenMin;
+    CGFloat H = isLandscape ? screenMin : screenMax;
+    if (W <= 0.0f || H <= 0.0f) return;
+
+    CGRect fullRect = CGRectMake(0, 0, W, H);
+    _bgView.bounds = fullRect;
+    _bgView.center = CGPointMake(W * 0.5f, H * 0.5f);
+
+    _eyeContainer.bounds = fullRect;
+    _eyeContainer.center = CGPointMake(W * 0.5f, H * 0.5f);
+
+    _scanlineOverlay.bounds = fullRect;
+    _scanlineOverlay.center = CGPointMake(W * 0.5f, H * 0.5f);
+
+    CGFloat eyeW = isLandscape ? 96.0f : 84.0f;
+    CGFloat eyeH = isLandscape ? 136.0f : 120.0f;
+    CGFloat eyeSpacing = isLandscape ? 44.0f : 36.0f;
+    CGFloat totalW = eyeW * 2.0f + eyeSpacing;
+    CGFloat eyeY = (H - eyeH) * 0.5f;
+
+    CGFloat leftCenterX = (W - totalW) * 0.5f + eyeW * 0.5f;
+    CGFloat rightCenterX = leftCenterX + eyeW + eyeSpacing;
+    CGFloat centerY = H * 0.5f;
+
+    _leftEye.bounds = CGRectMake(0, 0, eyeW, eyeH);
+    _rightEye.bounds = CGRectMake(0, 0, eyeW, eyeH);
+    _leftEye.defaultCenter = CGPointMake(leftCenterX, centerY);
+    _rightEye.defaultCenter = CGPointMake(rightCenterX, centerY);
+
+    _defaultEyeFrameLeft = CGRectMake((W - totalW) * 0.5f, eyeY, eyeW, eyeH);
+    _defaultEyeFrameRight = CGRectMake(_defaultEyeFrameLeft.origin.x + eyeW + eyeSpacing, eyeY, eyeW, eyeH);
+
+    _defaultEyePositionLeft = _leftEye.defaultCenter;
+    _defaultEyePositionRight = _rightEye.defaultCenter;
+
+    [_leftEye applyConfig:_leftCurrentConfig];
+    [_rightEye applyConfig:_rightCurrentConfig];
+
+    [_scanlineOverlay setNeedsDisplay];
+
+    CGFloat cardW = W - 32.0f;
+    _thoughtCard.bounds = CGRectMake(0, 0, cardW, 52.0f);
+    _thoughtCard.center = CGPointMake(W * 0.5f, H - 26.0f - 18.0f);
+
+    _statusBarPill.bounds = CGRectMake(0, 0, W - 32.0f, 28.0f);
+    _statusBarPill.center = CGPointMake(W * 0.5f, 14.0f + 12.0f);
+
+    _clockLabel.frame = CGRectMake(95.0f, 0, W - 32.0f - 170.0f, 28.0f);
+    _batteryLabel.frame = CGRectMake(W - 32.0f - 75.0f, 0, 63.0f, 28.0f);
+    _waveformContainer.bounds = CGRectMake(0, 0, 80.0f, 20.0f);
+    _waveformContainer.center = CGPointMake(W * 0.5f, centerY + eyeH * 0.5f + (isLandscape ? 12.0f : 24.0f));
 }
 
 - (void)periodicPrune:(NSTimer *)timer {
@@ -470,16 +1446,6 @@ static DeskCompanionViewController *g_viewController = nil;
     breatheScale.repeatCount = HUGE_VALF;
     breatheScale.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
     [_eyeContainer.layer addAnimation:breatheScale forKey:@"breatheScale"];
-
-    CABasicAnimation *breatheGlow = [CABasicAnimation animationWithKeyPath:@"shadowOpacity"];
-    breatheGlow.fromValue = [NSNumber numberWithFloat:0.75f];
-    breatheGlow.toValue = [NSNumber numberWithFloat:0.95f];
-    breatheGlow.duration = 4.2;
-    breatheGlow.autoreverses = YES;
-    breatheGlow.repeatCount = HUGE_VALF;
-    breatheGlow.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    [_leftEye.layer addAnimation:breatheGlow forKey:@"breatheGlow"];
-    [_rightEye.layer addAnimation:breatheGlow forKey:@"breatheGlow"];
 }
 
 - (void)setReducedMotion:(BOOL)reduced {
@@ -488,8 +1454,6 @@ static DeskCompanionViewController *g_viewController = nil;
     [[NSUserDefaults standardUserDefaults] synchronize];
     if (_reducedMotion) {
         [_eyeContainer.layer removeAnimationForKey:@"breatheScale"];
-        [_leftEye.layer removeAnimationForKey:@"breatheGlow"];
-        [_rightEye.layer removeAnimationForKey:@"breatheGlow"];
     } else {
         [self startBreathingCycle];
     }
@@ -512,304 +1476,218 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 // ========================================================
-// EMIL KOWALSKI MOTION & ANIMATION FRAMEWORK
+// EMIL KOWALSKI MOTION & PROCEDURAL ANIMATION FRAMEWORK
 // ========================================================
+- (void)setupProceduralEngine {
+    _leftCurrentConfig = ProceduralEyeConfigDefault();
+    _rightCurrentConfig = ProceduralEyeConfigDefault();
+    _leftTargetConfig = _leftCurrentConfig;
+    _rightTargetConfig = _rightCurrentConfig;
+    _leftTargetExpressionConfig = _leftCurrentConfig;
+    _rightTargetExpressionConfig = _rightCurrentConfig;
+    _leftStartConfig = _leftCurrentConfig;
+    _rightStartConfig = _rightCurrentConfig;
+
+    _proceduralDisplayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(onProceduralDisplayLink:)];
+    [_proceduralDisplayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    _proceduralDisplayLink.paused = YES;
+}
+
+- (void)onProceduralDisplayLink:(CADisplayLink *)link {
+    if (!_isInterpolating) return;
+
+    NSTimeInterval elapsed = CACurrentMediaTime() - _animStartTime;
+    CGFloat t = (_animDuration > 0.001) ? (CGFloat)(elapsed / _animDuration) : 1.0f;
+    if (t >= 1.0f) {
+        t = 1.0f;
+        _isInterpolating = NO;
+        _proceduralDisplayLink.paused = YES;
+    }
+
+    CGFloat easeT;
+    if (_interpolateEaseOut) {
+        CGFloat inv = 1.0f - t;
+        easeT = 1.0f - (inv * inv * inv);
+    } else {
+        easeT = t * t * t;
+    }
+
+    _leftCurrentConfig = ProceduralEyeConfigLerp(_leftStartConfig, _leftTargetConfig, easeT);
+    _rightCurrentConfig = ProceduralEyeConfigLerp(_rightStartConfig, _rightTargetConfig, easeT);
+
+    [_leftEye applyConfig:_leftCurrentConfig];
+    [_rightEye applyConfig:_rightCurrentConfig];
+
+    if (!_isInterpolating && _interpolationCompletion) {
+        void (^comp)(void) = _interpolationCompletion;
+        _interpolationCompletion = nil;
+        comp();
+        [comp release];
+    }
+}
+
+- (void)interpolateToLeft:(ProceduralEyeConfig)left right:(ProceduralEyeConfig)right duration:(NSTimeInterval)dur easeOut:(BOOL)easeOut completion:(void (^)(void))completion {
+    if (_interpolationCompletion) {
+        [_interpolationCompletion release];
+        _interpolationCompletion = nil;
+    }
+
+    if (dur <= 0.005) {
+        _isInterpolating = NO;
+        _proceduralDisplayLink.paused = YES;
+        _leftCurrentConfig = left;
+        _rightCurrentConfig = right;
+        [_leftEye applyConfig:_leftCurrentConfig];
+        [_rightEye applyConfig:_rightCurrentConfig];
+        if (completion) completion();
+        return;
+    }
+
+    if (completion) {
+        _interpolationCompletion = [completion copy];
+    }
+
+    _leftStartConfig = _leftCurrentConfig;
+    _rightStartConfig = _rightCurrentConfig;
+    _leftTargetConfig = left;
+    _rightTargetConfig = right;
+    _animStartTime = CACurrentMediaTime();
+    _animDuration = dur;
+    _interpolateEaseOut = easeOut;
+    _isInterpolating = YES;
+    _proceduralDisplayLink.paused = NO;
+}
+
+- (void)setExpression:(NSString *)expression {
+    [self setExpression:expression duration:0.28];
+}
+
+- (void)setExpression:(NSString *)expression duration:(NSTimeInterval)dur {
+    _isBlinking = NO;
+    _saccadeGeneration++;
+
+    [_currentExpression release];
+    _currentExpression = [expression copy];
+
+    ProceduralEyeConfig targetLeft, targetRight;
+    UIColor *topColor = nil;
+    UIColor *bottomColor = nil;
+    GetEmotionPreset(expression, &targetLeft, &targetRight, &topColor, &bottomColor);
+
+    _leftTargetExpressionConfig = targetLeft;
+    _rightTargetExpressionConfig = targetRight;
+
+    [_leftEye setGradientColors:@[ (id)topColor.CGColor, (id)bottomColor.CGColor ]];
+    [_rightEye setGradientColors:@[ (id)topColor.CGColor, (id)bottomColor.CGColor ]];
+    [_leftEye setGlowColor:topColor];
+    [_rightEye setGlowColor:topColor];
+    _statusDot.backgroundColor = topColor;
+    _statusDot.layer.shadowColor = topColor.CGColor;
+
+    [self interpolateToLeft:targetLeft right:targetRight duration:dur easeOut:YES completion:nil];
+}
+
+- (void)lookAtX:(CGFloat)x y:(CGFloat)y duration:(NSTimeInterval)dur {
+    _isBlinking = NO;
+    _saccadeGeneration++;
+
+    ProceduralEyeConfig lookLeft = _leftTargetExpressionConfig;
+    ProceduralEyeConfig lookRight = _rightTargetExpressionConfig;
+
+    CGFloat cX = ClampF(x, -1.0f, 1.0f);
+    CGFloat cY = ClampF(y, -1.0f, 1.0f);
+
+    lookLeft.hotSpotCenterX = cX;
+    lookLeft.hotSpotCenterY = cY;
+    lookRight.hotSpotCenterX = cX;
+    lookRight.hotSpotCenterY = cY;
+
+    lookLeft.centerX = cX * 10.0f;
+    lookLeft.centerY = cY * 8.0f;
+    lookRight.centerX = cX * 10.0f;
+    lookRight.centerY = cY * 8.0f;
+
+    _leftTargetExpressionConfig = lookLeft;
+    _rightTargetExpressionConfig = lookRight;
+
+    [self interpolateToLeft:lookLeft right:lookRight duration:(dur > 0 ? dur : 0.22) easeOut:YES completion:nil];
+}
+
+- (void)setProceduralParamsLeft:(NSArray *)left right:(NSArray *)right duration:(NSTimeInterval)dur {
+    _isBlinking = NO;
+    _saccadeGeneration++;
+
+    ProceduralEyeConfig leftCfg = ProceduralEyeConfigFromArray(left, _leftCurrentConfig);
+    ProceduralEyeConfig rightCfg = ProceduralEyeConfigFromArray(right, _rightCurrentConfig);
+
+    _leftTargetExpressionConfig = leftCfg;
+    _rightTargetExpressionConfig = rightCfg;
+
+    [self interpolateToLeft:leftCfg right:rightCfg duration:(dur > 0 ? dur : 0.28) easeOut:YES completion:nil];
+}
+
+- (void)setScanlineOpacity:(CGFloat)opacity {
+    if (_scanlineOverlay) {
+        _scanlineOverlay.scanlineOpacity = ClampF(opacity, 0.0f, 0.40f);
+    }
+}
+
 - (void)triggerRandomBlink {
-    if (!_isBlinking && !_isSpeaking && !_isPanning && ![_currentExpression isEqualToString:@"sleep"]) {
+    if (!_isBlinking && !_isSpeaking && !_isPanning && ![_currentExpression hasPrefix:@"sleep"] && ![_currentExpression isEqualToString:@"asleep"]) {
         [self blink];
     }
 }
 
-// GPU-Accelerated Asymmetrical Eyelid Kinematics (Layer Transform Scale, 0% CPU Overhead)
+// Authentic PyCozmo blink: organic vertical squircle squash into razor-thin glowing slit
 - (void)blink {
-    if (_isPanning) return;
+    if (_isPanning || _isBlinking) return;
     _isBlinking = YES;
 
-    // Fast organic close: 75ms ease-out via GPU transform scale
-    [UIView animateWithDuration:0.075 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        self->_leftEye.transform = CGAffineTransformConcat(self->_expressionTransformLeft, CGAffineTransformMakeScale(1.0, 0.05));
-        self->_rightEye.transform = CGAffineTransformConcat(self->_expressionTransformRight, CGAffineTransformMakeScale(1.0, 0.05));
+    ProceduralEyeConfig blinkLeft = _leftTargetExpressionConfig;
+    ProceduralEyeConfig blinkRight = _rightTargetExpressionConfig;
+    blinkLeft.scaleY = 0.04f;
+    blinkLeft.scaleX = 1.04f;
+    blinkRight.scaleY = 0.04f;
+    blinkRight.scaleX = 1.04f;
 
-        self->_leftSpecularPrimary.alpha = 0.0;
-        self->_leftSpecularSecondary.alpha = 0.0;
-        self->_rightSpecularPrimary.alpha = 0.0;
-        self->_rightSpecularSecondary.alpha = 0.0;
-        self->_leftPupilCore.alpha = 0.0;
-        self->_rightPupilCore.alpha = 0.0;
-    } completion:^(BOOL finished) {
-        // Organic bounce open: 110ms ease-in
-        [UIView animateWithDuration:0.11 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
-            self->_leftEye.transform = self->_expressionTransformLeft;
-            self->_rightEye.transform = self->_expressionTransformRight;
-
-            self->_leftSpecularPrimary.alpha = 0.85;
-            self->_leftSpecularSecondary.alpha = 0.40;
-            self->_rightSpecularPrimary.alpha = 0.85;
-            self->_rightSpecularSecondary.alpha = 0.40;
-            self->_leftPupilCore.alpha = 0.95;
-            self->_rightPupilCore.alpha = 0.95;
-        } completion:^(BOOL fin) {
-            self->_isBlinking = NO;
+    __unsafe_unretained DeskCompanionViewController *weakSelf = self;
+    [self interpolateToLeft:blinkLeft right:blinkRight duration:0.060 easeOut:YES completion:^{
+        if (!weakSelf) return;
+        [weakSelf interpolateToLeft:weakSelf->_leftTargetExpressionConfig right:weakSelf->_rightTargetExpressionConfig duration:0.110 easeOut:NO completion:^{
+            if (weakSelf) {
+                weakSelf->_isBlinking = NO;
+            }
         }];
     }];
 }
 
-// Organic Saccade Clusters with Parallax Cornea Catchlights
+// Organic Saccade Clusters with Gaze Hotspot Parallax
 - (void)triggerMicroSaccade {
-    if (_isBlinking || _isSpeaking || _isPanning || _reducedMotion || [_currentExpression isEqualToString:@"sleep"]) return;
+    if (_isBlinking || _isSpeaking || _isPanning || _reducedMotion || [_currentExpression hasPrefix:@"sleep"] || [_currentExpression isEqualToString:@"asleep"]) return;
 
-    // Natural saccadic displacement: -4 to +4 pt horizontal, -2 to +2 pt vertical
-    int rx = (int)arc4random_uniform(9) - 4;
-    int ry = (int)arc4random_uniform(5) - 2;
-    CGFloat dx = (CGFloat)rx;
-    CGFloat dy = (CGFloat)ry;
+    NSUInteger gen = ++_saccadeGeneration;
 
-    // 120ms rapid saccade burst: GPU-accelerated transform without layout thrashing
-    [UIView animateWithDuration:0.12 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        self->_leftEye.transform = CGAffineTransformConcat(self->_expressionTransformLeft, CGAffineTransformMakeTranslation(dx, dy));
-        self->_rightEye.transform = CGAffineTransformConcat(self->_expressionTransformRight, CGAffineTransformMakeTranslation(dx, dy));
+    // Natural saccadic displacement in normalized hotspot space: -0.32 to +0.32
+    float rx = ((float)(arc4random_uniform(9)) - 4.0f) * 0.08f;
+    float ry = ((float)(arc4random_uniform(5)) - 2.0f) * 0.08f;
 
-        // Specular catchlight parallax: cornea glints shift slightly faster than iris
-        self->_leftSpecularPrimary.transform = CGAffineTransformMakeTranslation(dx * 0.25, dy * 0.25);
-        self->_rightSpecularPrimary.transform = CGAffineTransformMakeTranslation(dx * 0.25, dy * 0.25);
-    } completion:^(BOOL finished) {
-        // Hold fixation for 1.8 seconds, then perform subtle micro-correction and return
+    ProceduralEyeConfig saccadeLeft = _leftTargetExpressionConfig;
+    ProceduralEyeConfig saccadeRight = _rightTargetExpressionConfig;
+    saccadeLeft.hotSpotCenterX = ClampF(saccadeLeft.hotSpotCenterX + rx, -1.0f, 1.0f);
+    saccadeLeft.hotSpotCenterY = ClampF(saccadeLeft.hotSpotCenterY + ry, -1.0f, 1.0f);
+    saccadeRight.hotSpotCenterX = ClampF(saccadeRight.hotSpotCenterX + rx, -1.0f, 1.0f);
+    saccadeRight.hotSpotCenterY = ClampF(saccadeRight.hotSpotCenterY + ry, -1.0f, 1.0f);
+
+    // 100ms rapid saccade burst
+    __unsafe_unretained DeskCompanionViewController *weakSelf = self;
+    [self interpolateToLeft:saccadeLeft right:saccadeRight duration:0.10 easeOut:YES completion:^{
+        // Hold fixation for 1.8 seconds, then return
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (self->_isPanning) return;
-            BOOL blinking = self->_isBlinking;
-            [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
-                if (!blinking) {
-                    self->_leftEye.transform = self->_expressionTransformLeft;
-                    self->_rightEye.transform = self->_expressionTransformRight;
-                }
-                self->_leftSpecularPrimary.transform = CGAffineTransformIdentity;
-                self->_rightSpecularPrimary.transform = CGAffineTransformIdentity;
-            } completion:nil];
+            if (weakSelf && weakSelf->_saccadeGeneration == gen && !weakSelf->_isBlinking && !weakSelf->_isPanning) {
+                [weakSelf interpolateToLeft:weakSelf->_leftTargetExpressionConfig right:weakSelf->_rightTargetExpressionConfig duration:0.22 easeOut:YES completion:nil];
+            }
         });
     }];
-}
-
-- (void)setExpression:(NSString *)expression {
-    [_currentExpression release];
-    _currentExpression = [expression copy];
-
-    CGFloat screenW = 320.0;
-    CGFloat eyeSpacing = 54.0;
-    CGFloat eyeY = 175.0;
-
-    // Semantic Accents
-    UIColor *cyanTop = [UIColor colorWithRed:0.22 green:0.75 blue:0.98 alpha:1.0];
-    UIColor *cyanBottom = [UIColor colorWithRed:0.01 green:0.48 blue:0.80 alpha:1.0];
-
-    UIColor *amberTop = [UIColor colorWithRed:0.98 green:0.75 blue:0.18 alpha:1.0];
-    UIColor *amberBottom = [UIColor colorWithRed:0.85 green:0.52 blue:0.02 alpha:1.0];
-
-    UIColor *greenTop = [UIColor colorWithRed:0.20 green:0.92 blue:0.55 alpha:1.0];
-    UIColor *greenBottom = [UIColor colorWithRed:0.04 green:0.65 blue:0.35 alpha:1.0];
-
-    UIColor *purpleTop = [UIColor colorWithRed:0.75 green:0.45 blue:0.98 alpha:1.0];
-    UIColor *purpleBottom = [UIColor colorWithRed:0.48 green:0.18 blue:0.85 alpha:1.0];
-
-    UIColor *redTop = [UIColor colorWithRed:0.98 green:0.32 blue:0.32 alpha:1.0];
-    UIColor *redBottom = [UIColor colorWithRed:0.78 green:0.08 blue:0.08 alpha:1.0];
-
-    UIColor *dimBlueTop = [UIColor colorWithRed:0.15 green:0.25 blue:0.38 alpha:0.6];
-    UIColor *dimBlueBottom = [UIColor colorWithRed:0.06 green:0.12 blue:0.20 alpha:0.6];
-
-    [UIView animateWithDuration:0.26 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        // Reset eye transforms to identity before adjusting layer bounds and positions (CoreAnimation invariant)
-        self->_leftEye.transform = CGAffineTransformIdentity;
-        self->_rightEye.transform = CGAffineTransformIdentity;
-        self->_expressionTransformLeft = CGAffineTransformIdentity;
-        self->_expressionTransformRight = CGAffineTransformIdentity;
-
-        if ([expression isEqualToString:@"happy"]) {
-            self->_leftEye.layer.bounds = CGRectMake(0, 0, 50, 56);
-            self->_leftEye.layer.position = CGPointMake(self->_defaultEyePositionLeft.x, self->_defaultEyePositionLeft.y - 16);
-            self->_rightEye.layer.bounds = CGRectMake(0, 0, 50, 56);
-            self->_rightEye.layer.position = CGPointMake(self->_defaultEyePositionRight.x, self->_defaultEyePositionRight.y - 16);
-            self->_leftIrisGradient.bounds = self->_leftEye.layer.bounds;
-            self->_leftIrisGradient.position = CGPointMake(25, 28);
-            self->_rightIrisGradient.bounds = self->_rightEye.layer.bounds;
-            self->_rightIrisGradient.position = CGPointMake(25, 28);
-            self->_leftIrisGradient.colors = @[(id)greenTop.CGColor, (id)greenBottom.CGColor];
-            self->_rightIrisGradient.colors = @[(id)greenTop.CGColor, (id)greenBottom.CGColor];
-            self->_leftEye.layer.shadowColor = greenTop.CGColor;
-            self->_rightEye.layer.shadowColor = greenTop.CGColor;
-            self->_expressionTransformLeft = CGAffineTransformMakeRotation(-0.14);
-            self->_expressionTransformRight = CGAffineTransformMakeRotation(0.14);
-            self->_leftEye.transform = self->_expressionTransformLeft;
-            self->_rightEye.transform = self->_expressionTransformRight;
-            self->_leftPupilCore.transform = CGAffineTransformMakeScale(0.88, 0.88);
-            self->_rightPupilCore.transform = CGAffineTransformMakeScale(0.88, 0.88);
-            self->_leftSpecularPrimary.alpha = 0.85;
-            self->_leftSpecularSecondary.alpha = 0.40;
-            self->_rightSpecularPrimary.alpha = 0.85;
-            self->_rightSpecularSecondary.alpha = 0.40;
-            self->_statusDot.backgroundColor = greenTop;
-            self->_statusDot.layer.shadowColor = greenTop.CGColor;
-        } else if ([expression isEqualToString:@"surprised"]) {
-            // Dilating pupil core (1.35x) and expanded curious eye
-            self->_leftEye.layer.bounds = CGRectMake(0, 0, 60, 84);
-            self->_leftEye.layer.position = CGPointMake(self->_defaultEyePositionLeft.x, self->_defaultEyePositionLeft.y - 10);
-            self->_rightEye.layer.bounds = CGRectMake(0, 0, 60, 84);
-            self->_rightEye.layer.position = CGPointMake(self->_defaultEyePositionRight.x, self->_defaultEyePositionRight.y - 10);
-            self->_leftIrisGradient.bounds = self->_leftEye.layer.bounds;
-            self->_leftIrisGradient.position = CGPointMake(30, 42);
-            self->_rightIrisGradient.bounds = self->_rightEye.layer.bounds;
-            self->_rightIrisGradient.position = CGPointMake(30, 42);
-            self->_leftIrisGradient.colors = @[(id)amberTop.CGColor, (id)amberBottom.CGColor];
-            self->_rightIrisGradient.colors = @[(id)amberTop.CGColor, (id)amberBottom.CGColor];
-            self->_leftEye.layer.shadowColor = amberTop.CGColor;
-            self->_rightEye.layer.shadowColor = amberTop.CGColor;
-            self->_leftEye.transform = CGAffineTransformIdentity;
-            self->_rightEye.transform = CGAffineTransformIdentity;
-            self->_leftPupilCore.transform = CGAffineTransformMakeScale(1.35, 1.35);
-            self->_rightPupilCore.transform = CGAffineTransformMakeScale(1.35, 1.35);
-            self->_leftSpecularPrimary.alpha = 0.85;
-            self->_leftSpecularSecondary.alpha = 0.40;
-            self->_rightSpecularPrimary.alpha = 0.85;
-            self->_rightSpecularSecondary.alpha = 0.40;
-            self->_statusDot.backgroundColor = amberTop;
-            self->_statusDot.layer.shadowColor = amberTop.CGColor;
-        } else if ([expression isEqualToString:@"thinking"]) {
-            self->_leftEye.layer.bounds = CGRectMake(0, 0, 46, 46);
-            self->_leftEye.layer.position = CGPointMake(self->_defaultEyePositionLeft.x, self->_defaultEyePositionLeft.y - 33);
-            self->_rightEye.layer.bounds = CGRectMake(0, 0, 48, 50);
-            self->_rightEye.layer.position = CGPointMake(self->_defaultEyePositionRight.x, self->_defaultEyePositionRight.y - 35);
-            self->_leftIrisGradient.bounds = self->_leftEye.layer.bounds;
-            self->_leftIrisGradient.position = CGPointMake(23, 23);
-            self->_rightIrisGradient.bounds = self->_rightEye.layer.bounds;
-            self->_rightIrisGradient.position = CGPointMake(24, 25);
-            self->_leftIrisGradient.colors = @[(id)purpleTop.CGColor, (id)purpleBottom.CGColor];
-            self->_rightIrisGradient.colors = @[(id)purpleTop.CGColor, (id)purpleBottom.CGColor];
-            self->_leftEye.layer.shadowColor = purpleTop.CGColor;
-            self->_rightEye.layer.shadowColor = purpleTop.CGColor;
-            self->_leftEye.transform = CGAffineTransformMakeRotation(0.12);
-            self->_rightEye.transform = CGAffineTransformMakeRotation(0.12);
-            self->_leftPupilCore.transform = CGAffineTransformMakeScale(1.10, 1.10);
-            self->_rightPupilCore.transform = CGAffineTransformMakeScale(1.10, 1.10);
-            self->_leftSpecularPrimary.alpha = 0.85;
-            self->_leftSpecularSecondary.alpha = 0.40;
-            self->_rightSpecularPrimary.alpha = 0.85;
-            self->_rightSpecularSecondary.alpha = 0.40;
-            self->_statusDot.backgroundColor = purpleTop;
-            self->_statusDot.layer.shadowColor = purpleTop.CGColor;
-        } else if ([expression isEqualToString:@"alert"]) {
-            // Contracted sharp pupil core (0.65x)
-            self->_leftEye.layer.bounds = CGRectMake(0, 0, 50, 76);
-            self->_leftEye.layer.position = self->_defaultEyePositionLeft;
-            self->_rightEye.layer.bounds = CGRectMake(0, 0, 50, 76);
-            self->_rightEye.layer.position = self->_defaultEyePositionRight;
-            self->_leftIrisGradient.bounds = self->_leftEye.layer.bounds;
-            self->_leftIrisGradient.position = CGPointMake(25, 38);
-            self->_rightIrisGradient.bounds = self->_rightEye.layer.bounds;
-            self->_rightIrisGradient.position = CGPointMake(25, 38);
-            self->_leftIrisGradient.colors = @[(id)redTop.CGColor, (id)redBottom.CGColor];
-            self->_rightIrisGradient.colors = @[(id)redTop.CGColor, (id)redBottom.CGColor];
-            self->_leftEye.layer.shadowColor = redTop.CGColor;
-            self->_rightEye.layer.shadowColor = redTop.CGColor;
-            self->_leftEye.transform = CGAffineTransformMakeRotation(0.20);
-            self->_rightEye.transform = CGAffineTransformMakeRotation(-0.20);
-            self->_leftPupilCore.transform = CGAffineTransformMakeScale(0.65, 0.65);
-            self->_rightPupilCore.transform = CGAffineTransformMakeScale(0.65, 0.65);
-            self->_leftSpecularPrimary.alpha = 0.85;
-            self->_leftSpecularSecondary.alpha = 0.40;
-            self->_rightSpecularPrimary.alpha = 0.85;
-            self->_rightSpecularSecondary.alpha = 0.40;
-            self->_statusDot.backgroundColor = redTop;
-            self->_statusDot.layer.shadowColor = redTop.CGColor;
-        } else if ([expression isEqualToString:@"sleep"]) {
-            self->_leftEye.layer.bounds = CGRectMake(0, 0, 50, 4);
-            self->_leftEye.layer.position = CGPointMake(self->_defaultEyePositionLeft.x, self->_defaultEyePositionLeft.y + 28);
-            self->_rightEye.layer.bounds = CGRectMake(0, 0, 50, 4);
-            self->_rightEye.layer.position = CGPointMake(self->_defaultEyePositionRight.x, self->_defaultEyePositionRight.y + 28);
-            self->_leftIrisGradient.bounds = self->_leftEye.layer.bounds;
-            self->_leftIrisGradient.position = CGPointMake(25, 2);
-            self->_rightIrisGradient.bounds = self->_rightEye.layer.bounds;
-            self->_rightIrisGradient.position = CGPointMake(25, 2);
-            self->_leftIrisGradient.colors = @[(id)dimBlueTop.CGColor, (id)dimBlueBottom.CGColor];
-            self->_rightIrisGradient.colors = @[(id)dimBlueTop.CGColor, (id)dimBlueBottom.CGColor];
-            self->_leftEye.layer.shadowColor = dimBlueTop.CGColor;
-            self->_rightEye.layer.shadowColor = dimBlueTop.CGColor;
-            self->_leftEye.transform = CGAffineTransformIdentity;
-            self->_rightEye.transform = CGAffineTransformIdentity;
-            self->_leftPupilCore.transform = CGAffineTransformMakeScale(0.01, 0.01);
-            self->_rightPupilCore.transform = CGAffineTransformMakeScale(0.01, 0.01);
-            self->_leftSpecularPrimary.alpha = 0.0;
-            self->_leftSpecularSecondary.alpha = 0.0;
-            self->_rightSpecularPrimary.alpha = 0.0;
-            self->_rightSpecularSecondary.alpha = 0.0;
-            self->_statusDot.backgroundColor = dimBlueTop;
-            self->_statusDot.layer.shadowColor = dimBlueTop.CGColor;
-        } else if ([expression isEqualToString:@"glance_left"]) {
-            self->_leftEye.layer.bounds = CGRectMake(0, 0, 50, 76);
-            self->_leftEye.layer.position = CGPointMake(self->_defaultEyePositionLeft.x - 13, self->_defaultEyePositionLeft.y);
-            self->_rightEye.layer.bounds = CGRectMake(0, 0, 50, 76);
-            self->_rightEye.layer.position = CGPointMake(self->_defaultEyePositionRight.x - 13, self->_defaultEyePositionRight.y);
-            self->_leftIrisGradient.bounds = self->_leftEye.layer.bounds;
-            self->_leftIrisGradient.position = CGPointMake(25, 38);
-            self->_rightIrisGradient.bounds = self->_rightEye.layer.bounds;
-            self->_rightIrisGradient.position = CGPointMake(25, 38);
-            self->_leftIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
-            self->_rightIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
-            self->_leftEye.layer.shadowColor = cyanTop.CGColor;
-            self->_rightEye.layer.shadowColor = cyanTop.CGColor;
-            self->_leftEye.transform = CGAffineTransformIdentity;
-            self->_rightEye.transform = CGAffineTransformIdentity;
-            self->_leftPupilCore.transform = CGAffineTransformIdentity;
-            self->_rightPupilCore.transform = CGAffineTransformIdentity;
-            self->_leftSpecularPrimary.alpha = 0.85;
-            self->_leftSpecularSecondary.alpha = 0.40;
-            self->_rightSpecularPrimary.alpha = 0.85;
-            self->_rightSpecularSecondary.alpha = 0.40;
-        } else if ([expression isEqualToString:@"glance_right"]) {
-            self->_leftEye.layer.bounds = CGRectMake(0, 0, 50, 76);
-            self->_leftEye.layer.position = CGPointMake(self->_defaultEyePositionLeft.x + 13, self->_defaultEyePositionLeft.y);
-            self->_rightEye.layer.bounds = CGRectMake(0, 0, 50, 76);
-            self->_rightEye.layer.position = CGPointMake(self->_defaultEyePositionRight.x + 13, self->_defaultEyePositionRight.y);
-            self->_leftIrisGradient.bounds = self->_leftEye.layer.bounds;
-            self->_leftIrisGradient.position = CGPointMake(25, 38);
-            self->_rightIrisGradient.bounds = self->_rightEye.layer.bounds;
-            self->_rightIrisGradient.position = CGPointMake(25, 38);
-            self->_leftIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
-            self->_rightIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
-            self->_leftEye.layer.shadowColor = cyanTop.CGColor;
-            self->_rightEye.layer.shadowColor = cyanTop.CGColor;
-            self->_leftEye.transform = CGAffineTransformIdentity;
-            self->_rightEye.transform = CGAffineTransformIdentity;
-            self->_leftPupilCore.transform = CGAffineTransformIdentity;
-            self->_rightPupilCore.transform = CGAffineTransformIdentity;
-            self->_leftSpecularPrimary.alpha = 0.85;
-            self->_leftSpecularSecondary.alpha = 0.40;
-            self->_rightSpecularPrimary.alpha = 0.85;
-            self->_rightSpecularSecondary.alpha = 0.40;
-        } else {
-            // Default Neutral Stance
-            self->_leftEye.layer.bounds = CGRectMake(0, 0, 50, 76);
-            self->_leftEye.layer.position = self->_defaultEyePositionLeft;
-            self->_rightEye.layer.bounds = CGRectMake(0, 0, 50, 76);
-            self->_rightEye.layer.position = self->_defaultEyePositionRight;
-            self->_leftIrisGradient.bounds = self->_leftEye.layer.bounds;
-            self->_leftIrisGradient.position = CGPointMake(25, 38);
-            self->_rightIrisGradient.bounds = self->_rightEye.layer.bounds;
-            self->_rightIrisGradient.position = CGPointMake(25, 38);
-            self->_leftIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
-            self->_rightIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
-            self->_leftEye.layer.shadowColor = cyanTop.CGColor;
-            self->_rightEye.layer.shadowColor = cyanTop.CGColor;
-            self->_leftEye.transform = CGAffineTransformIdentity;
-            self->_rightEye.transform = CGAffineTransformIdentity;
-            self->_leftPupilCore.transform = CGAffineTransformIdentity;
-            self->_rightPupilCore.transform = CGAffineTransformIdentity;
-            self->_leftSpecularPrimary.alpha = 0.85;
-            self->_leftSpecularSecondary.alpha = 0.40;
-            self->_rightSpecularPrimary.alpha = 0.85;
-            self->_rightSpecularSecondary.alpha = 0.40;
-            self->_statusDot.backgroundColor = greenTop;
-            self->_statusDot.layer.shadowColor = greenTop.CGColor;
-        }
-    } completion:nil];
 }
 
 - (void)setStatusTitle:(NSString *)title subtitle:(NSString *)subtitle {
@@ -861,68 +1739,149 @@ static DeskCompanionViewController *g_viewController = nil;
 // ========================================================
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
     [super touchesBegan:touches withEvent:event];
-    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
-    [self playSoundNamed:@"tink"];
+}
+
+- (void)revertToNeutral {
+    _reactionTimer = nil;
+    [self setExpression:@"neutral"];
+    [self lookAtX:0.0f y:0.0f duration:0.25];
+}
+
+- (void)handleTwoFingerTap:(UITapGestureRecognizer *)gesture {
+    [self toggleZenMode];
 }
 
 - (void)handleSingleTap:(UITapGestureRecognizer *)gesture {
-    // Immediate tactile squash: scale(0.93) over 80ms with spring rebound
-    [UIView animateWithDuration:0.08 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        self->_eyeContainer.transform = CGAffineTransformMakeScale(0.93, 0.93);
-    } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.16 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
-            self->_eyeContainer.transform = CGAffineTransformIdentity;
-        } completion:nil];
-    }];
+    CGPoint pt = [gesture locationInView:self.view];
+    CGFloat screenW = self.view.bounds.size.width;
+    CGFloat screenH = self.view.bounds.size.height;
 
-    [self blink];
-    [self setExpression:@"happy"];
-    [self setStatusTitle:@"PHYSICAL TOUCH DETECTED" subtitle:@"Companion acknowledged your press"];
+    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+    [self playSoundNamed:@"tock"];
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self setExpression:@"neutral"];
-        [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
-    });
+    if (_reactionTimer) {
+        [_reactionTimer invalidate];
+        _reactionTimer = nil;
+    }
+
+    // Organic tactile squash via layer keyframe
+    CAKeyframeAnimation *squash = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
+    squash.values = @[ @(1.0f), @(0.94f), @(1.02f), @(1.0f) ];
+    squash.keyTimes = @[ @(0.0f), @(0.35f), @(0.70f), @(1.0f) ];
+    squash.duration = 0.22;
+    squash.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [_eyeContainer.layer addAnimation:squash forKey:@"tapSquash"];
+
+    CGFloat normX = ClampF((pt.x - screenW * 0.5f) / (screenW * 0.5f), -1.0f, 1.0f);
+    CGFloat normY = ClampF((pt.y - screenH * 0.5f) / (screenH * 0.5f), -1.0f, 1.0f);
+
+    // Look at touched point immediately
+    [self lookAtX:normX y:normY duration:0.12];
+
+    if (fabsf(normX) < 0.35f && fabsf(normY) < 0.35f) {
+        // Center tap: happy joy blink
+        [self blink];
+        [self setExpression:@"happy"];
+    } else if (normX < -0.35f) {
+        // Left side tap: curious head tilt
+        [self setExpression:@"curious"];
+    } else if (normX > 0.35f) {
+        // Right side tap: skeptic wink
+        [self setExpression:@"skeptic"];
+    } else if (normY < -0.35f) {
+        // Top forehead tap: surprised glance up
+        [self setExpression:@"surprised"];
+    } else {
+        // Bottom chin tap: cheerful glee smile
+        [self setExpression:@"glee"];
+    }
+
+    _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:1.8 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
 }
 
-// Interactive Gaze Pan: Eyes follow finger across screen with parallax catchlights
+// Interactive Gaze Pan: Eyes follow finger across screen with procedural gaze kinematics
 - (void)handlePan:(UIPanGestureRecognizer *)gesture {
     CGPoint translation = [gesture translationInView:self.view];
 
-    CGFloat dx = translation.x * 0.18;
-    CGFloat dy = translation.y * 0.15;
+    CGFloat normX = ClampF(translation.x / 140.0f, -1.0f, 1.0f);
+    CGFloat normY = ClampF(translation.y / 200.0f, -1.0f, 1.0f);
 
-    dx = fmaxf(-18.0, fminf(18.0, dx));
-    dy = fmaxf(-14.0, fminf(14.0, dy));
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        _isPanning = YES;
+        _isBlinking = NO;
+        _saccadeGeneration++;
+        _isInterpolating = NO;
+        _proceduralDisplayLink.paused = YES;
+        if (_interpolationCompletion) {
+            [_interpolationCompletion release];
+            _interpolationCompletion = nil;
+        }
+    }
 
     if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged) {
         _isPanning = YES;
-        _leftEye.transform = CGAffineTransformConcat(_expressionTransformLeft, CGAffineTransformMakeTranslation(dx, dy));
-        _rightEye.transform = CGAffineTransformConcat(_expressionTransformRight, CGAffineTransformMakeTranslation(dx, dy));
-
-        // Catchlight parallax
-        _leftSpecularPrimary.transform = CGAffineTransformMakeTranslation(dx * 0.22, dy * 0.22);
-        _rightSpecularPrimary.transform = CGAffineTransformMakeTranslation(dx * 0.22, dy * 0.22);
+        ProceduralEyeConfig panLeft = _leftTargetExpressionConfig;
+        ProceduralEyeConfig panRight = _rightTargetExpressionConfig;
+        panLeft.hotSpotCenterX = normX;
+        panLeft.hotSpotCenterY = normY;
+        panRight.hotSpotCenterX = normX;
+        panRight.hotSpotCenterY = normY;
+        panLeft.centerX = normX * 12.0f;
+        panLeft.centerY = normY * 10.0f;
+        panRight.centerX = normX * 12.0f;
+        panRight.centerY = normY * 10.0f;
+        _leftCurrentConfig = panLeft;
+        _rightCurrentConfig = panRight;
+        [_leftEye applyConfig:_leftCurrentConfig];
+        [_rightEye applyConfig:_rightCurrentConfig];
     } else if (gesture.state == UIGestureRecognizerStateEnded || gesture.state == UIGestureRecognizerStateCancelled) {
         _isPanning = NO;
-        [UIView animateWithDuration:0.28 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-            self->_leftEye.transform = self->_expressionTransformLeft;
-            self->_rightEye.transform = self->_expressionTransformRight;
-            self->_leftSpecularPrimary.transform = CGAffineTransformIdentity;
-            self->_rightSpecularPrimary.transform = CGAffineTransformIdentity;
-        } completion:nil];
+        [self interpolateToLeft:_leftTargetExpressionConfig right:_rightTargetExpressionConfig duration:0.25 easeOut:YES completion:nil];
     }
 }
 
-// Double Tap: Zen Mode (fade HUD cards for night desk ambiance)
+// Double Tap: Joyful Glee Celebration Bounce
 - (void)handleDoubleTap:(UITapGestureRecognizer *)gesture {
-    [self toggleZenMode];
+    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+    [self playSoundNamed:@"chirp"];
+
+    if (_reactionTimer) {
+        [_reactionTimer invalidate];
+        _reactionTimer = nil;
+    }
+
+    [self setExpression:@"glee"];
+
+    CAKeyframeAnimation *bounce = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
+    bounce.values = @[ @(1.0f), @(1.12f), @(0.95f), @(1.03f), @(1.0f) ];
+    bounce.keyTimes = @[ @(0.0f), @(0.35f), @(0.70f), @(1.0f) ];
+    bounce.duration = 0.28;
+    bounce.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [_eyeContainer.layer addAnimation:bounce forKey:@"gleeBounce"];
+
+    _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:1.8 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
+}
+
+// Long Press: Rest & Purr Drowsy State
+- (void)handleLongPress:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        if (_reactionTimer) {
+            [_reactionTimer invalidate];
+            _reactionTimer = nil;
+        }
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        [self setExpression:@"sleepy"];
+    } else if (gesture.state == UIGestureRecognizerStateEnded || gesture.state == UIGestureRecognizerStateCancelled) {
+        [self blink];
+        [self setExpression:@"neutral"];
+        [self lookAtX:0.0f y:0.0f duration:0.25];
+    }
 }
 
 - (void)toggleZenMode {
     _zenMode = !_zenMode;
     AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
-    [self playSoundNamed:@"tweet"];
+    [self playSoundNamed:@"confirm"];
 
     [UIView animateWithDuration:0.3 animations:^{
         CGFloat alpha = self->_zenMode ? 0.0 : 1.0;
@@ -935,23 +1894,56 @@ static DeskCompanionViewController *g_viewController = nil;
 // HARDWARE ACTUATORS, SENSORS & MULTIMODAL PERCEPTION
 // ========================================================
 - (void)playSoundNamed:(NSString *)name {
+    static SystemSoundID s_soundTock = 0;
+    static SystemSoundID s_soundChirp = 0;
+    static SystemSoundID s_soundConfirm = 0;
+    static SystemSoundID s_soundTink = 0;
+
+    SystemSoundID targetID = 0;
     NSString *soundFile = nil;
-    if ([name isEqualToString:@"confirm"]) soundFile = @"jbl_confirm.caf";
-    else if ([name isEqualToString:@"begin"]) soundFile = @"jbl_begin.caf";
+
+    if ([name isEqualToString:@"tock"]) {
+        if (s_soundTock == 0) {
+            NSString *p = @"/System/Library/Audio/UISounds/Tock.caf";
+            AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:p], &s_soundTock);
+        }
+        targetID = s_soundTock;
+    } else if ([name isEqualToString:@"chirp"] || [name isEqualToString:@"robot"]) {
+        if (s_soundChirp == 0) {
+            NSString *p = @"/System/Library/Audio/UISounds/short_double_high.caf";
+            AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:p], &s_soundChirp);
+        }
+        targetID = s_soundChirp;
+    } else if ([name isEqualToString:@"confirm"]) {
+        if (s_soundConfirm == 0) {
+            NSString *p = @"/System/Library/Audio/UISounds/jbl_confirm.caf";
+            AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:p], &s_soundConfirm);
+        }
+        targetID = s_soundConfirm;
+    } else if ([name isEqualToString:@"tink"]) {
+        if (s_soundTink == 0) {
+            NSString *p = @"/System/Library/Audio/UISounds/Tink.caf";
+            AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:p], &s_soundTink);
+        }
+        targetID = s_soundTink;
+    } else if ([name isEqualToString:@"begin"]) soundFile = @"jbl_begin.caf";
     else if ([name isEqualToString:@"cancel"]) soundFile = @"jbl_cancel.caf";
     else if ([name isEqualToString:@"shutter"]) soundFile = @"photoShutter.caf";
     else if ([name isEqualToString:@"tweet"]) soundFile = @"tweet_sent.caf";
     else if ([name isEqualToString:@"mail"]) soundFile = @"new-mail.caf";
-    else if ([name isEqualToString:@"tink"]) soundFile = @"Tink.caf";
     else if ([name isEqualToString:@"beep"]) soundFile = @"beep-beep.caf";
     else if ([name isEqualToString:@"alarm"]) soundFile = @"alarm.caf";
     else soundFile = @"jbl_confirm.caf";
 
-    NSString *fullPath = [NSString stringWithFormat:@"/System/Library/Audio/UISounds/%@", soundFile];
-    SystemSoundID soundID;
-    OSStatus err = AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:fullPath], &soundID);
-    if (err == kAudioServicesNoError) {
-        AudioServicesPlaySystemSound(soundID);
+    if (targetID != 0) {
+        AudioServicesPlaySystemSound(targetID);
+    } else if (soundFile) {
+        NSString *fullPath = [NSString stringWithFormat:@"/System/Library/Audio/UISounds/%@", soundFile];
+        SystemSoundID soundID;
+        OSStatus err = AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:fullPath], &soundID);
+        if (err == kAudioServicesNoError) {
+            AudioServicesPlaySystemSound(soundID);
+        }
     }
 }
 
@@ -1110,6 +2102,7 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 
     _audioRecorder.delegate = self;
+    _audioRecorder.meteringEnabled = YES;
     _audioRecordCompletion = Block_copy(completion);
     _isRecording = YES;
 
@@ -1132,6 +2125,16 @@ static DeskCompanionViewController *g_viewController = nil;
     // Animate audio waveform to reflect active listening
     [self setSpeaking:YES];
     [self setStatusTitle:@"AGENT LISTENING //" subtitle:@"Recording audio via iPhone 4S mic"];
+
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
+    _micMeterTimer = [NSTimer scheduledTimerWithTimeInterval:0.05
+                                                      target:self
+                                                    selector:@selector(updateAudioMeters:)
+                                                    userInfo:nil
+                                                     repeats:YES];
 
     if (_audioTimeoutTimer) {
         [_audioTimeoutTimer invalidate];
@@ -1161,6 +2164,10 @@ static DeskCompanionViewController *g_viewController = nil;
 #pragma mark - AVAudioRecorderDelegate
 
 - (void)audioRecorderDidFinishRecording:(AVAudioRecorder *)recorder successfully:(BOOL)flag {
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
     [self setSpeaking:NO];
     [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
 
@@ -1201,6 +2208,10 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)abortRecordingWithError:(NSError *)error {
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
     void (^comp)(NSString *, NSUInteger, NSError *) = nil;
 
     @synchronized(self) {
@@ -1252,6 +2263,206 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 }
 
+- (void)handleProximityChange:(NSNotification *)notification {
+    BOOL isNear = [UIDevice currentDevice].proximityState;
+    if (isNear) {
+        // Prevent iOS telephony screen blanking: force screen unblanked via BackBoardServices
+        static void (*s_BKSSetScreenBlanked)(BOOL) = NULL;
+        static dispatch_once_t s_bksOnce;
+        dispatch_once(&s_bksOnce, ^{
+            void *handle = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_NOW);
+            if (handle) {
+                s_BKSSetScreenBlanked = (void (*)(BOOL))dlsym(handle, "BKSDisplayServicesSetScreenBlanked");
+            }
+        });
+        if (s_BKSSetScreenBlanked) {
+            s_BKSSetScreenBlanked(NO);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                s_BKSSetScreenBlanked(NO);
+            });
+        }
+
+        // Hand hover detected above iPhone 4S top bezel: surprise reaction and glance upward
+        if (_reactionTimer) {
+            [_reactionTimer invalidate];
+            _reactionTimer = nil;
+        }
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        [self playSoundNamed:@"chirp"];
+        [self setExpression:@"surprised" duration:0.18];
+        [self lookAtX:0.0f y:-0.75f duration:0.16];
+        [self setStatusTitle:@"PROXIMITY ALERT //" subtitle:@"Object detected near top bezel"];
+    } else {
+        // Hand removed: grateful cheerful wink and return to neutral
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        [self playSoundNamed:@"tock"];
+        [self setExpression:@"happy" duration:0.20];
+        [self blink];
+        [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Desk companion active"];
+        _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:1.6 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
+    }
+}
+
+- (void)handleMotionData:(CMAcceleration)accel {
+    _lastAccel = accel;
+
+    // Detect sudden desk bumps or device shake (accel magnitude > 2.2g)
+    double mag = sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
+    NSTimeInterval now = CACurrentMediaTime();
+
+    if (mag > 2.2 || fabsf((float)accel.x) > 1.4f || fabsf((float)accel.y) > 1.6f) {
+        if (now - _lastShakeTime > 1.8) {
+            _lastShakeTime = now;
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+            [self playSoundNamed:@"beep"];
+
+            if (_reactionTimer) {
+                [_reactionTimer invalidate];
+                _reactionTimer = nil;
+            }
+
+            [self setExpression:@"confused" duration:0.15];
+
+            // Dizzy wobble animation on eye container
+            CAKeyframeAnimation *wobble = [CAKeyframeAnimation animationWithKeyPath:@"transform.rotation.z"];
+            wobble.values = @[ @(0.0f), @(-0.10f), @(0.10f), @(-0.06f), @(0.04f), @(0.0f) ];
+            wobble.duration = 0.35;
+            wobble.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+            [_eyeContainer.layer addAnimation:wobble forKey:@"dizzyWobble"];
+
+            [self setStatusTitle:@"MOTION JOLT //" subtitle:[NSString stringWithFormat:@"Shake detected (%.1fg)", mag]];
+            _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:2.2 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
+        }
+    } else if (!_isInterpolating && !_isPanning && !_isBlinking && (!_reactionTimer || ![_reactionTimer isValid])) {
+        // Ambient desk tilt parallax: slight organic eye offset tracking gravity
+        if (!_reducedMotion) {
+            CGFloat tiltX = ClampF((CGFloat)accel.x * 0.40f, -0.40f, 0.40f);
+            CGFloat tiltY = ClampF((CGFloat)(-accel.y) * 0.30f, -0.30f, 0.30f);
+            ProceduralEyeConfig leftCfg = _leftTargetExpressionConfig;
+            ProceduralEyeConfig rightCfg = _rightTargetExpressionConfig;
+            leftCfg.centerX += tiltX * 8.0f;
+            leftCfg.centerY += tiltY * 6.0f;
+            rightCfg.centerX += tiltX * 8.0f;
+            rightCfg.centerY += tiltY * 6.0f;
+            leftCfg.hotSpotCenterX = tiltX;
+            leftCfg.hotSpotCenterY = tiltY;
+            rightCfg.hotSpotCenterX = tiltX;
+            rightCfg.hotSpotCenterY = tiltY;
+            _leftCurrentConfig = leftCfg;
+            _rightCurrentConfig = rightCfg;
+            [_leftEye applyConfig:_leftCurrentConfig];
+            [_rightEye applyConfig:_rightCurrentConfig];
+        }
+    }
+}
+
+// Speaker Output: Play audio file with live waveform visualizer metering
+- (BOOL)playAudioFilePath:(NSString *)path {
+    if (!path || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        return NO;
+    }
+
+    if (_audioPlayer) {
+        if ([_audioPlayer isPlaying]) [_audioPlayer stop];
+        _audioPlayer.delegate = nil;
+        [_audioPlayer release];
+        _audioPlayer = nil;
+    }
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
+
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    [session setCategory:AVAudioSessionCategoryPlayback error:nil];
+    [session setActive:YES error:nil];
+
+    NSError *audioErr = nil;
+    NSURL *url = [NSURL fileURLWithPath:path];
+    _audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:url error:&audioErr];
+    if (audioErr || !_audioPlayer) {
+        if (_audioPlayer) {
+            [_audioPlayer release];
+            _audioPlayer = nil;
+        }
+        return NO;
+    }
+
+    _audioPlayer.delegate = self;
+    _audioPlayer.meteringEnabled = YES;
+    [_audioPlayer prepareToPlay];
+    BOOL started = [_audioPlayer play];
+    if (started) {
+        [self setSpeaking:YES];
+        [self setStatusTitle:@"AGENT SPEAKING //" subtitle:[path lastPathComponent]];
+
+        _micMeterTimer = [NSTimer scheduledTimerWithTimeInterval:0.05
+                                                          target:self
+                                                        selector:@selector(updateAudioMeters:)
+                                                        userInfo:nil
+                                                         repeats:YES];
+    }
+    return started;
+}
+
+#pragma mark - AVAudioPlayerDelegate
+
+- (void)audioPlayerDidFinishPlaying:(AVAudioPlayer *)player successfully:(BOOL)flag {
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
+    [self setSpeaking:NO];
+    [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Desk companion active"];
+    if (_audioPlayer == player) {
+        _audioPlayer.delegate = nil;
+        [_audioPlayer release];
+        _audioPlayer = nil;
+    }
+}
+
+- (void)audioPlayerDecodeErrorDidOccur:(AVAudioPlayer *)player error:(NSError *)error {
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
+    [self setSpeaking:NO];
+    if (_audioPlayer == player) {
+        _audioPlayer.delegate = nil;
+        [_audioPlayer release];
+        _audioPlayer = nil;
+    }
+}
+
+// Real-Time Audio Level Metering (Microphone Recording and Speaker Playback)
+- (void)updateAudioMeters:(NSTimer *)timer {
+    float power = -60.0f;
+    if (_audioPlayer && [_audioPlayer isPlaying]) {
+        [_audioPlayer updateMeters];
+        power = [_audioPlayer averagePowerForChannel:0];
+    } else if (_audioRecorder && [_audioRecorder isRecording]) {
+        [_audioRecorder updateMeters];
+        power = [_audioRecorder averagePowerForChannel:0];
+    } else {
+        if (_micMeterTimer) {
+            [_micMeterTimer invalidate];
+            _micMeterTimer = nil;
+        }
+        return;
+    }
+
+    float norm = ClampF((power + 50.0f) / 45.0f, 0.10f, 1.0f);
+    CGFloat barH = 20.0f;
+    CGFloat multipliers[5] = { 0.45f, 0.85f, 1.0f, 0.75f, 0.50f };
+    for (int i = 0; i < 5; i++) {
+        CGFloat h = ClampF(barH * norm * multipliers[i], 3.0f, barH);
+        CGRect bf = _waveBars[i].frame;
+        bf.size.height = h;
+        bf.origin.y = (barH - h) * 0.5f;
+        _waveBars[i].frame = bf;
+    }
+}
+
 // Pixel-Exact Retina Screen Capture
 - (void)captureScreenToPath:(NSString *)path completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -1281,6 +2492,18 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (NSDictionary *)getTelemetry {
+    if ([NSThread isMainThread]) {
+        return [self _syncGetTelemetry];
+    }
+    __block NSDictionary *dict = nil;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        dict = [[self _syncGetTelemetry] retain];
+    });
+    NSDictionary *result = [dict autorelease];
+    return result ? result : @{};
+}
+
+- (NSDictionary *)_syncGetTelemetry {
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
     float batt = [UIDevice currentDevice].batteryLevel * 100.0f;
     UIDeviceBatteryState state = [UIDevice currentDevice].batteryState;
@@ -1308,7 +2531,22 @@ static DeskCompanionViewController *g_viewController = nil;
         @"free_memory_mb": @(freeMemMB),
         @"expression": (_currentExpression ? _currentExpression : @"neutral"),
         @"zen_mode": @(_zenMode),
-        @"reduced_motion": @(_reducedMotion)
+        @"reduced_motion": @(_reducedMotion),
+        @"scanline_opacity": @(_scanlineOverlay ? _scanlineOverlay.scanlineOpacity : 0.0f),
+        @"proximity_near": @([UIDevice currentDevice].proximityState),
+        @"motion_accelerometer": @{
+            @"x": @(_lastAccel.x),
+            @"y": @(_lastAccel.y),
+            @"z": @(_lastAccel.z)
+        },
+        @"is_recording": @(_isRecording),
+        @"is_playing_audio": @(_audioPlayer != nil && [_audioPlayer isPlaying]),
+        @"camera_available": @(YES),
+        @"torch_available": @(YES),
+        @"speaker_available": @(YES),
+        @"microphone_available": @(YES),
+        @"left_eye_params": ProceduralEyeConfigToArray(_leftCurrentConfig),
+        @"right_eye_params": ProceduralEyeConfigToArray(_rightCurrentConfig)
     };
 }
 
@@ -1316,6 +2554,29 @@ static DeskCompanionViewController *g_viewController = nil;
     if (_observersAdded) {
         [[NSNotificationCenter defaultCenter] removeObserver:self];
         _observersAdded = NO;
+    }
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
+    if (_motionManager) {
+        [_motionManager stopAccelerometerUpdates];
+        [_motionManager release];
+        _motionManager = nil;
+    }
+    if (_audioPlayer) {
+        if ([_audioPlayer isPlaying]) [_audioPlayer stop];
+        _audioPlayer.delegate = nil;
+        [_audioPlayer release];
+        _audioPlayer = nil;
+    }
+    if (_proceduralDisplayLink) {
+        [_proceduralDisplayLink invalidate];
+        _proceduralDisplayLink = nil;
+    }
+    if (_interpolationCompletion) {
+        [_interpolationCompletion release];
+        _interpolationCompletion = nil;
     }
     [_bgView release];
     [_statusBarPill release];
@@ -1327,12 +2588,7 @@ static DeskCompanionViewController *g_viewController = nil;
     [_eyeContainer release];
     [_leftEye release];
     [_rightEye release];
-    [_leftPupilCore release];
-    [_rightPupilCore release];
-    [_leftSpecularPrimary release];
-    [_leftSpecularSecondary release];
-    [_rightSpecularPrimary release];
-    [_rightSpecularSecondary release];
+    [_scanlineOverlay release];
     [_waveformContainer release];
     for (int i = 0; i < 5; i++) [_waveBars[i] release];
     [_thoughtCard release];
@@ -1349,16 +2605,6 @@ static DeskCompanionViewController *g_viewController = nil;
         _audioTimeoutTimer = nil;
     }
     [_currentExpression release];
-    if (_leftIrisGradient) {
-        [_leftIrisGradient removeFromSuperlayer];
-        [_leftIrisGradient release];
-        _leftIrisGradient = nil;
-    }
-    if (_rightIrisGradient) {
-        [_rightIrisGradient removeFromSuperlayer];
-        [_rightIrisGradient release];
-        _rightIrisGradient = nil;
-    }
     if (_audioRecorder) {
         if ([_audioRecorder isRecording]) [_audioRecorder stop];
         _audioRecorder.delegate = nil;
@@ -1547,13 +2793,80 @@ static void *SocketServerThread(void *arg) {
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:(soundName ? soundName : @"") forKey:@"sound"];
+                    } else if ([command isEqualToString:@"play_audio"]) {
+                        NSString *audioPath = [cmdDict objectForKey:@"path"];
+                        NSString *soundName = [cmdDict objectForKey:@"name"];
+                        if (soundName && !audioPath) {
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                if (g_viewController) [g_viewController playSoundNamed:soundName];
+                            });
+                            [response setObject:@"ok" forKey:@"status"];
+                            [response setObject:soundName forKey:@"sound"];
+                        } else if (audioPath) {
+                            __block BOOL started = NO;
+                            dispatch_sync(dispatch_get_main_queue(), ^{
+                                if (g_viewController) started = [g_viewController playAudioFilePath:audioPath];
+                            });
+                            if (started) {
+                                [response setObject:@"ok" forKey:@"status"];
+                                [response setObject:audioPath forKey:@"path"];
+                            } else {
+                                [response setObject:@"failed" forKey:@"status"];
+                                [response setObject:@"playback_error_or_file_missing" forKey:@"error"];
+                            }
+                        } else {
+                            [response setObject:@"missing_parameter" forKey:@"error"];
+                            [response setObject:@"'path' or 'name' parameter required" forKey:@"details"];
+                        }
                     } else if ([command isEqualToString:@"expression"]) {
                         NSString *exp = [cmdDict objectForKey:@"name"];
+                        id durObj = [cmdDict objectForKey:@"duration"];
+                        NSTimeInterval dur = (durObj && [durObj respondsToSelector:@selector(doubleValue)]) ? [durObj doubleValue] : 0.28;
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setExpression:exp];
+                            if (g_viewController) [g_viewController setExpression:exp duration:dur];
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:(exp ? exp : @"") forKey:@"expression"];
+                    } else if ([command isEqualToString:@"look_at"]) {
+                        id xObj = [cmdDict objectForKey:@"x"];
+                        id yObj = [cmdDict objectForKey:@"y"];
+                        id durObj = [cmdDict objectForKey:@"duration"];
+                        CGFloat x = (xObj && [xObj respondsToSelector:@selector(floatValue)]) ? [xObj floatValue] : 0.0f;
+                        CGFloat y = (yObj && [yObj respondsToSelector:@selector(floatValue)]) ? [yObj floatValue] : 0.0f;
+                        NSTimeInterval dur = (durObj && [durObj respondsToSelector:@selector(doubleValue)]) ? [durObj doubleValue] : 0.22;
+                        if (isnan(x) || isinf(x)) x = 0.0f;
+                        if (isnan(y) || isinf(y)) y = 0.0f;
+                        x = ClampF(x, -1.0f, 1.0f);
+                        y = ClampF(y, -1.0f, 1.0f);
+                        if (isnan(dur) || isinf(dur) || dur < 0.0) dur = 0.22;
+                        dur = fmin(dur, 60.0);
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (g_viewController) [g_viewController lookAtX:x y:y duration:dur];
+                        });
+                        [response setObject:@"ok" forKey:@"status"];
+                        [response setObject:@(x) forKey:@"x"];
+                        [response setObject:@(y) forKey:@"y"];
+                    } else if ([command isEqualToString:@"procedural_eye_params"]) {
+                        NSArray *leftArr = [cmdDict objectForKey:@"left"];
+                        NSArray *rightArr = [cmdDict objectForKey:@"right"];
+                        id durObj = [cmdDict objectForKey:@"duration"];
+                        NSTimeInterval dur = (durObj && [durObj respondsToSelector:@selector(doubleValue)]) ? [durObj doubleValue] : 0.28;
+                        if (isnan(dur) || isinf(dur) || dur < 0.0) dur = 0.28;
+                        dur = fmin(dur, 60.0);
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (g_viewController) [g_viewController setProceduralParamsLeft:leftArr right:rightArr duration:dur];
+                        });
+                        [response setObject:@"ok" forKey:@"status"];
+                    } else if ([command isEqualToString:@"scanlines"]) {
+                        id opObj = [cmdDict objectForKey:@"opacity"];
+                        CGFloat op = (opObj && [opObj respondsToSelector:@selector(floatValue)]) ? [opObj floatValue] : 0.12f;
+                        if (isnan(op) || isinf(op)) op = 0.12f;
+                        op = ClampF(op, 0.0f, 0.40f);
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (g_viewController) [g_viewController setScanlineOpacity:op];
+                        });
+                        [response setObject:@"ok" forKey:@"status"];
+                        [response setObject:@(op) forKey:@"scanlines"];
                     } else if ([command isEqualToString:@"status"]) {
                         NSString *title = [cmdDict objectForKey:@"title"];
                         NSString *subtitle = [cmdDict objectForKey:@"subtitle"];
@@ -1581,6 +2894,24 @@ static void *SocketServerThread(void *arg) {
                             if (g_viewController) [g_viewController toggleZenMode];
                         });
                         [response setObject:@"ok" forKey:@"status"];
+                    } else if ([command isEqualToString:@"orientation"]) {
+                        NSString *orientStr = [cmdDict objectForKey:@"orientation"];
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            UIInterfaceOrientation targetOrient = UIInterfaceOrientationPortrait;
+                            if ([orientStr isEqualToString:@"landscape_left"]) targetOrient = UIInterfaceOrientationLandscapeLeft;
+                            else if ([orientStr isEqualToString:@"landscape_right"] || [orientStr isEqualToString:@"landscape"]) targetOrient = UIInterfaceOrientationLandscapeRight;
+                            else if ([orientStr isEqualToString:@"upside_down"]) targetOrient = UIInterfaceOrientationPortraitUpsideDown;
+                            else targetOrient = UIInterfaceOrientationPortrait;
+
+                            if ([[UIDevice currentDevice] respondsToSelector:@selector(setOrientation:)]) {
+                                [[UIDevice currentDevice] performSelector:@selector(setOrientation:) withObject:(id)targetOrient];
+                            }
+                            if (g_viewController) {
+                                [g_viewController updateLayoutForOrientation:targetOrient];
+                            }
+                        });
+                        [response setObject:@"ok" forKey:@"status"];
+                        [response setObject:(orientStr ? orientStr : @"portrait") forKey:@"orientation"];
                     } else if ([command isEqualToString:@"reduced_motion"]) {
                         id en = [cmdDict objectForKey:@"enable"];
                         if (!en || ![en isKindOfClass:[NSNumber class]] || CFGetTypeID((CFTypeRef)en) != CFBooleanGetTypeID()) {
