@@ -211,18 +211,20 @@ class DeskCompanion:
         return res
 
     def inspect_environment(self, save_dir="."):
-        """Captures both front (desk/user) and rear (workspace macro) angles."""
+        """Captures both front (desk/user) and rear (workspace macro) angles with hardware settle delay."""
         os.makedirs(save_dir, exist_ok=True)
         ts = int(time.time())
         front_path = os.path.join(save_dir, f"inspect_front_{ts}.jpg")
         back_path = os.path.join(save_dir, f"inspect_back_{ts}.jpg")
 
         front_res = self.snapshot("front", save_to=front_path)
-        time.sleep(0.5)
+        # Settle delay between camera switches to allow iOS 6 mediaserverd camera ISP hardware release
+        time.sleep(1.0)
         back_res = self.snapshot("back", save_to=back_path)
 
+        overall_status = "ok" if (front_res.get("status") == "ok" and back_res.get("status") == "ok") else "partial_failure"
         return {
-            "status": "ok",
+            "status": overall_status,
             "front": front_res,
             "back": back_res,
             "timestamp": ts
