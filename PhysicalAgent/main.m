@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <mach/mach.h>
+#include <signal.h>
 
 // ========================================================
 // 1. ATMOSPHERIC CANVAS DEPTH (Radial Gradient Background)
@@ -1228,7 +1229,18 @@ static DeskCompanionViewController *g_viewController = nil;
 // ========================================================
 // TCP COMMAND SERVER (Port 5000)
 // ========================================================
+static void SafeSendAndClose(int fd, NSData *data) {
+    if (fd < 0) return;
+    if (data && [data length] > 0) {
+        send(fd, [data bytes], [data length], 0);
+        send(fd, "\n", 1, 0);
+    }
+    close(fd);
+}
+
 static void *SocketServerThread(void *arg) {
+    signal(SIGPIPE, SIG_IGN);
+
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) return NULL;
 
@@ -1258,6 +1270,14 @@ static void *SocketServerThread(void *arg) {
         socklen_t client_len = sizeof(client_addr);
         int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) continue;
+
+        int nosigpipe = 1;
+        setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+        struct timeval tv;
+        tv.tv_sec = 10;
+        tv.tv_usec = 0;
+        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             char buffer[4096];
@@ -1362,20 +1382,12 @@ static void *SocketServerThread(void *arg) {
                                         if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
                                     }
                                     NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                    if (data) {
-                                        write(client_fd, [data bytes], [data length]);
-                                        write(client_fd, "\n", 1);
-                                    }
-                                    close(client_fd);
+                                    SafeSendAndClose(client_fd, data);
                                 }];
                             } else {
                                 NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
                                 NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                if (data) {
-                                    write(client_fd, [data bytes], [data length]);
-                                    write(client_fd, "\n", 1);
-                                }
-                                close(client_fd);
+                                SafeSendAndClose(client_fd, data);
                             }
                         });
                     } else if ([command isEqualToString:@"record_audio"]) {
@@ -1402,20 +1414,12 @@ static void *SocketServerThread(void *arg) {
                                         if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
                                     }
                                     NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                    if (data) {
-                                        write(client_fd, [data bytes], [data length]);
-                                        write(client_fd, "\n", 1);
-                                    }
-                                    close(client_fd);
+                                    SafeSendAndClose(client_fd, data);
                                 }];
                             } else {
                                 NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
                                 NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                if (data) {
-                                    write(client_fd, [data bytes], [data length]);
-                                    write(client_fd, "\n", 1);
-                                }
-                                close(client_fd);
+                                SafeSendAndClose(client_fd, data);
                             }
                         });
                     } else if ([command isEqualToString:@"screenshot"]) {
@@ -1436,20 +1440,12 @@ static void *SocketServerThread(void *arg) {
                                         if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
                                     }
                                     NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                    if (data) {
-                                        write(client_fd, [data bytes], [data length]);
-                                        write(client_fd, "\n", 1);
-                                    }
-                                    close(client_fd);
+                                    SafeSendAndClose(client_fd, data);
                                 }];
                             } else {
                                 NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
                                 NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                if (data) {
-                                    write(client_fd, [data bytes], [data length]);
-                                    write(client_fd, "\n", 1);
-                                }
-                                close(client_fd);
+                                SafeSendAndClose(client_fd, data);
                             }
                         });
                     } else if ([command isEqualToString:@"telemetry"]) {
@@ -1461,20 +1457,12 @@ static void *SocketServerThread(void *arg) {
 
                     if (!handledAsynchronously) {
                         NSData *respData = [NSJSONSerialization dataWithJSONObject:response options:0 error:nil];
-                        if (respData) {
-                            write(client_fd, [respData bytes], [respData length]);
-                            write(client_fd, "\n", 1);
-                        }
-                        close(client_fd);
+                        SafeSendAndClose(client_fd, respData);
                     }
                 } else {
                     [response setObject:@"invalid_json" forKey:@"error"];
                     NSData *respData = [NSJSONSerialization dataWithJSONObject:response options:0 error:nil];
-                    if (respData) {
-                        write(client_fd, [respData bytes], [respData length]);
-                        write(client_fd, "\n", 1);
-                    }
-                    close(client_fd);
+                    SafeSendAndClose(client_fd, respData);
                 }
             } else {
                 close(client_fd);

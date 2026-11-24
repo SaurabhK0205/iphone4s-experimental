@@ -109,18 +109,20 @@ class DeskCompanion:
         self._active_port = target_port
         self._active_ssh_port = target_ssh
 
-        s = None
+        def _execute_socket(host, port):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect((host, port))
+                payload = json.dumps(cmd_dict).encode("utf-8")
+                s.sendall(payload)
+                data = s.recv(8192)
+                if not data:
+                    return {"error": "empty_response"}
+                return json.loads(data.decode("utf-8"))
+
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(timeout)
-            s.connect((target_host, target_port))
+            return _execute_socket(target_host, target_port)
         except (ConnectionRefusedError, socket.timeout, OSError) as conn_err:
-            if s:
-                try:
-                    s.close()
-                except Exception:
-                    pass
-            # Connection failed before transmission; invalidate target and try alternate if auto-detecting
             if self.host is None:
                 self._active_host = None
                 self._active_port = None
@@ -129,23 +131,12 @@ class DeskCompanion:
                 alt_port = WIFI_PORT if target_port == DEFAULT_PORT else DEFAULT_PORT
                 alt_ssh = WIFI_SSH_PORT if target_ssh == SSH_PORT else SSH_PORT
                 try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(timeout)
-                    s.connect((alt_host, alt_port))
+                    res = _execute_socket(alt_host, alt_port)
                     self._active_host, self._active_port, self._active_ssh_port = alt_host, alt_port, alt_ssh
+                    return res
                 except Exception:
                     return {"error": "connection_refused", "message": f"Companion server unreachable on {target_host}:{target_port} and {alt_host}:{alt_port}."}
-            else:
-                return {"error": str(conn_err)}
-
-        try:
-            payload = json.dumps(cmd_dict).encode("utf-8")
-            s.sendall(payload)
-            data = s.recv(8192)
-            s.close()
-            if not data:
-                return {"error": "empty_response"}
-            return json.loads(data.decode("utf-8"))
+            return {"error": str(conn_err)}
         except Exception as e:
             if self.host is None:
                 self._active_host = None
