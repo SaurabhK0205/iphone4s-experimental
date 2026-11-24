@@ -284,11 +284,10 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
             _hotSpotGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, hotComponents, hotLocs, 2);
         }
 
-        // Outer phosphor glow blooming directly into the obsidian black bezel
-        self.layer.shadowColor = [UIColor colorWithRed:0.02 green:0.88 blue:1.0 alpha:1.0].CGColor;
-        self.layer.shadowOffset = CGSizeZero;
-        self.layer.shadowRadius = 8.0f;
-        self.layer.shadowOpacity = 0.65f;
+        // High-contrast retro display: zero shadow blur silhouette
+        self.layer.shadowColor = nil;
+        self.layer.shadowOpacity = 0.0f;
+        self.layer.shadowRadius = 0.0f;
 
         _config = ProceduralEyeConfigDefault();
         [self applyConfig:_config];
@@ -339,9 +338,7 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
 }
 
 - (void)setGlowColor:(UIColor *)color {
-    if (color) {
-        self.layer.shadowColor = color.CGColor;
-    }
+    // Zero-shadow invariant: pure high-contrast retro display
 }
 
 - (void)applyConfig:(ProceduralEyeConfig)config {
@@ -353,11 +350,6 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     t = CGAffineTransformScale(t, ClampF(config.scaleX, 0.05f, 3.0f), ClampF(config.scaleY, 0.05f, 3.0f));
     self.transform = t;
     self.center = CGPointMake(_defaultCenter.x + config.centerX, _defaultCenter.y + config.centerY);
-
-    // Dynamic phosphor bloom: zero shadow blur during blinks and vertical squashes
-    CGFloat sY = ClampF(config.scaleY, 0.0f, 1.0f);
-    self.layer.shadowRadius = 8.0f * (sY * sY);
-    self.layer.shadowOpacity = 0.65f * sY;
 
     [self setNeedsDisplay];
 }
@@ -401,7 +393,6 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     [eyePath addLineToPoint:CGPointMake(0.0f, rTL)];
     [eyePath addArcWithCenter:CGPointMake(rTL, rTL) radius:rTL startAngle:(CGFloat)M_PI endAngle:(CGFloat)(1.5 * M_PI) clockwise:YES];
     [eyePath closePath];
-    self.layer.shadowPath = eyePath.CGPath;
 
     // Clip to the base squircle eye shape
     CGContextSaveGState(ctx);
