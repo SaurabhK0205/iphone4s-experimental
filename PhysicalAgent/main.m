@@ -139,36 +139,47 @@ static inline ProceduralEyeConfig ProceduralEyeConfigLerp(ProceduralEyeConfig a,
     return c;
 }
 
+static CGFloat SafeFloatFromArray(NSArray *arr, NSUInteger index, CGFloat fallback) {
+    if (!arr || index >= [arr count]) return fallback;
+    id obj = [arr objectAtIndex:index];
+    if ([obj respondsToSelector:@selector(floatValue)]) {
+        CGFloat val = (CGFloat)[obj floatValue];
+        if (isnan(val) || isinf(val)) return fallback;
+        return val;
+    }
+    return fallback;
+}
+
 static ProceduralEyeConfig ProceduralEyeConfigFromArray(NSArray *arr, ProceduralEyeConfig fallback) {
     if (!arr || ![arr isKindOfClass:[NSArray class]] || [arr count] < 25) {
         return fallback;
     }
     ProceduralEyeConfig c;
-    c.centerX = [[arr objectAtIndex:0] floatValue];
-    c.centerY = [[arr objectAtIndex:1] floatValue];
-    c.scaleX = [[arr objectAtIndex:2] floatValue];
-    c.scaleY = [[arr objectAtIndex:3] floatValue];
-    c.angle = [[arr objectAtIndex:4] floatValue];
-    c.lowerInnerRadiusX = [[arr objectAtIndex:5] floatValue];
-    c.lowerInnerRadiusY = [[arr objectAtIndex:6] floatValue];
-    c.upperInnerRadiusX = [[arr objectAtIndex:7] floatValue];
-    c.upperInnerRadiusY = [[arr objectAtIndex:8] floatValue];
-    c.upperOuterRadiusX = [[arr objectAtIndex:9] floatValue];
-    c.upperOuterRadiusY = [[arr objectAtIndex:10] floatValue];
-    c.lowerOuterRadiusX = [[arr objectAtIndex:11] floatValue];
-    c.lowerOuterRadiusY = [[arr objectAtIndex:12] floatValue];
-    c.upperLidY = [[arr objectAtIndex:13] floatValue];
-    c.upperLidAngle = [[arr objectAtIndex:14] floatValue];
-    c.upperLidBend = [[arr objectAtIndex:15] floatValue];
-    c.lowerLidY = [[arr objectAtIndex:16] floatValue];
-    c.lowerLidAngle = [[arr objectAtIndex:17] floatValue];
-    c.lowerLidBend = [[arr objectAtIndex:18] floatValue];
-    c.saturation = [[arr objectAtIndex:19] floatValue];
-    c.lightness = [[arr objectAtIndex:20] floatValue];
-    c.glowSize = [[arr objectAtIndex:21] floatValue];
-    c.hotSpotCenterX = [[arr objectAtIndex:22] floatValue];
-    c.hotSpotCenterY = [[arr objectAtIndex:23] floatValue];
-    c.glowLightness = [[arr objectAtIndex:24] floatValue];
+    c.centerX = SafeFloatFromArray(arr, 0, fallback.centerX);
+    c.centerY = SafeFloatFromArray(arr, 1, fallback.centerY);
+    c.scaleX = ClampF(SafeFloatFromArray(arr, 2, fallback.scaleX), 0.05f, 3.0f);
+    c.scaleY = ClampF(SafeFloatFromArray(arr, 3, fallback.scaleY), 0.05f, 3.0f);
+    c.angle = ClampF(SafeFloatFromArray(arr, 4, fallback.angle), -180.0f, 180.0f);
+    c.lowerInnerRadiusX = ClampF(SafeFloatFromArray(arr, 5, fallback.lowerInnerRadiusX), 0.05f, 1.0f);
+    c.lowerInnerRadiusY = ClampF(SafeFloatFromArray(arr, 6, fallback.lowerInnerRadiusY), 0.05f, 1.0f);
+    c.upperInnerRadiusX = ClampF(SafeFloatFromArray(arr, 7, fallback.upperInnerRadiusX), 0.05f, 1.0f);
+    c.upperInnerRadiusY = ClampF(SafeFloatFromArray(arr, 8, fallback.upperInnerRadiusY), 0.05f, 1.0f);
+    c.upperOuterRadiusX = ClampF(SafeFloatFromArray(arr, 9, fallback.upperOuterRadiusX), 0.05f, 1.0f);
+    c.upperOuterRadiusY = ClampF(SafeFloatFromArray(arr, 10, fallback.upperOuterRadiusY), 0.05f, 1.0f);
+    c.lowerOuterRadiusX = ClampF(SafeFloatFromArray(arr, 11, fallback.lowerOuterRadiusX), 0.05f, 1.0f);
+    c.lowerOuterRadiusY = ClampF(SafeFloatFromArray(arr, 12, fallback.lowerOuterRadiusY), 0.05f, 1.0f);
+    c.upperLidY = ClampF(SafeFloatFromArray(arr, 13, fallback.upperLidY), 0.0f, 1.0f);
+    c.upperLidAngle = ClampF(SafeFloatFromArray(arr, 14, fallback.upperLidAngle), -90.0f, 90.0f);
+    c.upperLidBend = ClampF(SafeFloatFromArray(arr, 15, fallback.upperLidBend), -2.0f, 2.0f);
+    c.lowerLidY = ClampF(SafeFloatFromArray(arr, 16, fallback.lowerLidY), 0.0f, 1.0f);
+    c.lowerLidAngle = ClampF(SafeFloatFromArray(arr, 17, fallback.lowerLidAngle), -90.0f, 90.0f);
+    c.lowerLidBend = ClampF(SafeFloatFromArray(arr, 18, fallback.lowerLidBend), -2.0f, 2.0f);
+    c.saturation = SafeFloatFromArray(arr, 19, fallback.saturation);
+    c.lightness = SafeFloatFromArray(arr, 20, fallback.lightness);
+    c.glowSize = ClampF(SafeFloatFromArray(arr, 21, fallback.glowSize), 0.1f, 3.0f);
+    c.hotSpotCenterX = ClampF(SafeFloatFromArray(arr, 22, fallback.hotSpotCenterX), -1.0f, 1.0f);
+    c.hotSpotCenterY = ClampF(SafeFloatFromArray(arr, 23, fallback.hotSpotCenterY), -1.0f, 1.0f);
+    c.glowLightness = ClampF(SafeFloatFromArray(arr, 24, fallback.glowLightness), 0.0f, 1.0f);
     return c;
 }
 
@@ -1474,10 +1485,14 @@ static DeskCompanionViewController *g_viewController = nil;
     blinkRight.upperLidBend = 0.0f;
     blinkRight.lowerLidBend = 0.0f;
 
+    __unsafe_unretained DeskCompanionViewController *weakSelf = self;
     [self interpolateToLeft:blinkLeft right:blinkRight duration:0.070 easeOut:YES completion:^{
         // Organic bounce open: 110ms ease-in back to active expression
-        [self interpolateToLeft:self->_leftTargetExpressionConfig right:self->_rightTargetExpressionConfig duration:0.110 easeOut:NO completion:^{
-            self->_isBlinking = NO;
+        if (!weakSelf) return;
+        [weakSelf interpolateToLeft:weakSelf->_leftTargetExpressionConfig right:weakSelf->_rightTargetExpressionConfig duration:0.110 easeOut:NO completion:^{
+            if (weakSelf) {
+                weakSelf->_isBlinking = NO;
+            }
         }];
     }];
 }
@@ -1498,11 +1513,12 @@ static DeskCompanionViewController *g_viewController = nil;
     saccadeRight.hotSpotCenterY = ClampF(saccadeRight.hotSpotCenterY + ry, -1.0f, 1.0f);
 
     // 100ms rapid saccade burst
+    __unsafe_unretained DeskCompanionViewController *weakSelf = self;
     [self interpolateToLeft:saccadeLeft right:saccadeRight duration:0.10 easeOut:YES completion:^{
         // Hold fixation for 1.8 seconds, then return
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (!self->_isBlinking && !self->_isPanning) {
-                [self interpolateToLeft:self->_leftTargetExpressionConfig right:self->_rightTargetExpressionConfig duration:0.22 easeOut:YES completion:nil];
+            if (weakSelf && !weakSelf->_isBlinking && !weakSelf->_isPanning) {
+                [weakSelf interpolateToLeft:weakSelf->_leftTargetExpressionConfig right:weakSelf->_rightTargetExpressionConfig duration:0.22 easeOut:YES completion:nil];
             }
         });
     }];

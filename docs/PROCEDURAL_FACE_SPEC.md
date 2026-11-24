@@ -9,7 +9,7 @@ The PhysicalAgent Procedural Face Engine provides living, reactive eye animation
 3. **`playfultechnology/esp32-eyes`**: Asymmetric emotion presets (e.g. skeptical one-eyebrow raise) and inverse curvature cutout math.
 4. **`ggldnl/Procedural-Expression-Library`**: Normalized coordinate space, perspective foreshortening, and dynamic scale adaptation.
 
----
+***
 
 ## 2. Mathematical Parameter Specification
 
@@ -65,12 +65,12 @@ Each eye is mathematically defined by 25 parameters, grouped into five functiona
 | 24 | `GlowLightness` | `[0.0, 1.0]` | `0.85` | Specular glare intensity |
 
 ### Whole Face Global Parameters
-- `faceAngle`: Rotation of the entire face stage in degrees (`[-30.0, 30.0]`).
-- `faceCenterX`, `faceCenterY`: Optical center translation offsets (`[-40.0, 40.0]`).
-- `faceScaleX`, `faceScaleY`: Whole-face squish/stretch for breathing and impact recoil.
-- `scanlineOpacity`: CRT scanline grid contrast overlay (`[0.0, 0.40]`).
+* `faceAngle`: Rotation of the entire face stage in degrees (`[-30.0, 30.0]`).
+* `faceCenterX`, `faceCenterY`: Optical center translation offsets (`[-40.0, 40.0]`).
+* `faceScaleX`, `faceScaleY`: Whole-face squish/stretch for breathing and impact recoil.
+* `scanlineOpacity`: CRT scanline grid contrast overlay (`[0.0, 0.40]`).
 
----
+***
 
 ## 3. Bézier Geometry & Clipping Math
 
@@ -89,17 +89,17 @@ The base eye contour is generated via an 8-point cubic Bézier path (`UIBezierPa
 ### 3.2 Eyelid Mask Kinematics
 Instead of simple rectangular clipping, eyelids are rendered as curved vector masks:
 
-- **Upper Eyelid Fold**:
+* **Upper Eyelid Fold**:
   * Origin point $A = (-W/2, y_{lid\_top} - \tan(\theta_{lid}) \cdot W/2)$
   * Destination point $B = (W/2, y_{lid\_top} + \tan(\theta_{lid}) \cdot W/2)$
   * Midpoint control curve:
     $$C = \left(0, y_{lid\_top} - bend_{lid\_top} \cdot \frac{H}{3}\right)$$
   * The path closes upwards over the eye bounds to create the occluding mask.
 
-- **Lower Eyelid Fold**:
+* **Lower Eyelid Fold**:
   * Mirrors the upper eyelid with inverse vertical displacement, enabling smiling crescent eyes or skeptical squinting.
 
----
+***
 
 ## 4. Emotional State Preset Library (Official Cozmo & Vector 21 Rig)
 
@@ -128,42 +128,42 @@ The engine defines 21 core emotional presets synthesized directly from official 
 21. **`awe`**: Giant rounded glowing eyes with maximized luminous core (`scaleX = 1.15`, `scaleY = 1.20`, `GlowSize = 1.50`, `radii = 0.85`).
 
 Additional expressive state aliases:
-- `curious`: Tilted asymmetric inquiry with directional gaze offset.
-- `thinking`: Eyes shifted upward and inward with subtle brow tilt, amethyst accent.
-- `alert`: Contracted gaze hotspot, angular upper lids, crimson accent.
-- `asleep`: Eyelids fully closed, rendering as a calm resting slit.
-- `glance_left`, `glance_right`: Directed horizontal gaze shifts.
+* `curious`: Tilted asymmetric inquiry with directional gaze offset.
+* `thinking`: Eyes shifted upward and inward with subtle brow tilt, amethyst accent.
+* `alert`: Contracted gaze hotspot, angular upper lids, crimson accent.
+* `asleep`: Eyelids fully closed, rendering as a calm resting slit.
+* `glance_left`, `glance_right`: Directed horizontal gaze shifts.
 
----
+***
 
 ## 5. Visual Craft & Pure Obsidian Black Canvas
 
 1. **Bezel Blending Architecture**:
-   - The screen canvas is strictly pure pitch black (`#000000`).
-   - Zero radial gradient, zero blue vignette, zero light bleed.
-   - On the physical iPhone 4S Retina display, the pitch-black pixels blend seamlessly into the front glass bezel, transforming the entire phone into a unified robot head/visor.
+   * The screen canvas is strictly pure pitch black (`#000000`).
+   * Zero radial gradient, zero blue vignette, zero light bleed.
+   * On the physical iPhone 4S Retina display, the pitch-black pixels blend seamlessly into the front glass bezel, transforming the entire phone into a unified robot head/visor.
 2. **Retro CRT & OLED Illumination**:
-   - Pure Black Boundaries: Canvas maintains pure RGB(0,0,0) black pixels outside the eye squircle, with outer layer shadows disabled to eliminate backlight bloom and merge invisibly into the glossy front glass bezel.
-   - Luminous White-Hot Core: A high-brightness white hotspot (`#FFFFFF` to `#C8FFFF`) radiates inside each cyan eye and smoothly tracks gaze coordinates (`HotSpotCenterX`, `HotSpotCenterY`).
-   - CRT Raster Scanlines: A subtle horizontal raster scanline overlay (1pt line every 3pt, 16% opacity) reproduces the analog phosphor monitor texture of 1980s-90s electronics.
+   * Pure Black Boundaries: Canvas maintains pure RGB(0,0,0) black pixels outside the eye squircle, with outer layer shadows disabled to eliminate backlight bloom and merge invisibly into the glossy front glass bezel.
+   * Luminous White-Hot Core: A high-brightness white hotspot (`#FFFFFF` to `#C8FFFF`) radiates inside each cyan eye and smoothly tracks gaze coordinates (`HotSpotCenterX`, `HotSpotCenterY`).
+   * CRT Raster Scanlines: A subtle horizontal raster scanline overlay (1pt line every 3pt, 16% opacity) reproduces the analog phosphor monitor texture of 1980s-90s electronics.
 3. **Pure Face Mode (Zero HUD Clutter)**:
-   - Status bar pills, thought cards, and audio waveforms are hidden by default (`alpha = 0.0`).
-   - Double-tapping the physical screen smoothly toggles Zen mode (`toggleZenMode`) to inspect telemetry if needed.
+   * Status bar pills, thought cards, and audio waveforms are hidden by default (`alpha = 0.0`).
+   * Double-tapping the physical screen smoothly toggles Zen mode (`toggleZenMode`) to inspect telemetry if needed.
 
----
+***
 
 ## 6. Emil Kowalski Motion Principles & Timing
 
 1. **Ambient State Changes**:
-   - Transitions between emotional presets use spring interpolation over **260ms to 320ms**.
-   - Timing curve: Custom ease-out on enter (starts fast, feels alive), fast ease-in on exit.
+   * Transitions between emotional presets use spring interpolation over **260ms to 320ms**.
+   * Timing curve: Custom ease-out on enter (starts fast, feels alive), fast ease-in on exit.
 2. **Tactile Interaction**:
-   - On screen touch: Immediate 80ms tactile squash (`scale(0.93)`) with simultaneous ERM vibration pulse and Tink click.
-   - Zero animation delay for socket commands and telemetry polling.
+   * On screen touch: Immediate 80ms tactile squash (`scale(0.93)`) with simultaneous ERM vibration pulse and Tink click.
+   * Zero animation delay for socket commands and telemetry polling.
 3. **Organic Blinks**:
-   - Fast close: 70ms ease-out via eyelid path closure.
-   - Organic rebound open: 110ms ease-in with slight 2% overshoot.
+   * Fast close: 70ms ease-out via eyelid path closure.
+   * Organic rebound open: 110ms ease-in with slight 2% overshoot.
 4. **Cause-Based Gaze**:
-   - Saccades always move the gaze hotspot first (100ms), followed by subtle corneal follow-through (secondary action).
+   * Saccades always move the gaze hotspot first (100ms), followed by subtle corneal follow-through (secondary action).
 5. **Reduced Motion**:
-   - When enabled via settings, ambient eye saccades and breathing cycles are suppressed, while preserving static parametric expression shapes.
+   * When enabled via settings, ambient eye saccades and breathing cycles are suppressed, while preserving static parametric expression shapes.
