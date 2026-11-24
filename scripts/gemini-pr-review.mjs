@@ -226,11 +226,13 @@ async function getAvailableModels(apiKey) {
           .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
           .map((m) => m.name.replace(/^models\//, ''));
         if (supported.length > 0) {
-          const nonReviewKeywords = ['tts', 'embed', 'image', 'audio', 'realtime', 'live', 'preview'];
-          const textModels = supported.filter((m) => !nonReviewKeywords.some((k) => m.toLowerCase().includes(k)));
-          const flashModels = textModels.filter((m) => m.includes('flash'));
-          const otherModels = textModels.filter((m) => !m.includes('flash'));
-          return [...flashModels, ...otherModels];
+          const nonTextKeywords = ['tts', 'embed', 'image', 'audio', 'realtime', 'live'];
+          const textOnly = supported.filter((m) => !nonTextKeywords.some((k) => m.toLowerCase().includes(k)));
+          const stableModels = textOnly.filter((m) => !m.toLowerCase().includes('preview'));
+          const previewModels = textOnly.filter((m) => m.toLowerCase().includes('preview'));
+          const flashStable = stableModels.filter((m) => m.includes('flash'));
+          const otherStable = stableModels.filter((m) => !m.includes('flash'));
+          return [...flashStable, ...otherStable, ...previewModels];
         }
       }
     }

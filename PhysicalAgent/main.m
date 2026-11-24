@@ -87,8 +87,15 @@ static void PruneOldTmpArtifacts(void) {
                 if ([file hasPrefix:@"companion_snapshot_"] ||
                     [file hasPrefix:@"companion_audio_"] ||
                     [file hasPrefix:@"companion_screen_"]) {
+                    NSString *ext = [file pathExtension];
+                    if (![ext isEqualToString:@"jpg"] && ![ext isEqualToString:@"wav"] && ![ext isEqualToString:@"png"]) {
+                        continue;
+                    }
                     NSString *fullPath = [tmpDir stringByAppendingPathComponent:file];
                     NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+                    if (![[attrs fileType] isEqualToString:NSFileTypeRegular]) {
+                        continue;
+                    }
                     NSDate *modDate = [attrs fileModificationDate];
                     if (modDate && [modDate compare:cutoff] == NSOrderedAscending) {
                         [fm removeItemAtPath:fullPath error:nil];
@@ -171,7 +178,7 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)setExpression:(NSString *)expression;
 - (void)setStatusTitle:(NSString *)title subtitle:(NSString *)subtitle;
 - (void)blink;
-- (void)setTorch:(BOOL)enable;
+- (BOOL)setTorch:(BOOL)enable;
 - (void)setSpeaking:(BOOL)speaking;
 - (void)playSoundNamed:(NSString *)name;
 - (void)setReducedMotion:(BOOL)reduced;
@@ -508,13 +515,14 @@ static DeskCompanionViewController *g_viewController = nil;
 // EMIL KOWALSKI MOTION & ANIMATION FRAMEWORK
 // ========================================================
 - (void)triggerRandomBlink {
-    if (!_isBlinking && !_isSpeaking && ![_currentExpression isEqualToString:@"sleep"]) {
+    if (!_isBlinking && !_isSpeaking && !_isPanning && ![_currentExpression isEqualToString:@"sleep"]) {
         [self blink];
     }
 }
 
 // GPU-Accelerated Asymmetrical Eyelid Kinematics (Layer Transform Scale, 0% CPU Overhead)
 - (void)blink {
+    if (_isPanning) return;
     _isBlinking = YES;
 
     // Fast organic close: 75ms ease-out via GPU transform scale
@@ -568,9 +576,12 @@ static DeskCompanionViewController *g_viewController = nil;
         // Hold fixation for 1.8 seconds, then perform subtle micro-correction and return
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (self->_isPanning) return;
+            BOOL blinking = self->_isBlinking;
             [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
-                self->_leftEye.transform = self->_expressionTransformLeft;
-                self->_rightEye.transform = self->_expressionTransformRight;
+                if (!blinking) {
+                    self->_leftEye.transform = self->_expressionTransformLeft;
+                    self->_rightEye.transform = self->_expressionTransformRight;
+                }
                 self->_leftSpecularPrimary.transform = CGAffineTransformIdentity;
                 self->_rightSpecularPrimary.transform = CGAffineTransformIdentity;
             } completion:nil];
@@ -848,10 +859,13 @@ static DeskCompanionViewController *g_viewController = nil;
 // ========================================================
 // TOUCH INTERACTIONS & ERGONOMICS (Emil Kowalski Rules)
 // ========================================================
-- (void)handleSingleTap:(UITapGestureRecognizer *)gesture {
+- (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
     AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
     [self playSoundNamed:@"tink"];
+}
 
+- (void)handleSingleTap:(UITapGestureRecognizer *)gesture {
     // Immediate tactile squash: scale(0.93) over 80ms with spring rebound
     [UIView animateWithDuration:0.08 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
         self->_eyeContainer.transform = CGAffineTransformMakeScale(0.93, 0.93);
@@ -941,7 +955,7 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 }
 
-- (void)setTorch:(BOOL)enable {
+- (BOOL)setTorch:(BOOL)enable {
     AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     if ([device hasTorch] && [device hasFlash]) {
         NSError *lockErr = nil;
@@ -952,8 +966,10 @@ static DeskCompanionViewController *g_viewController = nil;
                 [device setTorchMode:AVCaptureTorchModeOff];
             }
             [device unlockForConfiguration];
+            return YES;
         }
     }
+    return NO;
 }
 
 // Dual-Camera Perception: Front (VGA selfie/desk) and Back (8MP macro scanner)
@@ -1185,11 +1201,6 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)abortRecordingWithError:(NSError *)error {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self setSpeaking:NO];
-        [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
-    });
-
     void (^comp)(NSString *, NSUInteger, NSError *) = nil;
 
     @synchronized(self) {
@@ -1208,6 +1219,11 @@ static DeskCompanionViewController *g_viewController = nil;
             _audioRecordCompletion = nil;
         }
     }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self setSpeaking:NO];
+        [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
+    });
 
     [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
 
@@ -1231,12 +1247,6 @@ static DeskCompanionViewController *g_viewController = nil;
                 }
                 NSError *intErr = [NSError errorWithDomain:@"DeskCompanionAudio" code:-7 userInfo:@{NSLocalizedDescriptionKey: @"Audio recording was interrupted"}];
                 [self abortRecordingWithError:intErr];
-            }
-        } else if ([interruptionType unsignedIntegerValue] == AVAudioSessionInterruptionTypeEnded) {
-            NSNumber *options = [notification.userInfo objectForKey:AVAudioSessionInterruptionOptionKey];
-            if ([options unsignedIntegerValue] & AVAudioSessionInterruptionOptionShouldResume) {
-                NSError *actErr = nil;
-                [[AVAudioSession sharedInstance] setActive:YES error:&actErr];
             }
         }
     }
@@ -1478,11 +1488,29 @@ static void *SocketServerThread(void *arg) {
         CompanionClientContext *ctx = [[CompanionClientContext alloc] initWithFd:client_fd generation:gen];
 
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            char buffer[4096];
-            ssize_t bytes_read = read(ctx->clientFd, buffer, sizeof(buffer) - 1);
-            if (bytes_read > 0) {
-                buffer[bytes_read] = '\0';
-                NSData *jsonData = [NSData dataWithBytes:buffer length:bytes_read];
+            NSMutableData *readBuffer = [NSMutableData data];
+            char chunk[1024];
+            BOOL hasNewline = NO;
+            size_t frameLen = 0;
+
+            while (readBuffer.length < 16384) {
+                ssize_t bytes_read = read(ctx->clientFd, chunk, sizeof(chunk));
+                if (bytes_read <= 0) break;
+                [readBuffer appendBytes:chunk length:bytes_read];
+                const char *raw = (const char *)[readBuffer bytes];
+                for (size_t i = 0; i < readBuffer.length; i++) {
+                    if (raw[i] == '\n') {
+                        hasNewline = YES;
+                        frameLen = i;
+                        break;
+                    }
+                }
+                if (hasNewline) break;
+            }
+
+            if (readBuffer.length > 0) {
+                if (!hasNewline) frameLen = readBuffer.length;
+                NSData *jsonData = [NSData dataWithBytes:[readBuffer bytes] length:frameLen];
                 NSDictionary *cmdDict = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:nil];
                 NSMutableDictionary *response = [NSMutableDictionary dictionary];
 
@@ -1578,11 +1606,17 @@ static void *SocketServerThread(void *arg) {
                             [response setObject:@"'enable' parameter must be a JSON boolean (true or false)" forKey:@"details"];
                         } else {
                             BOOL torchOn = [en boolValue];
-                            dispatch_async(dispatch_get_main_queue(), ^{
-                                if (g_viewController) [g_viewController setTorch:torchOn];
+                            __block BOOL ok = NO;
+                            dispatch_sync(dispatch_get_main_queue(), ^{
+                                if (g_viewController) ok = [g_viewController setTorch:torchOn];
                             });
-                            [response setObject:@"ok" forKey:@"status"];
-                            [response setObject:@(torchOn) forKey:@"torch"];
+                            if (ok) {
+                                [response setObject:@"ok" forKey:@"status"];
+                                [response setObject:@(torchOn) forKey:@"torch"];
+                            } else {
+                                [response setObject:@"failed" forKey:@"status"];
+                                [response setObject:@"hardware_unavailable" forKey:@"error"];
+                            }
                         }
                     } else if ([command isEqualToString:@"brightness"]) {
                         id lvl = [cmdDict objectForKey:@"level"];

@@ -87,6 +87,10 @@ class DeskCompanion:
         ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
         key_path = self.ssh_key
 
+        if self.known_hosts:
+            if not os.path.exists(self.known_hosts):
+                return {"error": "known_hosts_missing", "details": f"Configured known_hosts file '{self.known_hosts}' does not exist"}
+
         scp_cmd = [
             "scp",
             "-i", key_path,
@@ -96,7 +100,7 @@ class DeskCompanion:
             "-o", "ServerAliveCountMax=2",
             "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}",
         ]
-        if self.known_hosts and os.path.exists(self.known_hosts):
+        if self.known_hosts:
             scp_cmd.extend(["-o", f"UserKnownHostsFile={self.known_hosts}"])
         scp_cmd.extend([f"root@{ssh_host}:{remote_path}", local_path])
 
@@ -106,17 +110,20 @@ class DeskCompanion:
                 ret = subprocess.run(scp_cmd, capture_output=True, timeout=timeout)
                 if ret.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
                     # Clean up remote capture file after successful retrieval
-                    del_cmd = [
-                        "ssh",
-                        "-i", key_path,
-                        "-p", str(ssh_port),
-                        "-o", "ConnectTimeout=5",
-                        "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}",
-                    ]
-                    if self.known_hosts and os.path.exists(self.known_hosts):
-                        del_cmd.extend(["-o", f"UserKnownHostsFile={self.known_hosts}"])
-                    del_cmd.extend([f"root@{ssh_host}", f"rm -f -- {shlex.quote(remote_path)}"])
-                    subprocess.run(del_cmd, capture_output=True, timeout=5.0)
+                    try:
+                        del_cmd = [
+                            "ssh",
+                            "-i", key_path,
+                            "-p", str(ssh_port),
+                            "-o", "ConnectTimeout=5",
+                            "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}",
+                        ]
+                        if self.known_hosts:
+                            del_cmd.extend(["-o", f"UserKnownHostsFile={self.known_hosts}"])
+                        del_cmd.extend([f"root@{ssh_host}", f"rm -f -- {shlex.quote(remote_path)}"])
+                        subprocess.run(del_cmd, capture_output=True, timeout=5.0)
+                    except Exception:
+                        pass
                     return {"status": "ok", "local_file": local_path}
                 last_err = ret.stderr.decode("utf-8", errors="replace")
             except subprocess.TimeoutExpired:
@@ -165,7 +172,7 @@ class DeskCompanion:
             else:
                 return {"error": str(conn_err)}
 
-        # Phase 2: Transmission and reception (newline-delimited frames, never repeated on alternate transport)
+        # Phase 2: Transmission and reception (newline-delimited frames, bounded monotonic deadline and frame size)
         with s:
             try:
                 if self.auth_token:
@@ -174,7 +181,14 @@ class DeskCompanion:
                 payload = json.dumps(cmd_dict).encode("utf-8") + b"\n"
                 s.sendall(payload)
                 buffer = b""
+                deadline = time.monotonic() + timeout
+                max_bytes = 65536
                 while b"\n" not in buffer:
+                    remaining_time = deadline - time.monotonic()
+                    if remaining_time <= 0 or len(buffer) >= max_bytes:
+                        self._active_host, self._active_port, self._active_ssh_port = None, None, None
+                        return {"error": "read_timeout_or_limit_exceeded"}
+                    s.settimeout(max(0.1, remaining_time))
                     chunk = s.recv(4096)
                     if not chunk:
                         break
