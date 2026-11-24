@@ -2,6 +2,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import <CoreMotion/CoreMotion.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -443,8 +444,9 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
         }
         [upperLid closePath];
 
-        CGContextSetRGBFillColor(ctx, 0.0f, 0.0f, 0.0f, 1.0f);
+        CGContextSetBlendMode(ctx, kCGBlendModeClear);
         [upperLid fill];
+        CGContextSetBlendMode(ctx, kCGBlendModeNormal);
 
         CGContextRestoreGState(ctx);
     }
@@ -476,8 +478,9 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
         }
         [lowerLid closePath];
 
-        CGContextSetRGBFillColor(ctx, 0.0f, 0.0f, 0.0f, 1.0f);
+        CGContextSetBlendMode(ctx, kCGBlendModeClear);
         [lowerLid fill];
+        CGContextSetBlendMode(ctx, kCGBlendModeNormal);
 
         CGContextRestoreGState(ctx);
     }
@@ -571,19 +574,23 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         topColor = emeraldTop;
         bottomColor = emeraldBottom;
     } else if ([n isEqualToString:@"blink_high"] || [n isEqualToString:@"blink-high"] || [n isEqualToString:@"blinkhigh"]) {
-        // Thin horizontal cyan slit high in socket
-        left.upperLidY = 0.22f;
-        left.lowerLidY = 0.72f;
+        // Thin horizontal squircle slit high in socket
+        left.scaleY = 0.06f;
+        left.scaleX = 1.05f;
+        left.centerY = -18.0f;
 
-        right.upperLidY = 0.22f;
-        right.lowerLidY = 0.72f;
+        right.scaleY = 0.06f;
+        right.scaleX = 1.05f;
+        right.centerY = -18.0f;
     } else if ([n isEqualToString:@"blink_low"] || [n isEqualToString:@"blink-low"] || [n isEqualToString:@"blinklow"]) {
-        // Thin horizontal cyan slit low in socket
-        left.upperLidY = 0.72f;
-        left.lowerLidY = 0.22f;
+        // Thin horizontal squircle slit low in socket
+        left.scaleY = 0.06f;
+        left.scaleX = 1.05f;
+        left.centerY = 18.0f;
 
-        right.upperLidY = 0.72f;
-        right.lowerLidY = 0.22f;
+        right.scaleY = 0.06f;
+        right.scaleX = 1.05f;
+        right.centerY = 18.0f;
     } else if ([n isEqualToString:@"sad_down"] || [n isEqualToString:@"sad_looking_down"] || [n isEqualToString:@"sad"]) {
         // Cozmo Sad: Drooping eyelids (/ \) with gaze shifted down
         left.upperLidY = 0.48f;
@@ -975,7 +982,7 @@ static void PruneOldTmpArtifacts(void) {
 @class DeskCompanionViewController;
 static DeskCompanionViewController *g_viewController = nil;
 
-@interface DeskCompanionViewController : UIViewController <UIGestureRecognizerDelegate, AVAudioRecorderDelegate> {
+@interface DeskCompanionViewController : UIViewController <UIGestureRecognizerDelegate, AVAudioRecorderDelegate, AVAudioPlayerDelegate> {
     // Canvas Background
     RadialGradientBackgroundView *_bgView;
 
@@ -1040,11 +1047,18 @@ static DeskCompanionViewController *g_viewController = nil;
     CGRect _defaultEyeFrameLeft;
     CGRect _defaultEyeFrameRight;
 
-    // Audio Microphone Hardware
+    // Audio Microphone & Speaker Hardware
     AVAudioRecorder *_audioRecorder;
+    AVAudioPlayer *_audioPlayer;
     NSTimer *_audioTimeoutTimer;
+    NSTimer *_micMeterTimer;
     BOOL _isRecording;
     void (^_audioRecordCompletion)(NSString *path, NSUInteger size, NSError *err);
+
+    // Motion & Orientation Sensors (CoreMotion)
+    CMMotionManager *_motionManager;
+    NSTimeInterval _lastShakeTime;
+    CMAcceleration _lastAccel;
 }
 
 - (void)setupProceduralEngine;
@@ -1060,6 +1074,10 @@ static DeskCompanionViewController *g_viewController = nil;
 - (BOOL)setTorch:(BOOL)enable;
 - (void)setSpeaking:(BOOL)speaking;
 - (void)playSoundNamed:(NSString *)name;
+- (BOOL)playAudioFilePath:(NSString *)path;
+- (void)handleProximityChange:(NSNotification *)notification;
+- (void)handleMotionData:(CMAcceleration)accel;
+- (void)updateAudioMeters:(NSTimer *)timer;
 - (void)setReducedMotion:(BOOL)reduced;
 - (void)takeSnapshot:(NSString *)cameraPosition completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion;
 - (void)recordAudioDuration:(NSTimeInterval)duration completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion;
@@ -1272,6 +1290,28 @@ static DeskCompanionViewController *g_viewController = nil;
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
     [UIScreen mainScreen].brightness = 0.70f; // Mitigate IPS LCD backlight bleed on pitch black canvas
+
+    // ========================================================
+    // 7. HARDWARE SENSORS: PROXIMITY & COREMOTION ACCELEROMETER
+    // ========================================================
+    _lastAccel = (CMAcceleration){0.0, 0.0, -1.0};
+    _lastShakeTime = 0.0;
+
+    [UIDevice currentDevice].proximityMonitoringEnabled = YES;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleProximityChange:)
+                                                 name:UIDeviceProximityStateDidChangeNotification
+                                               object:nil];
+
+    _motionManager = [[CMMotionManager alloc] init];
+    if ([_motionManager isAccelerometerAvailable]) {
+        _motionManager.accelerometerUpdateInterval = 1.0 / 25.0; // 25 Hz responsive desk motion
+        __unsafe_unretained DeskCompanionViewController *weakSelf = self;
+        [_motionManager startAccelerometerUpdatesToQueue:[NSOperationQueue mainQueue] withHandler:^(CMAccelerometerData *data, NSError *err) {
+            if (!weakSelf || !data) return;
+            [weakSelf handleMotionData:data.acceleration];
+        }];
+    }
 }
 
 - (void)viewWillLayoutSubviews {
@@ -1567,31 +1607,20 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 }
 
-// Procedural Asymmetrical Eyelid Kinematics (0% CPU Overhead)
+// Authentic PyCozmo blink: organic vertical squircle squash into razor-thin glowing slit
 - (void)blink {
     if (_isPanning || _isBlinking) return;
     _isBlinking = YES;
 
-    // Fast organic close: 65ms ease-out to symmetric meeting lids at midline
-    ProceduralEyeConfig blinkLeft = _leftCurrentConfig;
-    ProceduralEyeConfig blinkRight = _rightCurrentConfig;
-    blinkLeft.upperLidY = 0.50f;
-    blinkLeft.lowerLidY = 0.50f;
-    blinkLeft.upperLidAngle = 0.0f;
-    blinkLeft.lowerLidAngle = 0.0f;
-    blinkLeft.upperLidBend = 0.0f;
-    blinkLeft.lowerLidBend = 0.0f;
-
-    blinkRight.upperLidY = 0.50f;
-    blinkRight.lowerLidY = 0.50f;
-    blinkRight.upperLidAngle = 0.0f;
-    blinkRight.lowerLidAngle = 0.0f;
-    blinkRight.upperLidBend = 0.0f;
-    blinkRight.lowerLidBend = 0.0f;
+    ProceduralEyeConfig blinkLeft = _leftTargetExpressionConfig;
+    ProceduralEyeConfig blinkRight = _rightTargetExpressionConfig;
+    blinkLeft.scaleY = 0.04f;
+    blinkLeft.scaleX = 1.04f;
+    blinkRight.scaleY = 0.04f;
+    blinkRight.scaleX = 1.04f;
 
     __unsafe_unretained DeskCompanionViewController *weakSelf = self;
-    [self interpolateToLeft:blinkLeft right:blinkRight duration:0.065 easeOut:YES completion:^{
-        // Organic bounce open: 110ms ease-in back to active expression
+    [self interpolateToLeft:blinkLeft right:blinkRight duration:0.060 easeOut:YES completion:^{
         if (!weakSelf) return;
         [weakSelf interpolateToLeft:weakSelf->_leftTargetExpressionConfig right:weakSelf->_rightTargetExpressionConfig duration:0.110 easeOut:NO completion:^{
             if (weakSelf) {
@@ -2028,6 +2057,7 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 
     _audioRecorder.delegate = self;
+    _audioRecorder.meteringEnabled = YES;
     _audioRecordCompletion = Block_copy(completion);
     _isRecording = YES;
 
@@ -2050,6 +2080,16 @@ static DeskCompanionViewController *g_viewController = nil;
     // Animate audio waveform to reflect active listening
     [self setSpeaking:YES];
     [self setStatusTitle:@"AGENT LISTENING //" subtitle:@"Recording audio via iPhone 4S mic"];
+
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
+    _micMeterTimer = [NSTimer scheduledTimerWithTimeInterval:0.05
+                                                      target:self
+                                                    selector:@selector(updateAudioMeters:)
+                                                    userInfo:nil
+                                                     repeats:YES];
 
     if (_audioTimeoutTimer) {
         [_audioTimeoutTimer invalidate];
@@ -2079,6 +2119,10 @@ static DeskCompanionViewController *g_viewController = nil;
 #pragma mark - AVAudioRecorderDelegate
 
 - (void)audioRecorderDidFinishRecording:(AVAudioRecorder *)recorder successfully:(BOOL)flag {
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
     [self setSpeaking:NO];
     [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
 
@@ -2119,6 +2163,10 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)abortRecordingWithError:(NSError *)error {
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
     void (^comp)(NSString *, NSUInteger, NSError *) = nil;
 
     @synchronized(self) {
@@ -2167,6 +2215,190 @@ static DeskCompanionViewController *g_viewController = nil;
                 [self abortRecordingWithError:intErr];
             }
         }
+    }
+}
+
+- (void)handleProximityChange:(NSNotification *)notification {
+    BOOL isNear = [UIDevice currentDevice].proximityState;
+    if (isNear) {
+        // Hand hover detected above iPhone 4S top bezel: surprise reaction and glance upward
+        if (_reactionTimer) {
+            [_reactionTimer invalidate];
+            _reactionTimer = nil;
+        }
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        [self playSoundNamed:@"chirp"];
+        [self setExpression:@"surprised" duration:0.18];
+        [self lookAtX:0.0f y:-0.75f duration:0.16];
+        [self setStatusTitle:@"PROXIMITY ALERT //" subtitle:@"Object detected near top bezel"];
+    } else {
+        // Hand removed: grateful cheerful wink and return to neutral
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        [self playSoundNamed:@"tock"];
+        [self setExpression:@"happy" duration:0.20];
+        [self blink];
+        [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Desk companion active"];
+        _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:1.6 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
+    }
+}
+
+- (void)handleMotionData:(CMAcceleration)accel {
+    _lastAccel = accel;
+
+    // Detect sudden desk bumps or device shake (accel magnitude > 2.2g)
+    double mag = sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
+    NSTimeInterval now = CACurrentMediaTime();
+
+    if (mag > 2.2 || fabsf((float)accel.x) > 1.4f || fabsf((float)accel.y) > 1.6f) {
+        if (now - _lastShakeTime > 1.8) {
+            _lastShakeTime = now;
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+            [self playSoundNamed:@"beep"];
+
+            if (_reactionTimer) {
+                [_reactionTimer invalidate];
+                _reactionTimer = nil;
+            }
+
+            [self setExpression:@"confused" duration:0.15];
+
+            // Dizzy wobble animation on eye container
+            CAKeyframeAnimation *wobble = [CAKeyframeAnimation animationWithKeyPath:@"transform.rotation.z"];
+            wobble.values = @[ @(0.0f), @(-0.10f), @(0.10f), @(-0.06f), @(0.04f), @(0.0f) ];
+            wobble.duration = 0.35;
+            wobble.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+            [_eyeContainer.layer addAnimation:wobble forKey:@"dizzyWobble"];
+
+            [self setStatusTitle:@"MOTION JOLT //" subtitle:[NSString stringWithFormat:@"Shake detected (%.1fg)", mag]];
+            _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:2.2 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
+        }
+    } else if (!_isInterpolating && !_isPanning && !_isBlinking && (!_reactionTimer || ![_reactionTimer isValid])) {
+        // Ambient desk tilt parallax: slight organic eye offset tracking gravity
+        if (!_reducedMotion) {
+            CGFloat tiltX = ClampF((CGFloat)accel.x * 0.40f, -0.40f, 0.40f);
+            CGFloat tiltY = ClampF((CGFloat)(-accel.y) * 0.30f, -0.30f, 0.30f);
+            ProceduralEyeConfig leftCfg = _leftTargetExpressionConfig;
+            ProceduralEyeConfig rightCfg = _rightTargetExpressionConfig;
+            leftCfg.centerX += tiltX * 8.0f;
+            leftCfg.centerY += tiltY * 6.0f;
+            rightCfg.centerX += tiltX * 8.0f;
+            rightCfg.centerY += tiltY * 6.0f;
+            leftCfg.hotSpotCenterX = tiltX;
+            leftCfg.hotSpotCenterY = tiltY;
+            rightCfg.hotSpotCenterX = tiltX;
+            rightCfg.hotSpotCenterY = tiltY;
+            _leftCurrentConfig = leftCfg;
+            _rightCurrentConfig = rightCfg;
+            [_leftEye applyConfig:_leftCurrentConfig];
+            [_rightEye applyConfig:_rightCurrentConfig];
+        }
+    }
+}
+
+// Speaker Output: Play audio file with live waveform visualizer metering
+- (BOOL)playAudioFilePath:(NSString *)path {
+    if (!path || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        return NO;
+    }
+
+    if (_audioPlayer) {
+        if ([_audioPlayer isPlaying]) [_audioPlayer stop];
+        _audioPlayer.delegate = nil;
+        [_audioPlayer release];
+        _audioPlayer = nil;
+    }
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
+
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    [session setCategory:AVAudioSessionCategoryPlayback error:nil];
+    [session setActive:YES error:nil];
+
+    NSError *audioErr = nil;
+    NSURL *url = [NSURL fileURLWithPath:path];
+    _audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:url error:&audioErr];
+    if (audioErr || !_audioPlayer) {
+        if (_audioPlayer) {
+            [_audioPlayer release];
+            _audioPlayer = nil;
+        }
+        return NO;
+    }
+
+    _audioPlayer.delegate = self;
+    _audioPlayer.meteringEnabled = YES;
+    [_audioPlayer prepareToPlay];
+    BOOL started = [_audioPlayer play];
+    if (started) {
+        [self setSpeaking:YES];
+        [self setStatusTitle:@"AGENT SPEAKING //" subtitle:[path lastPathComponent]];
+
+        _micMeterTimer = [NSTimer scheduledTimerWithTimeInterval:0.05
+                                                          target:self
+                                                        selector:@selector(updateAudioMeters:)
+                                                        userInfo:nil
+                                                         repeats:YES];
+    }
+    return started;
+}
+
+#pragma mark - AVAudioPlayerDelegate
+
+- (void)audioPlayerDidFinishPlaying:(AVAudioPlayer *)player successfully:(BOOL)flag {
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
+    [self setSpeaking:NO];
+    [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Desk companion active"];
+    if (_audioPlayer == player) {
+        _audioPlayer.delegate = nil;
+        [_audioPlayer release];
+        _audioPlayer = nil;
+    }
+}
+
+- (void)audioPlayerDecodeErrorDidOccur:(AVAudioPlayer *)player error:(NSError *)error {
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
+    [self setSpeaking:NO];
+    if (_audioPlayer == player) {
+        _audioPlayer.delegate = nil;
+        [_audioPlayer release];
+        _audioPlayer = nil;
+    }
+}
+
+// Real-Time Audio Level Metering (Microphone Recording and Speaker Playback)
+- (void)updateAudioMeters:(NSTimer *)timer {
+    float power = -60.0f;
+    if (_audioPlayer && [_audioPlayer isPlaying]) {
+        [_audioPlayer updateMeters];
+        power = [_audioPlayer averagePowerForChannel:0];
+    } else if (_audioRecorder && [_audioRecorder isRecording]) {
+        [_audioRecorder updateMeters];
+        power = [_audioRecorder averagePowerForChannel:0];
+    } else {
+        if (_micMeterTimer) {
+            [_micMeterTimer invalidate];
+            _micMeterTimer = nil;
+        }
+        return;
+    }
+
+    float norm = ClampF((power + 50.0f) / 45.0f, 0.10f, 1.0f);
+    CGFloat barH = 20.0f;
+    CGFloat multipliers[5] = { 0.45f, 0.85f, 1.0f, 0.75f, 0.50f };
+    for (int i = 0; i < 5; i++) {
+        CGFloat h = ClampF(barH * norm * multipliers[i], 3.0f, barH);
+        CGRect bf = _waveBars[i].frame;
+        bf.size.height = h;
+        bf.origin.y = (barH - h) * 0.5f;
+        _waveBars[i].frame = bf;
     }
 }
 
@@ -2228,6 +2460,18 @@ static DeskCompanionViewController *g_viewController = nil;
         @"zen_mode": @(_zenMode),
         @"reduced_motion": @(_reducedMotion),
         @"scanline_opacity": @(_scanlineOverlay ? _scanlineOverlay.scanlineOpacity : 0.0f),
+        @"proximity_near": @([UIDevice currentDevice].proximityState),
+        @"motion_accelerometer": @{
+            @"x": @(_lastAccel.x),
+            @"y": @(_lastAccel.y),
+            @"z": @(_lastAccel.z)
+        },
+        @"is_recording": @(_isRecording),
+        @"is_playing_audio": @(_audioPlayer != nil && [_audioPlayer isPlaying]),
+        @"camera_available": @(YES),
+        @"torch_available": @(YES),
+        @"speaker_available": @(YES),
+        @"microphone_available": @(YES),
         @"left_eye_params": ProceduralEyeConfigToArray(_leftCurrentConfig),
         @"right_eye_params": ProceduralEyeConfigToArray(_rightCurrentConfig)
     };
@@ -2237,6 +2481,21 @@ static DeskCompanionViewController *g_viewController = nil;
     if (_observersAdded) {
         [[NSNotificationCenter defaultCenter] removeObserver:self];
         _observersAdded = NO;
+    }
+    if (_micMeterTimer) {
+        [_micMeterTimer invalidate];
+        _micMeterTimer = nil;
+    }
+    if (_motionManager) {
+        [_motionManager stopAccelerometerUpdates];
+        [_motionManager release];
+        _motionManager = nil;
+    }
+    if (_audioPlayer) {
+        if ([_audioPlayer isPlaying]) [_audioPlayer stop];
+        _audioPlayer.delegate = nil;
+        [_audioPlayer release];
+        _audioPlayer = nil;
     }
     if (_proceduralDisplayLink) {
         [_proceduralDisplayLink invalidate];
@@ -2461,6 +2720,31 @@ static void *SocketServerThread(void *arg) {
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:(soundName ? soundName : @"") forKey:@"sound"];
+                    } else if ([command isEqualToString:@"play_audio"]) {
+                        NSString *audioPath = [cmdDict objectForKey:@"path"];
+                        NSString *soundName = [cmdDict objectForKey:@"name"];
+                        if (soundName && !audioPath) {
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                if (g_viewController) [g_viewController playSoundNamed:soundName];
+                            });
+                            [response setObject:@"ok" forKey:@"status"];
+                            [response setObject:soundName forKey:@"sound"];
+                        } else if (audioPath) {
+                            __block BOOL started = NO;
+                            dispatch_sync(dispatch_get_main_queue(), ^{
+                                if (g_viewController) started = [g_viewController playAudioFilePath:audioPath];
+                            });
+                            if (started) {
+                                [response setObject:@"ok" forKey:@"status"];
+                                [response setObject:audioPath forKey:@"path"];
+                            } else {
+                                [response setObject:@"failed" forKey:@"status"];
+                                [response setObject:@"playback_error_or_file_missing" forKey:@"error"];
+                            }
+                        } else {
+                            [response setObject:@"missing_parameter" forKey:@"error"];
+                            [response setObject:@"'path' or 'name' parameter required" forKey:@"details"];
+                        }
                     } else if ([command isEqualToString:@"expression"]) {
                         NSString *exp = [cmdDict objectForKey:@"name"];
                         id durObj = [cmdDict objectForKey:@"duration"];
