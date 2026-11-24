@@ -907,6 +907,14 @@ static DeskCompanionViewController *g_viewController = nil;
 
 // Microphone Perception: Record linear PCM 16kHz mono audio on iPhone 4S
 - (void)recordAudioDuration:(NSTimeInterval)duration completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
+    if (_audioRecorder) {
+        if ([_audioRecorder isRecording]) {
+            [_audioRecorder stop];
+        }
+        [_audioRecorder release];
+        _audioRecorder = nil;
+    }
+
     AVAudioSession *audioSession = [AVAudioSession sharedInstance];
     NSError *sessionErr = nil;
     [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord error:&sessionErr];
@@ -927,12 +935,6 @@ static DeskCompanionViewController *g_viewController = nil;
     };
 
     NSError *recorderErr = nil;
-    if (_audioRecorder) {
-        [_audioRecorder stop];
-        [_audioRecorder release];
-        _audioRecorder = nil;
-    }
-
     _audioRecorder = [[AVAudioRecorder alloc] initWithURL:recordURL settings:recordSettings error:&recorderErr];
     if (recorderErr || !_audioRecorder) {
         if (completion) completion(nil, 0, recorderErr ? recorderErr : [NSError errorWithDomain:@"DeskCompanionAudio" code:-1 userInfo:nil]);
@@ -950,10 +952,15 @@ static DeskCompanionViewController *g_viewController = nil;
         [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
 
         if (self->_audioRecorder) {
-            [self->_audioRecorder stop];
+            if ([self->_audioRecorder isRecording]) {
+                [self->_audioRecorder stop];
+            }
             [self->_audioRecorder release];
             self->_audioRecorder = nil;
         }
+
+        NSError *deactErr = nil;
+        [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:&deactErr];
 
         NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:recordPath error:nil];
         NSUInteger fileSize = [attrs fileSize];
@@ -1179,10 +1186,10 @@ static void *SocketServerThread(void *arg) {
                         NSString *cam = [cmdDict objectForKey:@"camera"];
                         if (!cam) cam = @"back";
 
-                        __block BOOL finished = NO;
                         __block NSString *snapPath = nil;
                         __block NSUInteger snapSize = 0;
                         __block NSError *snapErr = nil;
+                        dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
@@ -1190,18 +1197,15 @@ static void *SocketServerThread(void *arg) {
                                     snapPath = [path copy];
                                     snapSize = size;
                                     snapErr = [err retain];
-                                    finished = YES;
+                                    dispatch_semaphore_signal(sema);
                                 }];
                             } else {
-                                finished = YES;
+                                dispatch_semaphore_signal(sema);
                             }
                         });
 
-                        int waited = 0;
-                        while (!finished && waited < 50) {
-                            usleep(100000); // 100ms
-                            waited++;
-                        }
+                        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+                        dispatch_release(sema);
 
                         if (snapPath) {
                             [response setObject:@"ok" forKey:@"status"];
@@ -1219,10 +1223,10 @@ static void *SocketServerThread(void *arg) {
                         if (duration <= 0.1) duration = 3.0;
                         if (duration > 30.0) duration = 30.0;
 
-                        __block BOOL finished = NO;
                         __block NSString *recPath = nil;
                         __block NSUInteger recSize = 0;
                         __block NSError *recErr = nil;
+                        dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
@@ -1230,19 +1234,16 @@ static void *SocketServerThread(void *arg) {
                                     recPath = [path copy];
                                     recSize = size;
                                     recErr = [err retain];
-                                    finished = YES;
+                                    dispatch_semaphore_signal(sema);
                                 }];
                             } else {
-                                finished = YES;
+                                dispatch_semaphore_signal(sema);
                             }
                         });
 
-                        int waited = 0;
-                        int maxWait = (int)((duration + 3.0) * 10);
-                        while (!finished && waited < maxWait) {
-                            usleep(100000); // 100ms
-                            waited++;
-                        }
+                        int64_t waitTimeout = (int64_t)((duration + 3.0) * NSEC_PER_SEC);
+                        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, waitTimeout));
+                        dispatch_release(sema);
 
                         if (recPath) {
                             [response setObject:@"ok" forKey:@"status"];
@@ -1257,10 +1258,10 @@ static void *SocketServerThread(void *arg) {
                         if (recErr) [recErr release];
                     } else if ([command isEqualToString:@"screenshot"]) {
                         NSString *savePath = @"/tmp/companion_screen.png";
-                        __block BOOL finished = NO;
                         __block NSString *shotPath = nil;
                         __block NSUInteger shotSize = 0;
                         __block NSError *shotErr = nil;
+                        dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
@@ -1268,18 +1269,15 @@ static void *SocketServerThread(void *arg) {
                                     shotPath = [path copy];
                                     shotSize = size;
                                     shotErr = [err retain];
-                                    finished = YES;
+                                    dispatch_semaphore_signal(sema);
                                 }];
                             } else {
-                                finished = YES;
+                                dispatch_semaphore_signal(sema);
                             }
                         });
 
-                        int waited = 0;
-                        while (!finished && waited < 50) {
-                            usleep(100000); // 100ms
-                            waited++;
-                        }
+                        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)));
+                        dispatch_release(sema);
 
                         if (shotPath) {
                             [response setObject:@"ok" forKey:@"status"];
