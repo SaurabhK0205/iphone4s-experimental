@@ -1071,7 +1071,7 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)captureScreenToPath:(NSString *)path completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion;
 - (NSDictionary *)getTelemetry;
 - (void)toggleZenMode;
-- (void)updateLayoutForOrientation:(UIInterfaceOrientation)orientation;
+- (void)updateLayout;
 - (void)handleLongPress:(UILongPressGestureRecognizer *)gesture;
 @end
 
@@ -1242,11 +1242,6 @@ static DeskCompanionViewController *g_viewController = nil;
     UITapGestureRecognizer *singleTap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleSingleTap:)] autorelease];
     [self.view addGestureRecognizer:singleTap];
 
-    UITapGestureRecognizer *doubleTap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleDoubleTap:)] autorelease];
-    doubleTap.numberOfTapsRequired = 2;
-    [self.view addGestureRecognizer:doubleTap];
-    [singleTap requireGestureRecognizerToFail:doubleTap];
-
     UILongPressGestureRecognizer *longPress = [[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)] autorelease];
     longPress.minimumPressDuration = 0.5;
     [self.view addGestureRecognizer:longPress];
@@ -1267,9 +1262,11 @@ static DeskCompanionViewController *g_viewController = nil;
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
     [UIScreen mainScreen].brightness = 0.70f; // Mitigate IPS LCD backlight bleed on pitch black canvas
+}
 
-    // Initial orientation layout adaptation
-    [self updateLayoutForOrientation:self.interfaceOrientation];
+- (void)viewWillLayoutSubviews {
+    [super viewWillLayoutSubviews];
+    [self updateLayout];
 }
 
 - (BOOL)shouldAutorotate {
@@ -1285,55 +1282,52 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
-    [self updateLayoutForOrientation:toInterfaceOrientation];
+    [self updateLayout];
 }
 
-- (void)updateLayoutForOrientation:(UIInterfaceOrientation)orientation {
-    CGRect winBounds = [UIScreen mainScreen].bounds;
-    CGFloat screenW, screenH;
-    if (UIInterfaceOrientationIsLandscape(orientation)) {
-        screenW = MAX(winBounds.size.width, winBounds.size.height);
-        screenH = MIN(winBounds.size.width, winBounds.size.height);
-    } else {
-        screenW = MIN(winBounds.size.width, winBounds.size.height);
-        screenH = MAX(winBounds.size.width, winBounds.size.height);
-    }
+- (void)updateLayout {
+    CGFloat W = self.view.bounds.size.width;
+    CGFloat H = self.view.bounds.size.height;
+    if (W <= 0.0f || H <= 0.0f) return;
 
-    self.view.frame = CGRectMake(0, 0, screenW, screenH);
-    _bgView.frame = CGRectMake(0, 0, screenW, screenH);
-    _eyeContainer.frame = CGRectMake(0, 0, screenW, screenH);
-    _scanlineOverlay.frame = CGRectMake(0, 0, screenW, screenH);
+    BOOL isLandscape = (W > H);
 
-    CGFloat eyeW = 110.0;
-    CGFloat eyeH = 96.0;
-    CGFloat eyeSpacing = UIInterfaceOrientationIsLandscape(orientation) ? 32.0 : 20.0;
-    CGFloat totalW = eyeW * 2.0 + eyeSpacing;
-    CGFloat eyeY = UIInterfaceOrientationIsLandscape(orientation) ? (screenH - eyeH) / 2.0 : 185.0;
+    _bgView.frame = self.view.bounds;
+    _eyeContainer.frame = self.view.bounds;
+    _scanlineOverlay.frame = self.view.bounds;
 
-    CGRect leftFrame = CGRectMake((screenW - totalW) / 2.0, eyeY, eyeW, eyeH);
-    CGRect rightFrame = CGRectMake(leftFrame.origin.x + eyeW + eyeSpacing, eyeY, eyeW, eyeH);
+    CGFloat eyeW = 110.0f;
+    CGFloat eyeH = 96.0f;
+    CGFloat eyeSpacing = isLandscape ? 32.0f : 20.0f;
+    CGFloat totalW = eyeW * 2.0f + eyeSpacing;
+    CGFloat eyeY = isLandscape ? ((H - eyeH) * 0.5f) : 185.0f;
 
-    _defaultEyeFrameLeft = leftFrame;
-    _defaultEyeFrameRight = rightFrame;
+    CGFloat leftCenterX = (W - totalW) * 0.5f + eyeW * 0.5f;
+    CGFloat rightCenterX = leftCenterX + eyeW + eyeSpacing;
+    CGFloat centerY = eyeY + eyeH * 0.5f;
 
-    _leftEye.frame = leftFrame;
-    _rightEye.frame = rightFrame;
-    _leftEye.defaultCenter = CGPointMake(leftFrame.origin.x + eyeW / 2.0f, leftFrame.origin.y + eyeH / 2.0f);
-    _rightEye.defaultCenter = CGPointMake(rightFrame.origin.x + eyeW / 2.0f, rightFrame.origin.y + eyeH / 2.0f);
+    _leftEye.bounds = CGRectMake(0, 0, eyeW, eyeH);
+    _rightEye.bounds = CGRectMake(0, 0, eyeW, eyeH);
+    _leftEye.defaultCenter = CGPointMake(leftCenterX, centerY);
+    _rightEye.defaultCenter = CGPointMake(rightCenterX, centerY);
 
-    _defaultEyePositionLeft = _leftEye.layer.position;
-    _defaultEyePositionRight = _rightEye.layer.position;
+    _defaultEyeFrameLeft = CGRectMake((W - totalW) * 0.5f, eyeY, eyeW, eyeH);
+    _defaultEyeFrameRight = CGRectMake(_defaultEyeFrameLeft.origin.x + eyeW + eyeSpacing, eyeY, eyeW, eyeH);
+
+    _defaultEyePositionLeft = _leftEye.defaultCenter;
+    _defaultEyePositionRight = _rightEye.defaultCenter;
 
     [_leftEye applyConfig:_leftCurrentConfig];
     [_rightEye applyConfig:_rightCurrentConfig];
+
     [_scanlineOverlay setNeedsDisplay];
 
-    CGFloat cardW = screenW - 32.0;
-    _thoughtCard.frame = CGRectMake(16, screenH - 52.0 - 18, cardW, 52.0);
-    _statusBarPill.frame = CGRectMake(16, 12, screenW - 32, 28);
-    _clockLabel.frame = CGRectMake(95, 0, screenW - 32 - 170, 28);
-    _batteryLabel.frame = CGRectMake(screenW - 32 - 75, 0, 63, 28);
-    _waveformContainer.frame = CGRectMake((screenW - 80.0)/2.0, eyeY + eyeH + (UIInterfaceOrientationIsLandscape(orientation) ? 12.0 : 24.0), 80.0, 20.0);
+    CGFloat cardW = W - 32.0f;
+    _thoughtCard.frame = CGRectMake(16.0f, H - 52.0f - 18.0f, cardW, 52.0f);
+    _statusBarPill.frame = CGRectMake(16.0f, 12.0f, W - 32.0f, 28.0f);
+    _clockLabel.frame = CGRectMake(95.0f, 0, W - 32.0f - 170.0f, 28.0f);
+    _batteryLabel.frame = CGRectMake(W - 32.0f - 75.0f, 0, 63.0f, 28.0f);
+    _waveformContainer.frame = CGRectMake((W - 80.0f) * 0.5f, eyeY + eyeH + (isLandscape ? 12.0f : 24.0f), 80.0f, 20.0f);
 }
 
 - (void)periodicPrune:(NSTimer *)timer {
@@ -1653,43 +1647,67 @@ static DeskCompanionViewController *g_viewController = nil;
     CGFloat screenW = self.view.bounds.size.width;
     CGFloat screenH = self.view.bounds.size.height;
 
-    // Tactile acoustic and haptic pulse
+    static NSTimeInterval lastTapTime = 0.0;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    BOOL isDoubleTap = (now - lastTapTime < 0.38);
+    lastTapTime = now;
+
     AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+
+    if (isDoubleTap) {
+        // Double tap: Joyful glee celebration bounce with confirm chime
+        [self playSoundNamed:@"confirm"];
+        [self setExpression:@"glee"];
+
+        CAKeyframeAnimation *bounce = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
+        bounce.values = @[ @(1.0f), @(1.10f), @(0.96f), @(1.0f) ];
+        bounce.keyTimes = @[ @(0.0f), @(0.35f), @(0.70f), @(1.0f) ];
+        bounce.duration = 0.28;
+        bounce.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [_eyeContainer.layer addAnimation:bounce forKey:@"gleeBounce"];
+
+        __unsafe_unretained DeskCompanionViewController *weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (weakSelf) [weakSelf setExpression:@"neutral"];
+        });
+        return;
+    }
+
+    // Single tap: Immediate responsive tactile click and directional reaction
     [self playSoundNamed:@"tink"];
 
-    // Immediate tactile squash: scale(0.93) over 80ms with spring rebound
-    [UIView animateWithDuration:0.08 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        self->_eyeContainer.transform = CGAffineTransformMakeScale(0.93, 0.93);
-    } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.16 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
-            self->_eyeContainer.transform = CGAffineTransformIdentity;
-        } completion:nil];
-    }];
+    // Organic tactile squash via layer keyframe (non-conflicting with ambient breathe)
+    CAKeyframeAnimation *squash = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
+    squash.values = @[ @(1.0f), @(0.93f), @(1.03f), @(1.0f) ];
+    squash.keyTimes = @[ @(0.0f), @(0.35f), @(0.70f), @(1.0f) ];
+    squash.duration = 0.22;
+    squash.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [_eyeContainer.layer addAnimation:squash forKey:@"tapSquash"];
 
     CGFloat normX = ClampF((pt.x - screenW * 0.5f) / (screenW * 0.5f), -1.0f, 1.0f);
     CGFloat normY = ClampF((pt.y - screenH * 0.5f) / (screenH * 0.5f), -1.0f, 1.0f);
 
-    // Dynamic directional gaze tracking to touch coordinate
+    // Look at touched point immediately
     [self lookAtX:normX y:normY duration:0.12];
 
     __unsafe_unretained DeskCompanionViewController *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (!weakSelf) return;
-        if (fabsf(normX) < 0.35f && fabsf(normY) < 0.35f) {
-            // Center tap: happy joy reaction
+        if (fabsf(normX) < 0.30f && fabsf(normY) < 0.30f) {
+            // Center tap: happy joy blink
             [weakSelf blink];
             [weakSelf setExpression:@"happy"];
-        } else if (normX < -0.35f) {
-            // Left side tap: curious inquiry
+        } else if (normX < -0.30f) {
+            // Left side tap: curious head tilt
             [weakSelf setExpression:@"curious"];
-        } else if (normX > 0.35f) {
+        } else if (normX > 0.30f) {
             // Right side tap: skeptic wink
             [weakSelf setExpression:@"skeptic"];
         } else {
             [weakSelf setExpression:@"surprised"];
         }
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (!weakSelf) return;
             [weakSelf setExpression:@"neutral"];
             [weakSelf lookAtX:0.0f y:0.0f duration:0.25];
@@ -1732,16 +1750,15 @@ static DeskCompanionViewController *g_viewController = nil;
     [self playSoundNamed:@"confirm"];
     [self setExpression:@"glee"];
 
-    [UIView animateWithDuration:0.12 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        self->_eyeContainer.transform = CGAffineTransformMakeScale(1.08, 1.08);
-    } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
-            self->_eyeContainer.transform = CGAffineTransformIdentity;
-        } completion:nil];
-    }];
+    CAKeyframeAnimation *bounce = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
+    bounce.values = @[ @(1.0f), @(1.10f), @(0.96f), @(1.0f) ];
+    bounce.keyTimes = @[ @(0.0f), @(0.35f), @(0.70f), @(1.0f) ];
+    bounce.duration = 0.28;
+    bounce.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [_eyeContainer.layer addAnimation:bounce forKey:@"gleeBounce"];
 
     __unsafe_unretained DeskCompanionViewController *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (weakSelf) [weakSelf setExpression:@"neutral"];
     });
 }
