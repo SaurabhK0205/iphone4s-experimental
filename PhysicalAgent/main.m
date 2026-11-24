@@ -212,7 +212,7 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     if (self) {
         self.backgroundColor = [UIColor clearColor];
         self.userInteractionEnabled = NO;
-        _scanlineOpacity = 0.16f; // Authentic subtle retro CRT scanline depth
+        _scanlineOpacity = 0.0f; // Pure sleek OLED black surface (scanlines disabled by default)
     }
     return self;
 }
@@ -363,115 +363,121 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     CGFloat H = self.bounds.size.height;
     if (W <= 0.0f || H <= 0.0f) return;
 
-    // Corner radius assignment based on eye orientation
-    CGFloat cTL_x, cTL_y, cTR_x, cTR_y, cBR_x, cBR_y, cBL_x, cBL_y;
+    // 1. Base Squircle Corner Radii (Authentic PyCozmo Proportions)
+    CGFloat cornerBase = W * 0.38f;
+    CGFloat cTL, cTR, cBR, cBL;
     if (_isLeftEye) {
-        cTL_x = _config.upperOuterRadiusX; cTL_y = _config.upperOuterRadiusY;
-        cTR_x = _config.upperInnerRadiusX; cTR_y = _config.upperInnerRadiusY;
-        cBR_x = _config.lowerInnerRadiusX; cBR_y = _config.lowerInnerRadiusY;
-        cBL_x = _config.lowerOuterRadiusX; cBL_y = _config.lowerOuterRadiusY;
+        cTL = _config.upperOuterRadiusX;
+        cTR = _config.upperInnerRadiusX;
+        cBR = _config.lowerInnerRadiusX;
+        cBL = _config.lowerOuterRadiusX;
     } else {
-        cTL_x = _config.upperInnerRadiusX; cTL_y = _config.upperInnerRadiusY;
-        cTR_x = _config.upperOuterRadiusX; cTR_y = _config.upperOuterRadiusY;
-        cBR_x = _config.lowerOuterRadiusX; cBR_y = _config.lowerOuterRadiusY;
-        cBL_x = _config.lowerInnerRadiusX; cBL_y = _config.lowerInnerRadiusY;
+        cTL = _config.upperInnerRadiusX;
+        cTR = _config.upperOuterRadiusX;
+        cBR = _config.lowerOuterRadiusX;
+        cBL = _config.lowerInnerRadiusX;
     }
 
-    // Eyelid kinematics with strict non-inversion boundaries
-    CGFloat topLidY = ClampF(_config.upperLidY, 0.0f, 1.0f) * H;
-    CGFloat bottomLidY = H - ClampF(_config.lowerLidY, 0.0f, 1.0f) * H;
-    if (bottomLidY < topLidY + 2.0f) {
-        CGFloat mid = (topLidY + bottomLidY) * 0.5f;
-        topLidY = mid - 1.0f;
-        bottomLidY = mid + 1.0f;
-    }
+    CGFloat rTL = ClampF(cTL * cornerBase, 4.0f, W * 0.5f);
+    CGFloat rTR = ClampF(cTR * cornerBase, 4.0f, W * 0.5f);
+    CGFloat rBR = ClampF(cBR * cornerBase, 4.0f, W * 0.5f);
+    CGFloat rBL = ClampF(cBL * cornerBase, 4.0f, W * 0.5f);
 
-    CGFloat angleSign = _isLeftEye ? 1.0f : -1.0f;
-    CGFloat topSlope = tanf(_config.upperLidAngle * (CGFloat)(M_PI / 180.0) * angleSign);
-    CGFloat bottomSlope = tanf(_config.lowerLidAngle * (CGFloat)(M_PI / 180.0) * angleSign);
+    UIBezierPath *eyePath = [UIBezierPath bezierPath];
+    [eyePath moveToPoint:CGPointMake(rTL, 0.0f)];
+    [eyePath addLineToPoint:CGPointMake(W - rTR, 0.0f)];
+    [eyePath addArcWithCenter:CGPointMake(W - rTR, rTR) radius:rTR startAngle:(CGFloat)(1.5 * M_PI) endAngle:0.0f clockwise:YES];
+    [eyePath addLineToPoint:CGPointMake(W, H - rBR)];
+    [eyePath addArcWithCenter:CGPointMake(W - rBR, H - rBR) radius:rBR startAngle:0.0f endAngle:(CGFloat)(0.5 * M_PI) clockwise:YES];
+    [eyePath addLineToPoint:CGPointMake(rBL, H)];
+    [eyePath addArcWithCenter:CGPointMake(rBL, H - rBL) radius:rBL startAngle:(CGFloat)(0.5 * M_PI) endAngle:(CGFloat)M_PI clockwise:YES];
+    [eyePath addLineToPoint:CGPointMake(0.0f, rTL)];
+    [eyePath addArcWithCenter:CGPointMake(rTL, rTL) radius:rTL startAngle:(CGFloat)M_PI endAngle:(CGFloat)(1.5 * M_PI) clockwise:YES];
+    [eyePath closePath];
 
-    CGFloat topBendOffset = _config.upperLidBend * (H * 0.35f);
-    CGFloat bottomBendOffset = _config.lowerLidBend * (H * 0.35f);
-
-    CGFloat effH = MAX(bottomLidY - topLidY, 2.0f);
-    CGFloat rTL_x = ClampF(cTL_x, 0.05f, 1.0f) * (W * 0.5f);
-    CGFloat rTR_x = ClampF(cTR_x, 0.05f, 1.0f) * (W * 0.5f);
-    CGFloat rBL_x = ClampF(cBL_x, 0.05f, 1.0f) * (W * 0.5f);
-    CGFloat rBR_x = ClampF(cBR_x, 0.05f, 1.0f) * (W * 0.5f);
-
-    CGFloat yTL = ClampF(topLidY - topSlope * (W * 0.5f - rTL_x), 0.0f, H);
-    CGFloat yTR = ClampF(topLidY + topSlope * (W * 0.5f - rTR_x), 0.0f, H);
-    CGFloat yTMid = ClampF(topLidY + topBendOffset, 0.0f, H);
-
-    CGFloat yBL = ClampF(bottomLidY - bottomSlope * (W * 0.5f - rBL_x), 0.0f, H);
-    CGFloat yBR = ClampF(bottomLidY + bottomSlope * (W * 0.5f - rBR_x), 0.0f, H);
-    CGFloat yBMid = ClampF(bottomLidY - bottomBendOffset, 0.0f, H);
-
-    // Strict geometry invariant: top eyelid edge must never cross or invert below bottom eyelid edge
-    if (yBL < yTL + 2.0f) {
-        CGFloat midL = (yTL + yBL) * 0.5f;
-        yTL = midL - 1.0f;
-        yBL = midL + 1.0f;
-    }
-    if (yBR < yTR + 2.0f) {
-        CGFloat midR = (yTR + yBR) * 0.5f;
-        yTR = midR - 1.0f;
-        yBR = midR + 1.0f;
-    }
-    if (yBMid < yTMid + 1.0f) {
-        CGFloat midM = (yTMid + yBMid) * 0.5f;
-        yTMid = midM - 0.5f;
-        yBMid = midM + 0.5f;
-    }
-
-    CGFloat spanL = yBL - yTL;
-    CGFloat spanR = yBR - yTR;
-
-    CGFloat rTL_y = MIN(ClampF(cTL_y, 0.05f, 1.0f) * (spanL * 0.5f), spanL * 0.45f);
-    CGFloat rBL_y = MIN(ClampF(cBL_y, 0.05f, 1.0f) * (spanL * 0.5f), spanL * 0.45f);
-    CGFloat rTR_y = MIN(ClampF(cTR_y, 0.05f, 1.0f) * (spanR * 0.5f), spanR * 0.45f);
-    CGFloat rBR_y = MIN(ClampF(cBR_y, 0.05f, 1.0f) * (spanR * 0.5f), spanR * 0.45f);
-
-    const CGFloat kappa = 0.55228475f;
-    UIBezierPath *path = [UIBezierPath bezierPath];
-
-    [path moveToPoint:CGPointMake(rTL_x, yTL)];
-    [path addQuadCurveToPoint:CGPointMake(W - rTR_x, yTR) controlPoint:CGPointMake(W * 0.5f, yTMid)];
-    [path addCurveToPoint:CGPointMake(W, yTR + rTR_y)
-            controlPoint1:CGPointMake(W - rTR_x + rTR_x * kappa, yTR)
-            controlPoint2:CGPointMake(W, yTR + rTR_y - rTR_y * (1.0f - kappa))];
-    [path addLineToPoint:CGPointMake(W, yBR - rBR_y)];
-    [path addCurveToPoint:CGPointMake(W - rBR_x, yBR)
-            controlPoint1:CGPointMake(W, yBR - rBR_y + rBR_y * (1.0f - kappa))
-            controlPoint2:CGPointMake(W - rBR_x + rBR_x * kappa, yBR)];
-    [path addQuadCurveToPoint:CGPointMake(rBL_x, yBL) controlPoint:CGPointMake(W * 0.5f, yBMid)];
-    [path addCurveToPoint:CGPointMake(0.0f, yBL - rBL_y)
-            controlPoint1:CGPointMake(rBL_x - rBL_x * kappa, yBL)
-            controlPoint2:CGPointMake(0.0f, yBL - rBL_y + rBL_y * (1.0f - kappa))];
-    [path addLineToPoint:CGPointMake(0.0f, yTL + rTL_y)];
-    [path addCurveToPoint:CGPointMake(rTL_x, yTL)
-            controlPoint1:CGPointMake(0.0f, yTL + rTL_y - rTL_y * (1.0f - kappa))
-            controlPoint2:CGPointMake(rTL_x - rTL_x * kappa, yTL)];
-    [path closePath];
-
-    // Clip to eye shape
+    // Clip to the base squircle eye shape
     CGContextSaveGState(ctx);
-    [path addClip];
+    [eyePath addClip];
 
-    // 2. Base Linear Gradient (Cyan glow body)
+    // 2. Base Linear Gradient (Electric Cyber Cyan Body)
     if (_irisGradient) {
         CGContextDrawLinearGradient(ctx, _irisGradient, CGPointMake(0, 0), CGPointMake(0, H), 0);
     }
 
-    // 3. Luminous Radial HotSpot (OLED radiant white-hot core)
-    CGFloat pupilDx = ClampF(_config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.22f);
-    CGFloat pupilDy = ClampF(_config.hotSpotCenterY, -1.0f, 1.0f) * (effH * 0.22f);
-    CGFloat midY = (yTMid + yBMid) * 0.5f;
-    CGPoint hotSpotCenter = CGPointMake(W * 0.5f + pupilDx, midY + pupilDy);
-    CGFloat glowR = (W * 0.44f) * ClampF(_config.glowSize, 0.4f, 2.0f);
+    // 3. Luminous Radial HotSpot (Radiant glowing white-cyan core)
+    CGFloat pupilDx = ClampF(_config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.25f);
+    CGFloat pupilDy = ClampF(_config.hotSpotCenterY, -1.0f, 1.0f) * (H * 0.25f);
+    CGPoint hotSpotCenter = CGPointMake(W * 0.5f + pupilDx, H * 0.5f + pupilDy);
+    CGFloat glowR = (W * 0.55f) * ClampF(_config.glowSize, 0.4f, 2.5f);
 
     if (_hotSpotGradient) {
         CGContextDrawRadialGradient(ctx, _hotSpotGradient, hotSpotCenter, 0.0f, hotSpotCenter, glowR, kCGGradientDrawsAfterEndLocation);
+    }
+
+    // 4. Upper Eyelid Mask (Black Cutout with Rotation and Parabolic Bend)
+    if (_config.upperLidY > 0.001f) {
+        CGContextSaveGState(ctx);
+        CGFloat cx = W * 0.5f;
+        CGFloat cy = H * 0.5f;
+        CGFloat rotSign = _isLeftEye ? 1.0f : -1.0f;
+        CGFloat rotRad = _config.upperLidAngle * rotSign * (CGFloat)(M_PI / 180.0);
+
+        CGContextTranslateCTM(ctx, cx, cy);
+        CGContextRotateCTM(ctx, rotRad);
+        CGContextTranslateCTM(ctx, -cx, -cy);
+
+        CGFloat lidY = ClampF(_config.upperLidY, 0.0f, 1.0f) * H;
+        CGFloat bendH = H * (1.0f - ClampF(_config.upperLidY, 0.0f, 1.0f)) * _config.upperLidBend;
+
+        UIBezierPath *upperLid = [UIBezierPath bezierPath];
+        [upperLid moveToPoint:CGPointMake(-W, -H)];
+        [upperLid addLineToPoint:CGPointMake(W * 2.0f, -H)];
+        [upperLid addLineToPoint:CGPointMake(W * 2.0f, lidY)];
+
+        if (fabsf(_config.upperLidBend) > 0.01f) {
+            [upperLid addQuadCurveToPoint:CGPointMake(-W, lidY) controlPoint:CGPointMake(cx, lidY + bendH)];
+        } else {
+            [upperLid addLineToPoint:CGPointMake(-W, lidY)];
+        }
+        [upperLid closePath];
+
+        CGContextSetRGBFillColor(ctx, 0.0f, 0.0f, 0.0f, 1.0f);
+        [upperLid fill];
+
+        CGContextRestoreGState(ctx);
+    }
+
+    // 5. Lower Eyelid Mask (Black Cutout with Rotation and Parabolic Bend)
+    if (_config.lowerLidY > 0.001f) {
+        CGContextSaveGState(ctx);
+        CGFloat cx = W * 0.5f;
+        CGFloat cy = H * 0.5f;
+        CGFloat rotSign = _isLeftEye ? 1.0f : -1.0f;
+        CGFloat rotRad = _config.lowerLidAngle * rotSign * (CGFloat)(M_PI / 180.0);
+
+        CGContextTranslateCTM(ctx, cx, cy);
+        CGContextRotateCTM(ctx, rotRad);
+        CGContextTranslateCTM(ctx, -cx, -cy);
+
+        CGFloat lidY = H - ClampF(_config.lowerLidY, 0.0f, 1.0f) * H;
+        CGFloat bendH = H * (1.0f - ClampF(_config.lowerLidY, 0.0f, 1.0f)) * _config.lowerLidBend;
+
+        UIBezierPath *lowerLid = [UIBezierPath bezierPath];
+        [lowerLid moveToPoint:CGPointMake(-W, H * 2.0f)];
+        [lowerLid addLineToPoint:CGPointMake(W * 2.0f, H * 2.0f)];
+        [lowerLid addLineToPoint:CGPointMake(W * 2.0f, lidY)];
+
+        if (fabsf(_config.lowerLidBend) > 0.01f) {
+            [lowerLid addQuadCurveToPoint:CGPointMake(-W, lidY) controlPoint:CGPointMake(cx, lidY - bendH)];
+        } else {
+            [lowerLid addLineToPoint:CGPointMake(-W, lidY)];
+        }
+        [lowerLid closePath];
+
+        CGContextSetRGBFillColor(ctx, 0.0f, 0.0f, 0.0f, 1.0f);
+        [lowerLid fill];
+
+        CGContextRestoreGState(ctx);
     }
 
     CGContextRestoreGState(ctx);
@@ -529,100 +535,90 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
     NSString *n = [name lowercaseString];
 
     if ([n isEqualToString:@"happy"]) {
-        // Arched dome (⌒ ⌒): lower eyelid cuts upward with concave bend
-        left.lowerLidY = 0.52f;
-        left.lowerLidBend = 0.50f;
-        left.upperOuterRadiusX = 0.85f;
-        left.upperInnerRadiusX = 0.85f;
-        left.angle = -3.0f;
-        left.hotSpotCenterY = -0.10f;
+        // Cozmo Happy: Domed upper eyelids, smiling upward lower crescent, glowing emerald
+        left.upperOuterRadiusX = 1.0f;
+        left.upperInnerRadiusX = 1.0f;
+        left.lowerLidY = 0.40f;
+        left.lowerLidBend = 0.42f;
+        left.hotSpotCenterY = -0.15f;
 
-        right.lowerLidY = 0.52f;
-        right.lowerLidBend = 0.50f;
-        right.upperOuterRadiusX = 0.85f;
-        right.upperInnerRadiusX = 0.85f;
-        right.angle = 3.0f;
-        right.hotSpotCenterY = -0.10f;
+        right.upperOuterRadiusX = 1.0f;
+        right.upperInnerRadiusX = 1.0f;
+        right.lowerLidY = 0.40f;
+        right.lowerLidBend = 0.42f;
+        right.hotSpotCenterY = -0.15f;
 
-        topColor = cyanTop;
-        bottomColor = cyanBottom;
+        topColor = emeraldTop;
+        bottomColor = emeraldBottom;
     } else if ([n isEqualToString:@"glee"]) {
-        // Squeezed joy crescent (⌒ ⌒)
-        left.scaleY = 0.70f;
+        // Squeezed joy crescent (⌒ ⌒), radiant emerald
+        left.scaleY = 0.75f;
         left.scaleX = 1.05f;
-        left.lowerLidY = 0.65f;
-        left.lowerLidBend = 0.60f;
-        left.upperLidY = 0.12f;
-        left.upperOuterRadiusX = 0.90f;
-        left.upperInnerRadiusX = 0.90f;
-        left.angle = -4.0f;
+        left.upperOuterRadiusX = 1.0f;
+        left.upperInnerRadiusX = 1.0f;
+        left.lowerLidY = 0.52f;
+        left.lowerLidBend = 0.55f;
 
-        right.scaleY = 0.70f;
+        right.scaleY = 0.75f;
         right.scaleX = 1.05f;
-        right.lowerLidY = 0.65f;
-        right.lowerLidBend = 0.60f;
-        right.upperLidY = 0.12f;
-        right.upperOuterRadiusX = 0.90f;
-        right.upperInnerRadiusX = 0.90f;
-        right.angle = 4.0f;
+        right.upperOuterRadiusX = 1.0f;
+        right.upperInnerRadiusX = 1.0f;
+        right.lowerLidY = 0.52f;
+        right.lowerLidBend = 0.55f;
 
-        topColor = cyanTop;
-        bottomColor = cyanBottom;
+        topColor = emeraldTop;
+        bottomColor = emeraldBottom;
     } else if ([n isEqualToString:@"blink_high"] || [n isEqualToString:@"blink-high"] || [n isEqualToString:@"blinkhigh"]) {
         // Thin horizontal cyan slit high in socket
         left.upperLidY = 0.22f;
         left.lowerLidY = 0.72f;
-        left.upperLidBend = 0.0f;
-        left.lowerLidBend = 0.0f;
 
         right.upperLidY = 0.22f;
         right.lowerLidY = 0.72f;
-        right.upperLidBend = 0.0f;
-        right.lowerLidBend = 0.0f;
     } else if ([n isEqualToString:@"blink_low"] || [n isEqualToString:@"blink-low"] || [n isEqualToString:@"blinklow"]) {
         // Thin horizontal cyan slit low in socket
         left.upperLidY = 0.72f;
         left.lowerLidY = 0.22f;
-        left.upperLidBend = 0.0f;
-        left.lowerLidBend = 0.0f;
 
         right.upperLidY = 0.72f;
         right.lowerLidY = 0.22f;
-        right.upperLidBend = 0.0f;
-        right.lowerLidBend = 0.0f;
-    } else if ([n isEqualToString:@"sad_down"] || [n isEqualToString:@"sad_looking_down"]) {
-        // Drooping eyelids (/ \) with gaze shifted down
-        left.upperLidY = 0.38f;
-        left.upperLidAngle = -15.0f;
+    } else if ([n isEqualToString:@"sad_down"] || [n isEqualToString:@"sad_looking_down"] || [n isEqualToString:@"sad"]) {
+        // Cozmo Sad: Drooping eyelids (/ \) with gaze shifted down
+        left.upperLidY = 0.48f;
+        left.upperLidAngle = -20.0f;
         left.hotSpotCenterY = 0.35f;
         left.centerY = 14.0f;
 
-        right.upperLidY = 0.38f;
-        right.upperLidAngle = 15.0f;
+        right.upperLidY = 0.48f;
+        right.upperLidAngle = -20.0f;
         right.hotSpotCenterY = 0.35f;
         right.centerY = 14.0f;
-    } else if ([n isEqualToString:@"sad_up"] || [n isEqualToString:@"sad_looking_up"] || [n isEqualToString:@"sad"]) {
-        // Drooping eyelids (/ \) with gaze shifted up pleadingly
-        left.upperLidY = 0.38f;
-        left.upperLidAngle = -15.0f;
+
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    } else if ([n isEqualToString:@"sad_up"] || [n isEqualToString:@"sad_looking_up"] || [n isEqualToString:@"pleading"]) {
+        // Pleading Sad (/ \) with gaze shifted up
+        left.upperLidAngle = -28.0f;
+        left.lowerLidY = 0.45f;
         left.hotSpotCenterY = -0.40f;
         left.centerY = -12.0f;
 
-        right.upperLidY = 0.38f;
-        right.upperLidAngle = 15.0f;
+        right.upperLidAngle = -28.0f;
+        right.lowerLidY = 0.45f;
         right.hotSpotCenterY = -0.40f;
         right.centerY = -12.0f;
-    } else if ([n isEqualToString:@"worried"]) {
-        // Upper lids slanted (/ \) inner corners high, outer drooped
-        left.upperLidY = 0.28f;
-        left.upperLidAngle = -14.0f;
-        left.lowerLidY = 0.16f;
-        left.scaleX = 0.96f;
 
-        right.upperLidY = 0.28f;
-        right.upperLidAngle = 14.0f;
-        right.lowerLidY = 0.16f;
-        right.scaleX = 0.96f;
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    } else if ([n isEqualToString:@"worried"]) {
+        // Upper lids slanted (/ \) inner corners high, outer drooped, warm amber
+        left.upperLidY = 0.35f;
+        left.upperLidAngle = -15.0f;
+        left.lowerLidY = 0.15f;
+
+        right.upperLidY = 0.35f;
+        right.upperLidAngle = -15.0f;
+        right.lowerLidY = 0.15f;
 
         topColor = amberTop;
         bottomColor = amberBottom;
@@ -630,19 +626,15 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         // Sharp horizontal squircle bars (flat lids)
         left.scaleY = 0.65f;
         left.scaleX = 1.05f;
-        left.upperLidY = 0.36f;
-        left.lowerLidY = 0.36f;
-        left.upperLidBend = 0.0f;
-        left.lowerLidBend = 0.0f;
+        left.upperLidY = 0.35f;
+        left.lowerLidY = 0.35f;
 
         right.scaleY = 0.65f;
         right.scaleX = 1.05f;
-        right.upperLidY = 0.36f;
-        right.lowerLidY = 0.36f;
-        right.upperLidBend = 0.0f;
-        right.lowerLidBend = 0.0f;
+        right.upperLidY = 0.35f;
+        right.lowerLidY = 0.35f;
     } else if ([n isEqualToString:@"annoyed"]) {
-        // Upper lids drooped flat halfway down
+        // Upper lids drooped flat halfway down, fiery amber
         left.upperLidY = 0.50f;
         left.scaleY = 0.90f;
 
@@ -652,8 +644,8 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         topColor = crimsonAmberTop;
         bottomColor = crimsonAmberBottom;
     } else if ([n isEqualToString:@"surprised"]) {
-        // Tall rounded squircles, wide open
-        left.scaleX = 0.95f;
+        // Tall rounded squircles, wide open, luminous amber
+        left.scaleX = 1.05f;
         left.scaleY = 1.25f;
         left.glowSize = 1.35f;
         left.upperOuterRadiusX = 0.85f;
@@ -661,7 +653,7 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         left.lowerOuterRadiusX = 0.85f;
         left.lowerInnerRadiusX = 0.85f;
 
-        right.scaleX = 0.95f;
+        right.scaleX = 1.05f;
         right.scaleY = 1.25f;
         right.glowSize = 1.35f;
         right.upperOuterRadiusX = 0.85f;
@@ -671,18 +663,16 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
 
         topColor = amberTop;
         bottomColor = amberBottom;
-    } else if ([n isEqualToString:@"skeptic"]) {
-        // Asymmetric: left open, right squinted lowered brow
-        left.scaleY = 1.05f;
+    } else if ([n isEqualToString:@"skeptic"] || [n isEqualToString:@"skepticism"]) {
+        // Asymmetric: left open, right squinted lowered brow, curious amber
+        left.scaleY = 1.0f;
         left.upperLidY = 0.0f;
-        left.angle = -2.0f;
         left.hotSpotCenterX = 0.15f;
 
-        right.scaleY = 0.82f;
-        right.upperLidY = 0.45f;
+        right.scaleY = 0.85f;
+        right.upperLidY = 0.42f;
         right.upperLidAngle = -12.0f;
-        right.lowerLidY = 0.20f;
-        right.angle = 2.0f;
+        right.lowerLidY = 0.18f;
         right.hotSpotCenterX = 0.15f;
 
         topColor = amberTop;
@@ -707,14 +697,14 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         right.upperLidY = 0.55f;
         right.scaleY = 0.85f;
     } else if ([n isEqualToString:@"sleepy"] || [n isEqualToString:@"sleepy_eyes"] || [n isEqualToString:@"sleep"]) {
-        // Tired drooped eyelids with outward slant
+        // Tired drooped eyelids with outward slant, twilight slate blue
         left.upperLidY = 0.65f;
         left.upperLidAngle = -8.0f;
         left.lowerLidY = 0.15f;
         left.scaleY = 0.80f;
 
         right.upperLidY = 0.65f;
-        right.upperLidAngle = 8.0f;
+        right.upperLidAngle = -8.0f;
         right.lowerLidY = 0.15f;
         right.scaleY = 0.80f;
 
@@ -722,14 +712,14 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         bottomColor = slateBlueBottom;
     } else if ([n isEqualToString:@"suspicious"]) {
         // Narrow horizontal squint with slight inward slant
-        left.upperLidY = 0.48f;
-        left.upperLidAngle = 8.0f;
-        left.lowerLidY = 0.25f;
+        left.upperLidY = 0.42f;
+        left.upperLidAngle = 10.0f;
+        left.lowerLidY = 0.45f;
         left.scaleY = 0.75f;
 
-        right.upperLidY = 0.48f;
-        right.upperLidAngle = -8.0f;
-        right.lowerLidY = 0.25f;
+        right.upperLidY = 0.42f;
+        right.upperLidAngle = 10.0f;
+        right.lowerLidY = 0.45f;
         right.scaleY = 0.75f;
 
         topColor = amberTop;
@@ -738,97 +728,93 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         // Tight horizontal slits
         left.upperLidY = 0.46f;
         left.lowerLidY = 0.46f;
-        left.scaleY = 0.60f;
+        left.scaleY = 0.55f;
 
         right.upperLidY = 0.46f;
         right.lowerLidY = 0.46f;
-        right.scaleY = 0.60f;
-    } else if ([n isEqualToString:@"angry"]) {
-        // Authentic Cozmo Angry: Grounded flat baseline, steep inward-slanted upper brow, electric cyan
+        right.scaleY = 0.55f;
+    } else if ([n isEqualToString:@"angry"] || [n isEqualToString:@"anger"]) {
+        // Authentic Cozmo Angry: Grounded flat baseline, steep inward-slanted upper brow, fiery crimson
         left.scaleX = 1.0f;
         left.scaleY = 0.95f;
-        left.angle = 0.0f;
-        left.upperLidY = 0.28f;
-        left.upperLidAngle = 22.0f;
-        left.upperLidBend = 0.0f;
-        left.lowerLidY = 0.0f;
-        left.lowerLidAngle = 0.0f;
-        left.lowerLidBend = 0.0f;
+        left.upperLidY = 0.55f;
+        left.upperLidAngle = 28.0f;
 
         right.scaleX = 1.0f;
         right.scaleY = 0.95f;
-        right.angle = 0.0f;
-        right.upperLidY = 0.28f;
-        right.upperLidAngle = -22.0f;
-        right.upperLidBend = 0.0f;
-        right.lowerLidY = 0.0f;
-        right.lowerLidAngle = 0.0f;
-        right.lowerLidBend = 0.0f;
+        right.upperLidY = 0.55f;
+        right.upperLidAngle = 28.0f;
 
-        topColor = cyanTop;
-        bottomColor = cyanBottom;
-    } else if ([n isEqualToString:@"furious"]) {
-        // Cozmo Furious: Deeper inward brow, flat baseline, electric cyan
+        topColor = crimsonTop;
+        bottomColor = crimsonBottom;
+    } else if ([n isEqualToString:@"furious"] || [n isEqualToString:@"fury"]) {
+        // Cozmo Furious: Deeper inward brow, tight lower baseline, deep intense crimson
         left.scaleX = 1.0f;
         left.scaleY = 0.88f;
-        left.angle = 0.0f;
-        left.upperLidY = 0.38f;
-        left.upperLidAngle = 28.0f;
-        left.upperLidBend = 0.0f;
-        left.lowerLidY = 0.0f;
-        left.lowerLidAngle = 0.0f;
-        left.lowerLidBend = 0.0f;
+        left.upperLidY = 0.65f;
+        left.upperLidAngle = 34.0f;
+        left.lowerLidY = 0.15f;
 
         right.scaleX = 1.0f;
         right.scaleY = 0.88f;
-        right.angle = 0.0f;
-        right.upperLidY = 0.38f;
-        right.upperLidAngle = -28.0f;
-        right.upperLidBend = 0.0f;
-        right.lowerLidY = 0.0f;
-        right.lowerLidAngle = 0.0f;
-        right.lowerLidBend = 0.0f;
+        right.upperLidY = 0.65f;
+        right.upperLidAngle = 34.0f;
+        right.lowerLidY = 0.15f;
 
-        topColor = cyanTop;
-        bottomColor = cyanBottom;
-    } else if ([n isEqualToString:@"scared"]) {
-        // Wide tall eyes with bottom lid cut flat across
+        topColor = crimsonTop;
+        bottomColor = crimsonBottom;
+    } else if ([n isEqualToString:@"scared"] || [n isEqualToString:@"fear"]) {
+        // Wide tall eyes with bottom lid cut, warning amber-crimson
         left.scaleX = 0.95f;
         left.scaleY = 1.15f;
-        left.lowerLidY = 0.36f;
-        left.lowerLidBend = 0.0f;
-        left.upperOuterRadiusX = 0.85f;
-        left.upperInnerRadiusX = 0.85f;
+        left.upperLidAngle = -28.0f;
+        left.upperLidBend = 0.10f;
+        left.lowerLidY = 0.40f;
+        left.lowerLidAngle = -10.0f;
 
         right.scaleX = 0.95f;
         right.scaleY = 1.15f;
-        right.lowerLidY = 0.36f;
-        right.lowerLidBend = 0.0f;
-        right.upperOuterRadiusX = 0.85f;
-        right.upperInnerRadiusX = 0.85f;
+        right.upperLidAngle = -28.0f;
+        right.upperLidBend = 0.10f;
+        right.lowerLidY = 0.40f;
+        right.lowerLidAngle = -10.0f;
 
-        topColor = amberTop;
-        bottomColor = amberBottom;
-    } else if ([n isEqualToString:@"awe"]) {
+        topColor = crimsonAmberTop;
+        bottomColor = crimsonAmberBottom;
+    } else if ([n isEqualToString:@"awe"] || [n isEqualToString:@"amazement"]) {
         // Huge rounded glowing eyes
         left.scaleX = 1.15f;
-        left.scaleY = 1.20f;
+        left.scaleY = 1.25f;
         left.glowSize = 1.50f;
-        left.upperOuterRadiusX = 0.85f;
-        left.upperInnerRadiusX = 0.85f;
-        left.lowerOuterRadiusX = 0.85f;
-        left.lowerInnerRadiusX = 0.85f;
+        left.lowerLidY = 0.20f;
+        left.upperOuterRadiusX = 0.90f;
+        left.upperInnerRadiusX = 0.90f;
+        left.lowerOuterRadiusX = 0.90f;
+        left.lowerInnerRadiusX = 0.90f;
 
         right.scaleX = 1.15f;
-        right.scaleY = 1.20f;
+        right.scaleY = 1.25f;
         right.glowSize = 1.50f;
-        right.upperOuterRadiusX = 0.85f;
-        right.upperInnerRadiusX = 0.85f;
-        right.lowerOuterRadiusX = 0.85f;
-        right.lowerInnerRadiusX = 0.85f;
+        right.lowerLidY = 0.20f;
+        right.upperOuterRadiusX = 0.90f;
+        right.upperInnerRadiusX = 0.90f;
+        right.lowerOuterRadiusX = 0.90f;
+        right.lowerInnerRadiusX = 0.90f;
 
         topColor = cyanTop;
         bottomColor = cyanBottom;
+    } else if ([n isEqualToString:@"disgust"]) {
+        // Asymmetric disgusted reaction
+        left.upperLidY = 0.40f;
+        left.upperLidAngle = 10.0f;
+        left.lowerLidY = 0.25f;
+
+        right.upperLidY = 0.30f;
+        right.upperLidAngle = -20.0f;
+        right.lowerLidY = 0.20f;
+
+        topColor = crimsonAmberTop;
+        bottomColor = crimsonAmberBottom;
     } else if ([n isEqualToString:@"curious"]) {
         // Tilted inquiry
         left.scaleX = 1.08f;
@@ -868,26 +854,26 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         left.scaleY = 1.15f;
         left.upperLidY = 0.18f;
         left.upperLidAngle = 12.0f;
-        left.glowSize = 0.75f;
-        left.angle = 4.0f;
+        left.glowSize = 0.85f;
 
         right.scaleX = 1.05f;
         right.scaleY = 1.15f;
         right.upperLidY = 0.18f;
-        right.upperLidAngle = -12.0f;
-        right.glowSize = 0.75f;
-        right.angle = -4.0f;
+        right.upperLidAngle = 12.0f;
+        right.glowSize = 0.85f;
 
-        topColor = amberTop;
-        bottomColor = amberBottom;
+        topColor = crimsonTop;
+        bottomColor = crimsonBottom;
     } else if ([n isEqualToString:@"asleep"]) {
-        left.scaleY = 0.40f;
-        left.upperLidY = 0.85f;
-        left.lowerLidY = 0.15f;
+        left.scaleY = 0.35f;
+        left.upperLidY = 0.80f;
+        left.lowerLidY = 0.20f;
+        left.centerY = 20.0f;
 
-        right.scaleY = 0.40f;
-        right.upperLidY = 0.85f;
-        right.lowerLidY = 0.15f;
+        right.scaleY = 0.35f;
+        right.upperLidY = 0.80f;
+        right.lowerLidY = 0.20f;
+        right.centerY = 20.0f;
 
         topColor = slateBlueTop;
         bottomColor = slateBlueBottom;
@@ -895,12 +881,18 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         left.scaleX = 1.05f;
         left.scaleY = 1.10f;
         left.angle = 6.0f;
-        left.upperLidY = 0.10f;
+        left.upperLidY = 0.15f;
+        left.lowerLidY = 0.20f;
+        left.lowerLidBend = 0.20f;
 
         right.scaleX = 0.90f;
         right.scaleY = 0.85f;
         right.angle = -8.0f;
-        right.upperLidY = 0.35f;
+        right.upperLidY = 0.30f;
+        right.upperLidAngle = -10.0f;
+        right.lowerLidY = 0.20f;
+        right.lowerLidAngle = 5.0f;
+        right.lowerLidBend = 0.20f;
 
         topColor = amberTop;
         bottomColor = amberBottom;
@@ -1034,6 +1026,7 @@ static DeskCompanionViewController *g_viewController = nil;
     NSTimer *_blinkTimer;
     NSTimer *_saccadeTimer;
     NSTimer *_pruneTimer;
+    NSTimer *_reactionTimer;
     BOOL _isBlinking;
     BOOL _isPanning;
     BOOL _zenMode;
@@ -1072,6 +1065,11 @@ static DeskCompanionViewController *g_viewController = nil;
 - (NSDictionary *)getTelemetry;
 - (void)toggleZenMode;
 - (void)updateLayout;
+- (void)updateLayoutForOrientation:(UIInterfaceOrientation)orientation;
+- (void)revertToNeutral;
+- (void)handleSingleTap:(UITapGestureRecognizer *)gesture;
+- (void)handleDoubleTap:(UITapGestureRecognizer *)gesture;
+- (void)handleTwoFingerTap:(UITapGestureRecognizer *)gesture;
 - (void)handleLongPress:(UILongPressGestureRecognizer *)gesture;
 @end
 
@@ -1135,11 +1133,11 @@ static DeskCompanionViewController *g_viewController = nil;
     _eyeContainer.backgroundColor = [UIColor clearColor];
     [self.view addSubview:_eyeContainer];
 
-    // Chunky retro squircle proportions matching Cozmo visor stage
-    CGFloat eyeW = 110.0;
-    CGFloat eyeH = 96.0;
-    CGFloat eyeSpacing = 20.0;
-    CGFloat eyeY = 185.0; // Optical center on 320x480 Retina stage
+    // Authentic Cozmo squircle proportions (0.70 vertical aspect ratio)
+    CGFloat eyeW = 84.0;
+    CGFloat eyeH = 120.0;
+    CGFloat eyeSpacing = 36.0;
+    CGFloat eyeY = 190.0; // Optical center on 320x480 Retina stage
 
     CGFloat totalW = eyeW * 2.0 + eyeSpacing;
     CGRect leftFrame = CGRectMake((screenW - totalW) / 2.0, eyeY, eyeW, eyeH);
@@ -1239,7 +1237,17 @@ static DeskCompanionViewController *g_viewController = nil;
     pan.delegate = self;
     [self.view addGestureRecognizer:pan];
 
+    UITapGestureRecognizer *twoFingerTap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTwoFingerTap:)] autorelease];
+    twoFingerTap.numberOfTouchesRequired = 2;
+    [self.view addGestureRecognizer:twoFingerTap];
+
+    UITapGestureRecognizer *doubleTap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleDoubleTap:)] autorelease];
+    doubleTap.numberOfTapsRequired = 2;
+    [self.view addGestureRecognizer:doubleTap];
+
     UITapGestureRecognizer *singleTap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleSingleTap:)] autorelease];
+    singleTap.numberOfTapsRequired = 1;
+    [singleTap requireGestureRecognizerToFail:doubleTap];
     [self.view addGestureRecognizer:singleTap];
 
     UILongPressGestureRecognizer *longPress = [[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)] autorelease];
@@ -1266,7 +1274,12 @@ static DeskCompanionViewController *g_viewController = nil;
 
 - (void)viewWillLayoutSubviews {
     [super viewWillLayoutSubviews];
-    [self updateLayout];
+    [self updateLayoutForOrientation:self.interfaceOrientation];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self updateLayoutForOrientation:self.interfaceOrientation];
 }
 
 - (BOOL)shouldAutorotate {
@@ -1282,29 +1295,46 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
-    [self updateLayout];
+    [self updateLayoutForOrientation:toInterfaceOrientation];
+}
+
+- (void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)fromInterfaceOrientation {
+    [self updateLayoutForOrientation:self.interfaceOrientation];
 }
 
 - (void)updateLayout {
-    CGFloat W = self.view.bounds.size.width;
-    CGFloat H = self.view.bounds.size.height;
+    [self updateLayoutForOrientation:self.interfaceOrientation];
+}
+
+- (void)updateLayoutForOrientation:(UIInterfaceOrientation)orientation {
+    BOOL isLandscape = UIInterfaceOrientationIsLandscape(orientation);
+    CGRect screenBounds = [[UIScreen mainScreen] bounds];
+    CGFloat screenMax = MAX(screenBounds.size.width, screenBounds.size.height);
+    CGFloat screenMin = MIN(screenBounds.size.width, screenBounds.size.height);
+
+    CGFloat W = isLandscape ? screenMax : screenMin;
+    CGFloat H = isLandscape ? screenMin : screenMax;
     if (W <= 0.0f || H <= 0.0f) return;
 
-    BOOL isLandscape = (W > H);
+    CGRect fullRect = CGRectMake(0, 0, W, H);
+    _bgView.bounds = fullRect;
+    _bgView.center = CGPointMake(W * 0.5f, H * 0.5f);
 
-    _bgView.frame = self.view.bounds;
-    _eyeContainer.frame = self.view.bounds;
-    _scanlineOverlay.frame = self.view.bounds;
+    _eyeContainer.bounds = fullRect;
+    _eyeContainer.center = CGPointMake(W * 0.5f, H * 0.5f);
 
-    CGFloat eyeW = 110.0f;
-    CGFloat eyeH = 96.0f;
-    CGFloat eyeSpacing = isLandscape ? 32.0f : 20.0f;
+    _scanlineOverlay.bounds = fullRect;
+    _scanlineOverlay.center = CGPointMake(W * 0.5f, H * 0.5f);
+
+    CGFloat eyeW = isLandscape ? 96.0f : 84.0f;
+    CGFloat eyeH = isLandscape ? 136.0f : 120.0f;
+    CGFloat eyeSpacing = isLandscape ? 44.0f : 36.0f;
     CGFloat totalW = eyeW * 2.0f + eyeSpacing;
-    CGFloat eyeY = isLandscape ? ((H - eyeH) * 0.5f) : 185.0f;
+    CGFloat eyeY = (H - eyeH) * 0.5f;
 
     CGFloat leftCenterX = (W - totalW) * 0.5f + eyeW * 0.5f;
     CGFloat rightCenterX = leftCenterX + eyeW + eyeSpacing;
-    CGFloat centerY = eyeY + eyeH * 0.5f;
+    CGFloat centerY = H * 0.5f;
 
     _leftEye.bounds = CGRectMake(0, 0, eyeW, eyeH);
     _rightEye.bounds = CGRectMake(0, 0, eyeW, eyeH);
@@ -1323,11 +1353,16 @@ static DeskCompanionViewController *g_viewController = nil;
     [_scanlineOverlay setNeedsDisplay];
 
     CGFloat cardW = W - 32.0f;
-    _thoughtCard.frame = CGRectMake(16.0f, H - 52.0f - 18.0f, cardW, 52.0f);
-    _statusBarPill.frame = CGRectMake(16.0f, 12.0f, W - 32.0f, 28.0f);
+    _thoughtCard.bounds = CGRectMake(0, 0, cardW, 52.0f);
+    _thoughtCard.center = CGPointMake(W * 0.5f, H - 26.0f - 18.0f);
+
+    _statusBarPill.bounds = CGRectMake(0, 0, W - 32.0f, 28.0f);
+    _statusBarPill.center = CGPointMake(W * 0.5f, 14.0f + 12.0f);
+
     _clockLabel.frame = CGRectMake(95.0f, 0, W - 32.0f - 170.0f, 28.0f);
     _batteryLabel.frame = CGRectMake(W - 32.0f - 75.0f, 0, 63.0f, 28.0f);
-    _waveformContainer.frame = CGRectMake((W - 80.0f) * 0.5f, eyeY + eyeH + (isLandscape ? 12.0f : 24.0f), 80.0f, 20.0f);
+    _waveformContainer.bounds = CGRectMake(0, 0, 80.0f, 20.0f);
+    _waveformContainer.center = CGPointMake(W * 0.5f, centerY + eyeH * 0.5f + (isLandscape ? 12.0f : 24.0f));
 }
 
 - (void)periodicPrune:(NSTimer *)timer {
@@ -1535,25 +1570,25 @@ static DeskCompanionViewController *g_viewController = nil;
     if (_isPanning || _isBlinking) return;
     _isBlinking = YES;
 
-    // Fast organic close: 70ms ease-out to symmetric thin horizontal slit at midline
+    // Fast organic close: 65ms ease-out to symmetric meeting lids at midline
     ProceduralEyeConfig blinkLeft = _leftCurrentConfig;
     ProceduralEyeConfig blinkRight = _rightCurrentConfig;
-    blinkLeft.upperLidY = 0.49f;
-    blinkLeft.lowerLidY = 0.49f;
+    blinkLeft.upperLidY = 0.50f;
+    blinkLeft.lowerLidY = 0.50f;
     blinkLeft.upperLidAngle = 0.0f;
     blinkLeft.lowerLidAngle = 0.0f;
     blinkLeft.upperLidBend = 0.0f;
     blinkLeft.lowerLidBend = 0.0f;
 
-    blinkRight.upperLidY = 0.49f;
-    blinkRight.lowerLidY = 0.49f;
+    blinkRight.upperLidY = 0.50f;
+    blinkRight.lowerLidY = 0.50f;
     blinkRight.upperLidAngle = 0.0f;
     blinkRight.lowerLidAngle = 0.0f;
     blinkRight.upperLidBend = 0.0f;
     blinkRight.lowerLidBend = 0.0f;
 
     __unsafe_unretained DeskCompanionViewController *weakSelf = self;
-    [self interpolateToLeft:blinkLeft right:blinkRight duration:0.070 easeOut:YES completion:^{
+    [self interpolateToLeft:blinkLeft right:blinkRight duration:0.065 easeOut:YES completion:^{
         // Organic bounce open: 110ms ease-in back to active expression
         if (!weakSelf) return;
         [weakSelf interpolateToLeft:weakSelf->_leftTargetExpressionConfig right:weakSelf->_rightTargetExpressionConfig duration:0.110 easeOut:NO completion:^{
@@ -1642,43 +1677,32 @@ static DeskCompanionViewController *g_viewController = nil;
     [super touchesBegan:touches withEvent:event];
 }
 
+- (void)revertToNeutral {
+    _reactionTimer = nil;
+    [self setExpression:@"neutral"];
+    [self lookAtX:0.0f y:0.0f duration:0.25];
+}
+
+- (void)handleTwoFingerTap:(UITapGestureRecognizer *)gesture {
+    [self toggleZenMode];
+}
+
 - (void)handleSingleTap:(UITapGestureRecognizer *)gesture {
     CGPoint pt = [gesture locationInView:self.view];
     CGFloat screenW = self.view.bounds.size.width;
     CGFloat screenH = self.view.bounds.size.height;
 
-    static NSTimeInterval lastTapTime = 0.0;
-    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    BOOL isDoubleTap = (now - lastTapTime < 0.38);
-    lastTapTime = now;
-
     AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+    [self playSoundNamed:@"tock"];
 
-    if (isDoubleTap) {
-        // Double tap: Joyful glee celebration bounce with confirm chime
-        [self playSoundNamed:@"confirm"];
-        [self setExpression:@"glee"];
-
-        CAKeyframeAnimation *bounce = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
-        bounce.values = @[ @(1.0f), @(1.10f), @(0.96f), @(1.0f) ];
-        bounce.keyTimes = @[ @(0.0f), @(0.35f), @(0.70f), @(1.0f) ];
-        bounce.duration = 0.28;
-        bounce.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-        [_eyeContainer.layer addAnimation:bounce forKey:@"gleeBounce"];
-
-        __unsafe_unretained DeskCompanionViewController *weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (weakSelf) [weakSelf setExpression:@"neutral"];
-        });
-        return;
+    if (_reactionTimer) {
+        [_reactionTimer invalidate];
+        _reactionTimer = nil;
     }
 
-    // Single tap: Immediate responsive tactile click and directional reaction
-    [self playSoundNamed:@"tink"];
-
-    // Organic tactile squash via layer keyframe (non-conflicting with ambient breathe)
+    // Organic tactile squash via layer keyframe
     CAKeyframeAnimation *squash = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
-    squash.values = @[ @(1.0f), @(0.93f), @(1.03f), @(1.0f) ];
+    squash.values = @[ @(1.0f), @(0.94f), @(1.02f), @(1.0f) ];
     squash.keyTimes = @[ @(0.0f), @(0.35f), @(0.70f), @(1.0f) ];
     squash.duration = 0.22;
     squash.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
@@ -1690,29 +1714,25 @@ static DeskCompanionViewController *g_viewController = nil;
     // Look at touched point immediately
     [self lookAtX:normX y:normY duration:0.12];
 
-    __unsafe_unretained DeskCompanionViewController *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (!weakSelf) return;
-        if (fabsf(normX) < 0.30f && fabsf(normY) < 0.30f) {
-            // Center tap: happy joy blink
-            [weakSelf blink];
-            [weakSelf setExpression:@"happy"];
-        } else if (normX < -0.30f) {
-            // Left side tap: curious head tilt
-            [weakSelf setExpression:@"curious"];
-        } else if (normX > 0.30f) {
-            // Right side tap: skeptic wink
-            [weakSelf setExpression:@"skeptic"];
-        } else {
-            [weakSelf setExpression:@"surprised"];
-        }
+    if (fabsf(normX) < 0.35f && fabsf(normY) < 0.35f) {
+        // Center tap: happy joy blink
+        [self blink];
+        [self setExpression:@"happy"];
+    } else if (normX < -0.35f) {
+        // Left side tap: curious head tilt
+        [self setExpression:@"curious"];
+    } else if (normX > 0.35f) {
+        // Right side tap: skeptic wink
+        [self setExpression:@"skeptic"];
+    } else if (normY < -0.35f) {
+        // Top forehead tap: surprised glance up
+        [self setExpression:@"surprised"];
+    } else {
+        // Bottom chin tap: cheerful glee smile
+        [self setExpression:@"glee"];
+    }
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (!weakSelf) return;
-            [weakSelf setExpression:@"neutral"];
-            [weakSelf lookAtX:0.0f y:0.0f duration:0.25];
-        });
-    });
+    _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:1.8 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
 }
 
 // Interactive Gaze Pan: Eyes follow finger across screen with procedural gaze kinematics
@@ -1747,30 +1767,38 @@ static DeskCompanionViewController *g_viewController = nil;
 // Double Tap: Joyful Glee Celebration Bounce
 - (void)handleDoubleTap:(UITapGestureRecognizer *)gesture {
     AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
-    [self playSoundNamed:@"confirm"];
+    [self playSoundNamed:@"chirp"];
+
+    if (_reactionTimer) {
+        [_reactionTimer invalidate];
+        _reactionTimer = nil;
+    }
+
     [self setExpression:@"glee"];
 
     CAKeyframeAnimation *bounce = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
-    bounce.values = @[ @(1.0f), @(1.10f), @(0.96f), @(1.0f) ];
+    bounce.values = @[ @(1.0f), @(1.12f), @(0.95f), @(1.03f), @(1.0f) ];
     bounce.keyTimes = @[ @(0.0f), @(0.35f), @(0.70f), @(1.0f) ];
     bounce.duration = 0.28;
     bounce.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
     [_eyeContainer.layer addAnimation:bounce forKey:@"gleeBounce"];
 
-    __unsafe_unretained DeskCompanionViewController *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (weakSelf) [weakSelf setExpression:@"neutral"];
-    });
+    _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:1.8 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
 }
 
 // Long Press: Rest & Purr Drowsy State
 - (void)handleLongPress:(UILongPressGestureRecognizer *)gesture {
     if (gesture.state == UIGestureRecognizerStateBegan) {
+        if (_reactionTimer) {
+            [_reactionTimer invalidate];
+            _reactionTimer = nil;
+        }
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
         [self setExpression:@"sleepy"];
     } else if (gesture.state == UIGestureRecognizerStateEnded || gesture.state == UIGestureRecognizerStateCancelled) {
         [self blink];
         [self setExpression:@"neutral"];
+        [self lookAtX:0.0f y:0.0f duration:0.25];
     }
 }
 
@@ -1790,23 +1818,56 @@ static DeskCompanionViewController *g_viewController = nil;
 // HARDWARE ACTUATORS, SENSORS & MULTIMODAL PERCEPTION
 // ========================================================
 - (void)playSoundNamed:(NSString *)name {
+    static SystemSoundID s_soundTock = 0;
+    static SystemSoundID s_soundChirp = 0;
+    static SystemSoundID s_soundConfirm = 0;
+    static SystemSoundID s_soundTink = 0;
+
+    SystemSoundID targetID = 0;
     NSString *soundFile = nil;
-    if ([name isEqualToString:@"confirm"]) soundFile = @"jbl_confirm.caf";
-    else if ([name isEqualToString:@"begin"]) soundFile = @"jbl_begin.caf";
+
+    if ([name isEqualToString:@"tock"]) {
+        if (s_soundTock == 0) {
+            NSString *p = @"/System/Library/Audio/UISounds/Tock.caf";
+            AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:p], &s_soundTock);
+        }
+        targetID = s_soundTock;
+    } else if ([name isEqualToString:@"chirp"] || [name isEqualToString:@"robot"]) {
+        if (s_soundChirp == 0) {
+            NSString *p = @"/System/Library/Audio/UISounds/short_double_high.caf";
+            AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:p], &s_soundChirp);
+        }
+        targetID = s_soundChirp;
+    } else if ([name isEqualToString:@"confirm"]) {
+        if (s_soundConfirm == 0) {
+            NSString *p = @"/System/Library/Audio/UISounds/jbl_confirm.caf";
+            AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:p], &s_soundConfirm);
+        }
+        targetID = s_soundConfirm;
+    } else if ([name isEqualToString:@"tink"]) {
+        if (s_soundTink == 0) {
+            NSString *p = @"/System/Library/Audio/UISounds/Tink.caf";
+            AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:p], &s_soundTink);
+        }
+        targetID = s_soundTink;
+    } else if ([name isEqualToString:@"begin"]) soundFile = @"jbl_begin.caf";
     else if ([name isEqualToString:@"cancel"]) soundFile = @"jbl_cancel.caf";
     else if ([name isEqualToString:@"shutter"]) soundFile = @"photoShutter.caf";
     else if ([name isEqualToString:@"tweet"]) soundFile = @"tweet_sent.caf";
     else if ([name isEqualToString:@"mail"]) soundFile = @"new-mail.caf";
-    else if ([name isEqualToString:@"tink"]) soundFile = @"Tink.caf";
     else if ([name isEqualToString:@"beep"]) soundFile = @"beep-beep.caf";
     else if ([name isEqualToString:@"alarm"]) soundFile = @"alarm.caf";
     else soundFile = @"jbl_confirm.caf";
 
-    NSString *fullPath = [NSString stringWithFormat:@"/System/Library/Audio/UISounds/%@", soundFile];
-    SystemSoundID soundID;
-    OSStatus err = AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:fullPath], &soundID);
-    if (err == kAudioServicesNoError) {
-        AudioServicesPlaySystemSound(soundID);
+    if (targetID != 0) {
+        AudioServicesPlaySystemSound(targetID);
+    } else if (soundFile) {
+        NSString *fullPath = [NSString stringWithFormat:@"/System/Library/Audio/UISounds/%@", soundFile];
+        SystemSoundID soundID;
+        OSStatus err = AudioServicesCreateSystemSoundID((CFURLRef)[NSURL fileURLWithPath:fullPath], &soundID);
+        if (err == kAudioServicesNoError) {
+            AudioServicesPlaySystemSound(soundID);
+        }
     }
 }
 
@@ -2464,6 +2525,24 @@ static void *SocketServerThread(void *arg) {
                             if (g_viewController) [g_viewController toggleZenMode];
                         });
                         [response setObject:@"ok" forKey:@"status"];
+                    } else if ([command isEqualToString:@"orientation"]) {
+                        NSString *orientStr = [cmdDict objectForKey:@"orientation"];
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            UIInterfaceOrientation targetOrient = UIInterfaceOrientationPortrait;
+                            if ([orientStr isEqualToString:@"landscape_left"]) targetOrient = UIInterfaceOrientationLandscapeLeft;
+                            else if ([orientStr isEqualToString:@"landscape_right"] || [orientStr isEqualToString:@"landscape"]) targetOrient = UIInterfaceOrientationLandscapeRight;
+                            else if ([orientStr isEqualToString:@"upside_down"]) targetOrient = UIInterfaceOrientationPortraitUpsideDown;
+                            else targetOrient = UIInterfaceOrientationPortrait;
+
+                            if ([[UIDevice currentDevice] respondsToSelector:@selector(setOrientation:)]) {
+                                [[UIDevice currentDevice] performSelector:@selector(setOrientation:) withObject:(id)targetOrient];
+                            }
+                            if (g_viewController) {
+                                [g_viewController updateLayoutForOrientation:targetOrient];
+                            }
+                        });
+                        [response setObject:@"ok" forKey:@"status"];
+                        [response setObject:(orientStr ? orientStr : @"portrait") forKey:@"orientation"];
                     } else if ([command isEqualToString:@"reduced_motion"]) {
                         id en = [cmdDict objectForKey:@"enable"];
                         if (!en || ![en isKindOfClass:[NSNumber class]] || CFGetTypeID((CFTypeRef)en) != CFBooleanGetTypeID()) {
