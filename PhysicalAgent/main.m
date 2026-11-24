@@ -63,25 +63,36 @@
 // ========================================================
 // DISK & MEMORY HYGIENE (/tmp Artifact Pruner)
 // ========================================================
-static void PruneOldTmpArtifacts(void) {
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *tmpDir = @"/tmp";
-        NSError *err = nil;
-        NSArray *files = [fm contentsOfDirectoryAtPath:tmpDir error:&err];
-        if (!files || err) return;
+static dispatch_queue_t GetPruneQueue(void) {
+    static dispatch_queue_t s_pruneQueue = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        s_pruneQueue = dispatch_queue_create("com.physicalagent.prune", DISPATCH_QUEUE_SERIAL);
+    });
+    return s_pruneQueue;
+}
 
-        // Prune companion temporary captures older than 30 minutes
+static void PruneOldTmpArtifacts(void) {
+    dispatch_async(GetPruneQueue(), ^{
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSArray *candidateDirs = @[@"/tmp", @"/private/var/tmp"];
         NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-1800];
-        for (NSString *file in files) {
-            if ([file hasPrefix:@"companion_snapshot_"] ||
-                [file hasPrefix:@"companion_audio_"] ||
-                [file hasPrefix:@"companion_screen_"]) {
-                NSString *fullPath = [tmpDir stringByAppendingPathComponent:file];
-                NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
-                NSDate *modDate = [attrs fileModificationDate];
-                if (modDate && [modDate compare:cutoff] == NSOrderedAscending) {
-                    [fm removeItemAtPath:fullPath error:nil];
+
+        for (NSString *tmpDir in candidateDirs) {
+            NSError *err = nil;
+            NSArray *files = [fm contentsOfDirectoryAtPath:tmpDir error:&err];
+            if (!files || err) continue;
+
+            for (NSString *file in files) {
+                if ([file hasPrefix:@"companion_snapshot_"] ||
+                    [file hasPrefix:@"companion_audio_"] ||
+                    [file hasPrefix:@"companion_screen_"]) {
+                    NSString *fullPath = [tmpDir stringByAppendingPathComponent:file];
+                    NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+                    NSDate *modDate = [attrs fileModificationDate];
+                    if (modDate && [modDate compare:cutoff] == NSOrderedAscending) {
+                        [fm removeItemAtPath:fullPath error:nil];
+                    }
                 }
             }
         }
@@ -143,6 +154,8 @@ static DeskCompanionViewController *g_viewController = nil;
     BOOL _reducedMotion;
     BOOL _observersAdded;
     NSString *_currentExpression;
+    CGAffineTransform _expressionTransformLeft;
+    CGAffineTransform _expressionTransformRight;
     CGPoint _defaultEyePositionLeft;
     CGPoint _defaultEyePositionRight;
     CGRect _defaultEyeFrameLeft;
@@ -330,6 +343,10 @@ static DeskCompanionViewController *g_viewController = nil;
 
     _defaultEyePositionLeft = _leftEye.layer.position;
     _defaultEyePositionRight = _rightEye.layer.position;
+    _expressionTransformLeft = CGAffineTransformIdentity;
+    _expressionTransformRight = CGAffineTransformIdentity;
+
+    _reducedMotion = [[NSUserDefaults standardUserDefaults] boolForKey:@"PhysicalAgentReducedMotion"];
 
     // ========================================================
     // 3. SUB-PERCEPTUAL BREATHING CYCLE (PowerVR SGX GPU)
@@ -409,8 +426,7 @@ static DeskCompanionViewController *g_viewController = nil;
     [self.view addGestureRecognizer:doubleTap];
     [singleTap requireGestureRecognizerToFail:doubleTap];
 
-    // Timers
-    _reducedMotion = [[NSUserDefaults standardUserDefaults] boolForKey:@"PhysicalAgentReducedMotion"];
+    // Timers & Observers
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleAudioInterruption:)
                                                  name:AVAudioSessionInterruptionNotification
@@ -428,6 +444,11 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)periodicPrune:(NSTimer *)timer {
+    PruneOldTmpArtifacts();
+}
+
+- (void)didReceiveMemoryWarning {
+    [super didReceiveMemoryWarning];
     PruneOldTmpArtifacts();
 }
 
@@ -498,8 +519,8 @@ static DeskCompanionViewController *g_viewController = nil;
 
     // Fast organic close: 75ms ease-out via GPU transform scale
     [UIView animateWithDuration:0.075 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        self->_leftEye.transform = CGAffineTransformMakeScale(1.0, 0.05);
-        self->_rightEye.transform = CGAffineTransformMakeScale(1.0, 0.05);
+        self->_leftEye.transform = CGAffineTransformConcat(self->_expressionTransformLeft, CGAffineTransformMakeScale(1.0, 0.05));
+        self->_rightEye.transform = CGAffineTransformConcat(self->_expressionTransformRight, CGAffineTransformMakeScale(1.0, 0.05));
 
         self->_leftSpecularPrimary.alpha = 0.0;
         self->_leftSpecularSecondary.alpha = 0.0;
@@ -510,8 +531,8 @@ static DeskCompanionViewController *g_viewController = nil;
     } completion:^(BOOL finished) {
         // Organic bounce open: 110ms ease-in
         [UIView animateWithDuration:0.11 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
-            self->_leftEye.transform = CGAffineTransformIdentity;
-            self->_rightEye.transform = CGAffineTransformIdentity;
+            self->_leftEye.transform = self->_expressionTransformLeft;
+            self->_rightEye.transform = self->_expressionTransformRight;
 
             self->_leftSpecularPrimary.alpha = 0.85;
             self->_leftSpecularSecondary.alpha = 0.40;
@@ -537,8 +558,8 @@ static DeskCompanionViewController *g_viewController = nil;
 
     // 120ms rapid saccade burst: GPU-accelerated transform without layout thrashing
     [UIView animateWithDuration:0.12 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        self->_leftEye.transform = CGAffineTransformMakeTranslation(dx, dy);
-        self->_rightEye.transform = CGAffineTransformMakeTranslation(dx, dy);
+        self->_leftEye.transform = CGAffineTransformConcat(self->_expressionTransformLeft, CGAffineTransformMakeTranslation(dx, dy));
+        self->_rightEye.transform = CGAffineTransformConcat(self->_expressionTransformRight, CGAffineTransformMakeTranslation(dx, dy));
 
         // Specular catchlight parallax: cornea glints shift slightly faster than iris
         self->_leftSpecularPrimary.transform = CGAffineTransformMakeTranslation(dx * 0.25, dy * 0.25);
@@ -548,8 +569,8 @@ static DeskCompanionViewController *g_viewController = nil;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (self->_isPanning) return;
             [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
-                self->_leftEye.transform = CGAffineTransformIdentity;
-                self->_rightEye.transform = CGAffineTransformIdentity;
+                self->_leftEye.transform = self->_expressionTransformLeft;
+                self->_rightEye.transform = self->_expressionTransformRight;
                 self->_leftSpecularPrimary.transform = CGAffineTransformIdentity;
                 self->_rightSpecularPrimary.transform = CGAffineTransformIdentity;
             } completion:nil];
@@ -588,6 +609,8 @@ static DeskCompanionViewController *g_viewController = nil;
         // Reset eye transforms to identity before adjusting layer bounds and positions (CoreAnimation invariant)
         self->_leftEye.transform = CGAffineTransformIdentity;
         self->_rightEye.transform = CGAffineTransformIdentity;
+        self->_expressionTransformLeft = CGAffineTransformIdentity;
+        self->_expressionTransformRight = CGAffineTransformIdentity;
 
         if ([expression isEqualToString:@"happy"]) {
             self->_leftEye.layer.bounds = CGRectMake(0, 0, 50, 56);
@@ -602,8 +625,10 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_rightIrisGradient.colors = @[(id)greenTop.CGColor, (id)greenBottom.CGColor];
             self->_leftEye.layer.shadowColor = greenTop.CGColor;
             self->_rightEye.layer.shadowColor = greenTop.CGColor;
-            self->_leftEye.transform = CGAffineTransformMakeRotation(-0.14);
-            self->_rightEye.transform = CGAffineTransformMakeRotation(0.14);
+            self->_expressionTransformLeft = CGAffineTransformMakeRotation(-0.14);
+            self->_expressionTransformRight = CGAffineTransformMakeRotation(0.14);
+            self->_leftEye.transform = self->_expressionTransformLeft;
+            self->_rightEye.transform = self->_expressionTransformRight;
             self->_leftPupilCore.transform = CGAffineTransformMakeScale(0.88, 0.88);
             self->_rightPupilCore.transform = CGAffineTransformMakeScale(0.88, 0.88);
             self->_leftSpecularPrimary.alpha = 0.85;
@@ -858,8 +883,8 @@ static DeskCompanionViewController *g_viewController = nil;
 
     if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged) {
         _isPanning = YES;
-        _leftEye.transform = CGAffineTransformMakeTranslation(dx, dy);
-        _rightEye.transform = CGAffineTransformMakeTranslation(dx, dy);
+        _leftEye.transform = CGAffineTransformConcat(_expressionTransformLeft, CGAffineTransformMakeTranslation(dx, dy));
+        _rightEye.transform = CGAffineTransformConcat(_expressionTransformRight, CGAffineTransformMakeTranslation(dx, dy));
 
         // Catchlight parallax
         _leftSpecularPrimary.transform = CGAffineTransformMakeTranslation(dx * 0.22, dy * 0.22);
@@ -867,8 +892,8 @@ static DeskCompanionViewController *g_viewController = nil;
     } else if (gesture.state == UIGestureRecognizerStateEnded || gesture.state == UIGestureRecognizerStateCancelled) {
         _isPanning = NO;
         [UIView animateWithDuration:0.28 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-            self->_leftEye.transform = CGAffineTransformIdentity;
-            self->_rightEye.transform = CGAffineTransformIdentity;
+            self->_leftEye.transform = self->_expressionTransformLeft;
+            self->_rightEye.transform = self->_expressionTransformRight;
             self->_leftSpecularPrimary.transform = CGAffineTransformIdentity;
             self->_rightSpecularPrimary.transform = CGAffineTransformIdentity;
         } completion:nil];
@@ -933,7 +958,6 @@ static DeskCompanionViewController *g_viewController = nil;
 
 // Dual-Camera Perception: Front (VGA selfie/desk) and Back (8MP macro scanner)
 - (void)takeSnapshot:(NSString *)cameraPosition completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
-    PruneOldTmpArtifacts();
     AVCaptureDevicePosition pos = [cameraPosition isEqualToString:@"front"] ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
 
     AVCaptureSession *session = [[[AVCaptureSession alloc] init] autorelease];
@@ -1007,7 +1031,6 @@ static DeskCompanionViewController *g_viewController = nil;
 
 // Microphone Perception: Record linear PCM 16kHz mono audio on iPhone 4S
 - (void)recordAudioDuration:(NSTimeInterval)duration completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
-    PruneOldTmpArtifacts();
     @synchronized(self) {
         if (_isRecording) {
             if (completion) {
@@ -1101,14 +1124,17 @@ static DeskCompanionViewController *g_viewController = nil;
     _audioTimeoutTimer = [NSTimer scheduledTimerWithTimeInterval:(duration + 1.5)
                                                           target:self
                                                         selector:@selector(audioRecordingDidTimeout:)
-                                                        userInfo:nil
+                                                        userInfo:_audioRecorder
                                                          repeats:NO];
 }
 
 - (void)audioRecordingDidTimeout:(NSTimer *)timer {
     @synchronized(self) {
-        _audioTimeoutTimer = nil;
-        if (_isRecording && _audioRecorder) {
+        AVAudioRecorder *targetRecorder = (AVAudioRecorder *)[timer userInfo];
+        if (_audioTimeoutTimer == timer) {
+            _audioTimeoutTimer = nil;
+        }
+        if (_isRecording && _audioRecorder && _audioRecorder == targetRecorder) {
             if ([_audioRecorder isRecording]) {
                 [_audioRecorder stop];
             }
@@ -1158,9 +1184,11 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 }
 
-- (void)audioRecorderEncodeErrorDidOccur:(AVAudioRecorder *)recorder error:(NSError *)error {
-    [self setSpeaking:NO];
-    [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
+- (void)abortRecordingWithError:(NSError *)error {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self setSpeaking:NO];
+        [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
+    });
 
     void (^comp)(NSString *, NSUInteger, NSError *) = nil;
 
@@ -1189,12 +1217,20 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 }
 
+- (void)audioRecorderEncodeErrorDidOccur:(AVAudioRecorder *)recorder error:(NSError *)error {
+    [self abortRecordingWithError:error];
+}
+
 - (void)handleAudioInterruption:(NSNotification *)notification {
     @synchronized(self) {
         NSNumber *interruptionType = [notification.userInfo objectForKey:AVAudioSessionInterruptionTypeKey];
         if ([interruptionType unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan) {
-            if (_isRecording && _audioRecorder && [_audioRecorder isRecording]) {
-                [_audioRecorder stop];
+            if (_isRecording) {
+                if (_audioRecorder && [_audioRecorder isRecording]) {
+                    [_audioRecorder stop];
+                }
+                NSError *intErr = [NSError errorWithDomain:@"DeskCompanionAudio" code:-7 userInfo:@{NSLocalizedDescriptionKey: @"Audio recording was interrupted"}];
+                [self abortRecordingWithError:intErr];
             }
         } else if ([interruptionType unsignedIntegerValue] == AVAudioSessionInterruptionTypeEnded) {
             NSNumber *options = [notification.userInfo objectForKey:AVAudioSessionInterruptionOptionKey];
@@ -1208,7 +1244,6 @@ static DeskCompanionViewController *g_viewController = nil;
 
 // Pixel-Exact Retina Screen Capture
 - (void)captureScreenToPath:(NSString *)path completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
-    PruneOldTmpArtifacts();
     dispatch_async(dispatch_get_main_queue(), ^{
         NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
         UIGraphicsBeginImageContextWithOptions(self.view.bounds.size, YES, 2.0);
@@ -1364,8 +1399,23 @@ static void SafeSendAndClose(CompanionClientContext *ctx, NSData *data) {
             fdToClose = ctx->clientFd;
             ctx->clientFd = -1;
             if (fdToClose >= 0 && data && [data length] > 0) {
-                send(fdToClose, [data bytes], [data length], 0);
-                send(fdToClose, "\n", 1, 0);
+                const char *buf = (const char *)[data bytes];
+                size_t remaining = (size_t)[data length];
+                int attempts = 0;
+                while (remaining > 0 && attempts++ < 100) {
+                    ssize_t sent = send(fdToClose, buf, remaining, 0);
+                    if (sent <= 0) {
+                        if (sent < 0 && (errno == EINTR || errno == EAGAIN)) {
+                            continue;
+                        }
+                        break;
+                    }
+                    buf += sent;
+                    remaining -= sent;
+                }
+                if (remaining == 0) {
+                    send(fdToClose, "\n", 1, 0);
+                }
             }
             if (fdToClose >= 0) {
                 close(fdToClose);
@@ -1375,8 +1425,6 @@ static void SafeSendAndClose(CompanionClientContext *ctx, NSData *data) {
 }
 
 static void *SocketServerThread(void *arg) {
-    signal(SIGPIPE, SIG_IGN);
-
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) return NULL;
 
@@ -1522,13 +1570,6 @@ static void *SocketServerThread(void *arg) {
                         NSString *cam = [cmdDict objectForKey:@"camera"];
                         if (!cam || ![cam isKindOfClass:[NSString class]]) cam = @"back";
 
-                        // Operation deadline to guarantee client fd closure if capture hangs
-                        [ctx retain];
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                            SafeSendAndClose(ctx, nil);
-                            [ctx release];
-                        });
-
                         [ctx retain];
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
@@ -1565,15 +1606,9 @@ static void *SocketServerThread(void *arg) {
                         if (durObj && [durObj respondsToSelector:@selector(doubleValue)]) {
                             duration = [durObj doubleValue];
                         }
-                        if (duration <= 0.1) duration = 3.0;
-                        if (duration > 30.0) duration = 30.0;
-
-                        // Operation deadline to guarantee client fd closure if recording hangs
-                        [ctx retain];
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + 4.0) * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                            SafeSendAndClose(ctx, nil);
-                            [ctx release];
-                        });
+                        if (duration <= 0.0) duration = 3.0;
+                        else if (duration < 0.1) duration = 0.1;
+                        else if (duration > 30.0) duration = 30.0;
 
                         [ctx retain];
                         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1608,13 +1643,6 @@ static void *SocketServerThread(void *arg) {
                         handledAsynchronously = YES;
                         NSString *shotId = [[NSProcessInfo processInfo] globallyUniqueString];
                         NSString *savePath = [NSString stringWithFormat:@"/tmp/companion_screen_%@.png", shotId];
-
-                        // Operation deadline to guarantee client fd closure if screenshot hangs
-                        [ctx retain];
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                            SafeSendAndClose(ctx, nil);
-                            [ctx release];
-                        });
 
                         [ctx retain];
                         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1704,6 +1732,7 @@ static void *SocketServerThread(void *arg) {
 @end
 
 int main(int argc, char *argv[]) {
+    signal(SIGPIPE, SIG_IGN);
     @autoreleasepool {
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
     }

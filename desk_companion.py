@@ -17,7 +17,10 @@ import shlex
 # Strict repository standard: verify virtual environment isolation
 def is_in_venv():
     """Verify that Python execution is isolated within the project virtual environment."""
-    return (sys.prefix != getattr(sys, "base_prefix", sys.prefix)) or ("VIRTUAL_ENV" in os.environ)
+    repo_venv = os.path.realpath(os.path.join(os.path.dirname(__file__), ".venv"))
+    curr_prefix = os.path.realpath(sys.prefix)
+    curr_exec = os.path.realpath(sys.executable)
+    return curr_prefix.startswith(repo_venv) or curr_exec.startswith(repo_venv)
 
 SAFE_PATH_REGEX = re.compile(r"^/tmp/companion_[a-zA-Z0-9_-]+\.(jpg|wav|png)$")
 
@@ -32,12 +35,16 @@ SSH_PORT = 2222
 WIFI_SSH_PORT = 22
 
 class DeskCompanion:
-    def __init__(self, host=None, port=None, ssh_port=None, ssh_key=None, strict_host_key_checking=None):
+    def __init__(self, host=None, port=None, ssh_port=None, ssh_key=None, strict_host_key_checking=None, known_hosts=None):
         self.host = host
         self.port = port
         self.ssh_port = ssh_port
         self.ssh_key = ssh_key or os.environ.get("COMPANION_SSH_KEY", os.path.expanduser("~/.ssh/id_rsa_iphone"))
-        self.strict_host_key_checking = strict_host_key_checking or os.environ.get("COMPANION_STRICT_HOST_KEY_CHECKING", "accept-new")
+        self.strict_host_key_checking = strict_host_key_checking or os.environ.get("COMPANION_STRICT_HOST_KEY_CHECKING", "yes")
+        default_known_hosts = os.path.expanduser("~/.ssh/iphone_known_hosts")
+        if not os.path.exists(default_known_hosts):
+            default_known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+        self.known_hosts = known_hosts or os.environ.get("COMPANION_KNOWN_HOSTS", default_known_hosts)
         self._active_host = None
         self._active_port = None
         self._active_ssh_port = None
@@ -87,9 +94,10 @@ class DeskCompanion:
             "-o", "ServerAliveInterval=3",
             "-o", "ServerAliveCountMax=2",
             "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}",
-            f"root@{ssh_host}:{remote_path}",
-            local_path
         ]
+        if self.known_hosts and os.path.exists(self.known_hosts):
+            scp_cmd.extend(["-o", f"UserKnownHostsFile={self.known_hosts}"])
+        scp_cmd.extend([f"root@{ssh_host}:{remote_path}", local_path])
 
         last_err = ""
         for attempt in range(1, retries + 1):
@@ -97,7 +105,16 @@ class DeskCompanion:
                 ret = subprocess.run(scp_cmd, capture_output=True, timeout=timeout)
                 if ret.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
                     # Clean up remote capture file after successful retrieval
-                    del_cmd = ["ssh", "-i", key_path, "-p", str(ssh_port), "-o", "ConnectTimeout=5", "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}", f"root@{ssh_host}", f"rm -f -- {shlex.quote(remote_path)}"]
+                    del_cmd = [
+                        "ssh",
+                        "-i", key_path,
+                        "-p", str(ssh_port),
+                        "-o", "ConnectTimeout=5",
+                        "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}",
+                    ]
+                    if self.known_hosts and os.path.exists(self.known_hosts):
+                        del_cmd.extend(["-o", f"UserKnownHostsFile={self.known_hosts}"])
+                    del_cmd.extend([f"root@{ssh_host}", f"rm -f -- {shlex.quote(remote_path)}"])
                     subprocess.run(del_cmd, capture_output=True, timeout=5.0)
                     return {"status": "ok", "local_file": local_path}
                 last_err = ret.stderr.decode("utf-8", errors="replace")
@@ -129,7 +146,12 @@ class DeskCompanion:
                 self._active_ssh_port = None
                 alt_host = WIFI_HOST if target_host == DEFAULT_HOST else DEFAULT_HOST
                 alt_port = WIFI_PORT if target_port == DEFAULT_PORT else DEFAULT_PORT
-                alt_ssh = WIFI_SSH_PORT if target_ssh == SSH_PORT else SSH_PORT
+                if target_ssh == SSH_PORT:
+                    alt_ssh = WIFI_SSH_PORT
+                elif target_ssh == WIFI_SSH_PORT:
+                    alt_ssh = SSH_PORT
+                else:
+                    alt_ssh = self.ssh_port or (2222 if alt_host == "127.0.0.1" else 22)
                 s_alt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s_alt.settimeout(timeout)
                 try:
@@ -142,16 +164,24 @@ class DeskCompanion:
             else:
                 return {"error": str(conn_err)}
 
-        # Phase 2: Transmission and reception (never repeated on alternate transport to prevent duplicate actions)
+        # Phase 2: Transmission and reception (newline-delimited frames, never repeated on alternate transport)
         with s:
             try:
-                payload = json.dumps(cmd_dict).encode("utf-8")
+                payload = json.dumps(cmd_dict).encode("utf-8") + b"\n"
                 s.sendall(payload)
-                data = s.recv(8192)
-                if not data:
+                buffer = b""
+                while b"\n" not in buffer:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                if not buffer:
+                    self._active_host, self._active_port, self._active_ssh_port = None, None, None
                     return {"error": "empty_response"}
-                return json.loads(data.decode("utf-8"))
+                line = buffer.split(b"\n", 1)[0]
+                return json.loads(line.decode("utf-8"))
             except Exception as e:
+                self._active_host, self._active_port, self._active_ssh_port = None, None, None
                 return {"error": str(e)}
 
     def ping(self):
@@ -435,10 +465,11 @@ def interactive_cli():
 if __name__ == "__main__":
     if not is_in_venv():
         print(
-            "Warning: desk_companion.py is executing outside .venv. "
-            "Recommended: '.venv/bin/python3 desk_companion.py' or './start_companion.sh'.",
+            "FATAL: Execution outside dedicated virtual environment (.venv) is strictly prohibited. "
+            "Run via '.venv/bin/python3 desk_companion.py' or './start_companion.sh'.",
             file=sys.stderr,
         )
+        sys.exit(1)
     if len(sys.argv) > 1 and sys.argv[1] == "demo":
         DeskCompanion().run_demo()
     else:
