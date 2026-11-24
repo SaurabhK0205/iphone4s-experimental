@@ -47,6 +47,34 @@
 }
 @end
 
+// ========================================================
+// DISK & MEMORY HYGIENE (/tmp Artifact Pruner)
+// ========================================================
+static void PruneOldTmpArtifacts(void) {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *tmpDir = @"/tmp";
+        NSError *err = nil;
+        NSArray *files = [fm contentsOfDirectoryAtPath:tmpDir error:&err];
+        if (!files || err) return;
+
+        // Prune companion temporary captures older than 30 minutes
+        NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-1800];
+        for (NSString *file in files) {
+            if ([file hasPrefix:@"companion_snapshot_"] ||
+                [file hasPrefix:@"companion_audio_"] ||
+                [file hasPrefix:@"companion_screen_"]) {
+                NSString *fullPath = [tmpDir stringByAppendingPathComponent:file];
+                NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+                NSDate *modDate = [attrs fileModificationDate];
+                if (modDate && [modDate compare:cutoff] == NSOrderedAscending) {
+                    [fm removeItemAtPath:fullPath error:nil];
+                }
+            }
+        }
+    });
+}
+
 @class DeskCompanionViewController;
 static DeskCompanionViewController *g_viewController = nil;
 
@@ -883,6 +911,7 @@ static DeskCompanionViewController *g_viewController = nil;
 
 // Dual-Camera Perception: Front (VGA selfie/desk) and Back (8MP macro scanner)
 - (void)takeSnapshot:(NSString *)cameraPosition completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
+    PruneOldTmpArtifacts();
     AVCaptureDevicePosition pos = [cameraPosition isEqualToString:@"front"] ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
 
     AVCaptureSession *session = [[[AVCaptureSession alloc] init] autorelease];
@@ -956,23 +985,26 @@ static DeskCompanionViewController *g_viewController = nil;
 
 // Microphone Perception: Record linear PCM 16kHz mono audio on iPhone 4S
 - (void)recordAudioDuration:(NSTimeInterval)duration completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
-    if (_isRecording) {
-        if (completion) {
-            NSError *busyErr = [NSError errorWithDomain:@"DeskCompanionAudio" code:-10 userInfo:@{NSLocalizedDescriptionKey: @"Audio recording already in progress"}];
-            completion(nil, 0, busyErr);
+    PruneOldTmpArtifacts();
+    @synchronized(self) {
+        if (_isRecording) {
+            if (completion) {
+                NSError *busyErr = [NSError errorWithDomain:@"DeskCompanionAudio" code:-10 userInfo:@{NSLocalizedDescriptionKey: @"Audio recording already in progress"}];
+                completion(nil, 0, busyErr);
+            }
+            return;
         }
-        return;
-    }
 
-    if (_audioRecorder) {
-        if ([_audioRecorder isRecording]) [_audioRecorder stop];
-        _audioRecorder.delegate = nil;
-        [_audioRecorder release];
-        _audioRecorder = nil;
-    }
-    if (_audioRecordCompletion) {
-        Block_release(_audioRecordCompletion);
-        _audioRecordCompletion = nil;
+        if (_audioRecorder) {
+            if ([_audioRecorder isRecording]) [_audioRecorder stop];
+            _audioRecorder.delegate = nil;
+            [_audioRecorder release];
+            _audioRecorder = nil;
+        }
+        if (_audioRecordCompletion) {
+            Block_release(_audioRecordCompletion);
+            _audioRecordCompletion = nil;
+        }
     }
 
     AVAudioSession *audioSession = [AVAudioSession sharedInstance];
@@ -1017,13 +1049,15 @@ static DeskCompanionViewController *g_viewController = nil;
     _isRecording = YES;
 
     if (![_audioRecorder recordForDuration:duration]) {
-        _isRecording = NO;
-        _audioRecorder.delegate = nil;
-        [_audioRecorder release];
-        _audioRecorder = nil;
-        if (_audioRecordCompletion) {
-            Block_release(_audioRecordCompletion);
-            _audioRecordCompletion = nil;
+        @synchronized(self) {
+            _isRecording = NO;
+            _audioRecorder.delegate = nil;
+            [_audioRecorder release];
+            _audioRecorder = nil;
+            if (_audioRecordCompletion) {
+                Block_release(_audioRecordCompletion);
+                _audioRecordCompletion = nil;
+            }
         }
         [audioSession setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
         if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanionAudio" code:-4 userInfo:nil]);
@@ -1037,8 +1071,14 @@ static DeskCompanionViewController *g_viewController = nil;
     __block DeskCompanionViewController *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + 1.5) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         DeskCompanionViewController *strongSelf = weakSelf;
-        if (strongSelf && strongSelf->_isRecording && strongSelf->_audioRecorder) {
-            [strongSelf->_audioRecorder stop];
+        if (strongSelf) {
+            @synchronized(strongSelf) {
+                if (strongSelf->_isRecording && strongSelf->_audioRecorder) {
+                    if ([strongSelf->_audioRecorder isRecording]) {
+                        [strongSelf->_audioRecorder stop];
+                    }
+                }
+            }
         }
     });
 }
@@ -1050,12 +1090,19 @@ static DeskCompanionViewController *g_viewController = nil;
     [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
 
     NSString *filePath = [recorder.url path];
-    _isRecording = NO;
+    void (^comp)(NSString *, NSUInteger, NSError *) = nil;
 
-    if (_audioRecorder) {
-        _audioRecorder.delegate = nil;
-        [_audioRecorder release];
-        _audioRecorder = nil;
+    @synchronized(self) {
+        _isRecording = NO;
+        if (_audioRecorder) {
+            _audioRecorder.delegate = nil;
+            [_audioRecorder release];
+            _audioRecorder = nil;
+        }
+        if (_audioRecordCompletion) {
+            comp = _audioRecordCompletion;
+            _audioRecordCompletion = nil;
+        }
     }
 
     [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
@@ -1063,9 +1110,7 @@ static DeskCompanionViewController *g_viewController = nil;
     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:filePath error:nil];
     NSUInteger fileSize = [attrs fileSize];
 
-    if (_audioRecordCompletion) {
-        void (^comp)(NSString *, NSUInteger, NSError *) = _audioRecordCompletion;
-        _audioRecordCompletion = nil;
+    if (comp) {
         if (flag && fileSize > 0) {
             comp(filePath, fileSize, nil);
         } else {
@@ -1079,19 +1124,25 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)audioRecorderEncodeErrorDidOccur:(AVAudioRecorder *)recorder error:(NSError *)error {
     [self setSpeaking:NO];
     [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
-    _isRecording = NO;
 
-    if (_audioRecorder) {
-        _audioRecorder.delegate = nil;
-        [_audioRecorder release];
-        _audioRecorder = nil;
+    void (^comp)(NSString *, NSUInteger, NSError *) = nil;
+
+    @synchronized(self) {
+        _isRecording = NO;
+        if (_audioRecorder) {
+            _audioRecorder.delegate = nil;
+            [_audioRecorder release];
+            _audioRecorder = nil;
+        }
+        if (_audioRecordCompletion) {
+            comp = _audioRecordCompletion;
+            _audioRecordCompletion = nil;
+        }
     }
 
     [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
 
-    if (_audioRecordCompletion) {
-        void (^comp)(NSString *, NSUInteger, NSError *) = _audioRecordCompletion;
-        _audioRecordCompletion = nil;
+    if (comp) {
         comp(nil, 0, error ? error : [NSError errorWithDomain:@"DeskCompanionAudio" code:-6 userInfo:nil]);
         Block_release(comp);
     }
@@ -1114,6 +1165,7 @@ static DeskCompanionViewController *g_viewController = nil;
 
 // Pixel-Exact Retina Screen Capture
 - (void)captureScreenToPath:(NSString *)path completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
+    PruneOldTmpArtifacts();
     dispatch_async(dispatch_get_main_queue(), ^{
         NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
         UIGraphicsBeginImageContextWithOptions(self.view.bounds.size, YES, 2.0);
@@ -1231,6 +1283,7 @@ static DeskCompanionViewController *g_viewController = nil;
 // ========================================================
 static void SafeSendAndClose(int fd, NSData *data) {
     if (fd < 0) return;
+    if (fcntl(fd, F_GETFD) == -1) return;
     if (data && [data length] > 0) {
         send(fd, [data bytes], [data length], 0);
         send(fd, "\n", 1, 0);
