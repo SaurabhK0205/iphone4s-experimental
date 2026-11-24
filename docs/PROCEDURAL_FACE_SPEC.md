@@ -122,8 +122,8 @@ The engine defines 21 core emotional presets synthesized directly from official 
 15. **`sleepy`**: Upper eyelids drooped with outward slant (`UpperLidY = 0.65`, `UpperLidAngle = -8.0`, slate-blue accent).
 16. **`suspicious`**: Narrow horizontal squint with slight inward slant (`UpperLidY = 0.48`, `UpperLidAngle = 8.0`, `LowerLidY = 0.25`).
 17. **`squint`**: Tight horizontal slits centered at optical baseline (`UpperLidY = 0.46`, `LowerLidY = 0.46`).
-18. **`angry`**: Aggressive V-brow (`\ /`): steep inward slant (`UpperLidY = 0.36`, `UpperLidAngle = 18.0`, crimson-amber accent).
-19. **`furious`**: Deep angry V-brow (`\ /`): extreme inward slant (`UpperLidY = 0.46`, `UpperLidAngle = 26.0`, `LowerLidY = 0.15`, fiery crimson accent).
+18. **`angry`**: Aggressive V-brow (`\ /`): grounded flat baseline with steep inward-slanted upper brow (`UpperLidY = 0.28`, `UpperLidAngle = 22.0`, signature electric cyber cyan `#00E5FF`).
+19. **`furious`**: Deeper angry V-brow (`\ /`): grounded flat baseline with extreme inward-slanted brow (`UpperLidY = 0.38`, `UpperLidAngle = 28.0`, signature electric cyber cyan).
 20. **`scared`**: Wide tall eyes with bottom eyelid cut flat across (`scaleY = 1.15`, `LowerLidY = 0.36`, `LowerLidBend = 0.0`).
 21. **`awe`**: Giant rounded glowing eyes with maximized luminous core (`scaleX = 1.15`, `scaleY = 1.20`, `GlowSize = 1.50`, `radii = 0.85`).
 
@@ -143,7 +143,7 @@ Additional expressive state aliases:
    - Zero radial gradient, zero blue vignette, zero light bleed.
    - On the physical iPhone 4S Retina display, the pitch-black pixels blend seamlessly into the front glass bezel, transforming the entire phone into a unified robot head/visor.
 2. **Retro CRT & OLED Illumination**:
-   - Eyes bloom directly against the black canvas with a 20pt soft cyan shadow glow.
+   - Pure Black Boundaries: Canvas maintains pure RGB(0,0,0) black pixels outside the eye squircle, with outer layer shadows disabled to eliminate backlight bloom and merge invisibly into the glossy front glass bezel.
    - Luminous White-Hot Core: A high-brightness white hotspot (`#FFFFFF` to `#C8FFFF`) radiates inside each cyan eye and smoothly tracks gaze coordinates (`HotSpotCenterX`, `HotSpotCenterY`).
    - CRT Raster Scanlines: A subtle horizontal raster scanline overlay (1pt line every 3pt, 16% opacity) reproduces the analog phosphor monitor texture of 1980s-90s electronics.
 3. **Pure Face Mode (Zero HUD Clutter)**:
@@ -152,7 +152,7 @@ Additional expressive state aliases:
 
 ---
 
-## 5. Emil Kowalski Motion Principles & Timing
+## 6. Emil Kowalski Motion Principles & Timing
 
 1. **Ambient State Changes**:
    - Transitions between emotional presets use spring interpolation over **260ms to 320ms**.

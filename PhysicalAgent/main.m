@@ -272,11 +272,11 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
             _hotSpotGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, hotComponents, hotLocs, 2);
         }
 
-        // Outer glow blooming directly into the obsidian black bezel
-        self.layer.shadowColor = [UIColor colorWithRed:0.0 green:0.88 blue:1.0 alpha:1.0].CGColor;
+        // Pitch black obsidian canvas: no outer layer shadow to eliminate backlight bleed
+        self.layer.shadowColor = [UIColor clearColor].CGColor;
         self.layer.shadowOffset = CGSizeZero;
-        self.layer.shadowRadius = 20.0f;
-        self.layer.shadowOpacity = 0.95f;
+        self.layer.shadowRadius = 0.0f;
+        self.layer.shadowOpacity = 0.0f;
 
         _config = ProceduralEyeConfigDefault();
         [self applyConfig:_config];
@@ -327,9 +327,8 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
 }
 
 - (void)setGlowColor:(UIColor *)color {
-    if (color) {
-        self.layer.shadowColor = color.CGColor;
-    }
+    // Preserved for API compatibility; canvas maintains pure black pixels outside iris
+    (void)color;
 }
 
 - (void)applyConfig:(ProceduralEyeConfig)config {
@@ -367,10 +366,14 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
         cBL_x = _config.lowerInnerRadiusX; cBL_y = _config.lowerInnerRadiusY;
     }
 
-    // Eyelid kinematics
+    // Eyelid kinematics with strict non-inversion boundaries
     CGFloat topLidY = ClampF(_config.upperLidY, 0.0f, 1.0f) * H;
     CGFloat bottomLidY = H - ClampF(_config.lowerLidY, 0.0f, 1.0f) * H;
-    if (bottomLidY < topLidY) bottomLidY = topLidY;
+    if (bottomLidY < topLidY + 2.0f) {
+        CGFloat mid = (topLidY + bottomLidY) * 0.5f;
+        topLidY = mid - 1.0f;
+        bottomLidY = mid + 1.0f;
+    }
 
     CGFloat angleSign = _isLeftEye ? 1.0f : -1.0f;
     CGFloat topSlope = tanf(_config.upperLidAngle * (CGFloat)(M_PI / 180.0) * angleSign);
@@ -385,11 +388,6 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     CGFloat rBL_x = ClampF(cBL_x, 0.05f, 1.0f) * (W * 0.5f);
     CGFloat rBR_x = ClampF(cBR_x, 0.05f, 1.0f) * (W * 0.5f);
 
-    CGFloat rTL_y = ClampF(cTL_y, 0.05f, 1.0f) * (effH * 0.5f);
-    CGFloat rTR_y = ClampF(cTR_y, 0.05f, 1.0f) * (effH * 0.5f);
-    CGFloat rBL_y = ClampF(cBL_y, 0.05f, 1.0f) * (effH * 0.5f);
-    CGFloat rBR_y = ClampF(cBR_y, 0.05f, 1.0f) * (effH * 0.5f);
-
     CGFloat yTL = ClampF(topLidY - topSlope * (W * 0.5f - rTL_x), 0.0f, H);
     CGFloat yTR = ClampF(topLidY + topSlope * (W * 0.5f - rTR_x), 0.0f, H);
     CGFloat yTMid = ClampF(topLidY + topBendOffset, 0.0f, H);
@@ -397,6 +395,31 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     CGFloat yBL = ClampF(bottomLidY - bottomSlope * (W * 0.5f - rBL_x), 0.0f, H);
     CGFloat yBR = ClampF(bottomLidY + bottomSlope * (W * 0.5f - rBR_x), 0.0f, H);
     CGFloat yBMid = ClampF(bottomLidY - bottomBendOffset, 0.0f, H);
+
+    // Strict geometry invariant: top eyelid edge must never cross or invert below bottom eyelid edge
+    if (yBL < yTL + 2.0f) {
+        CGFloat midL = (yTL + yBL) * 0.5f;
+        yTL = midL - 1.0f;
+        yBL = midL + 1.0f;
+    }
+    if (yBR < yTR + 2.0f) {
+        CGFloat midR = (yTR + yBR) * 0.5f;
+        yTR = midR - 1.0f;
+        yBR = midR + 1.0f;
+    }
+    if (yBMid < yTMid + 1.0f) {
+        CGFloat midM = (yTMid + yBMid) * 0.5f;
+        yTMid = midM - 0.5f;
+        yBMid = midM + 0.5f;
+    }
+
+    CGFloat spanL = yBL - yTL;
+    CGFloat spanR = yBR - yTR;
+
+    CGFloat rTL_y = MIN(ClampF(cTL_y, 0.05f, 1.0f) * (spanL * 0.5f), spanL * 0.45f);
+    CGFloat rBL_y = MIN(ClampF(cBL_y, 0.05f, 1.0f) * (spanL * 0.5f), spanL * 0.45f);
+    CGFloat rTR_y = MIN(ClampF(cTR_y, 0.05f, 1.0f) * (spanR * 0.5f), spanR * 0.45f);
+    CGFloat rBR_y = MIN(ClampF(cBR_y, 0.05f, 1.0f) * (spanR * 0.5f), spanR * 0.45f);
 
     const CGFloat kappa = 0.55228475f;
     UIBezierPath *path = [UIBezierPath bezierPath];
@@ -441,9 +464,6 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     }
 
     CGContextRestoreGState(ctx);
-
-    // Update shadowPath for hardware-accelerated bloom matching exact shape
-    self.layer.shadowPath = path.CGPath;
 }
 
 - (void)dealloc {
@@ -713,33 +733,53 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         right.lowerLidY = 0.46f;
         right.scaleY = 0.60f;
     } else if ([n isEqualToString:@"angry"]) {
-        // Aggressive V-brow (\ /)
-        left.upperLidY = 0.36f;
-        left.upperLidAngle = 18.0f;
-        left.angle = 3.0f;
+        // Authentic Cozmo Angry: Grounded flat baseline, steep inward-slanted upper brow, electric cyan
+        left.scaleX = 1.0f;
+        left.scaleY = 0.95f;
+        left.angle = 0.0f;
+        left.upperLidY = 0.28f;
+        left.upperLidAngle = 22.0f;
+        left.upperLidBend = 0.0f;
+        left.lowerLidY = 0.0f;
+        left.lowerLidAngle = 0.0f;
+        left.lowerLidBend = 0.0f;
 
-        right.upperLidY = 0.36f;
-        right.upperLidAngle = -18.0f;
-        right.angle = -3.0f;
+        right.scaleX = 1.0f;
+        right.scaleY = 0.95f;
+        right.angle = 0.0f;
+        right.upperLidY = 0.28f;
+        right.upperLidAngle = -22.0f;
+        right.upperLidBend = 0.0f;
+        right.lowerLidY = 0.0f;
+        right.lowerLidAngle = 0.0f;
+        right.lowerLidBend = 0.0f;
 
-        topColor = crimsonAmberTop;
-        bottomColor = crimsonAmberBottom;
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
     } else if ([n isEqualToString:@"furious"]) {
-        // Deep angry V-brow (\ /) with fiery crimson
-        left.upperLidY = 0.46f;
-        left.upperLidAngle = 26.0f;
-        left.lowerLidY = 0.15f;
-        left.scaleY = 0.85f;
-        left.angle = 4.0f;
+        // Cozmo Furious: Deeper inward brow, flat baseline, electric cyan
+        left.scaleX = 1.0f;
+        left.scaleY = 0.88f;
+        left.angle = 0.0f;
+        left.upperLidY = 0.38f;
+        left.upperLidAngle = 28.0f;
+        left.upperLidBend = 0.0f;
+        left.lowerLidY = 0.0f;
+        left.lowerLidAngle = 0.0f;
+        left.lowerLidBend = 0.0f;
 
-        right.upperLidY = 0.46f;
-        right.upperLidAngle = -26.0f;
-        right.lowerLidY = 0.15f;
-        right.scaleY = 0.85f;
-        right.angle = -4.0f;
+        right.scaleX = 1.0f;
+        right.scaleY = 0.88f;
+        right.angle = 0.0f;
+        right.upperLidY = 0.38f;
+        right.upperLidAngle = -28.0f;
+        right.upperLidBend = 0.0f;
+        right.lowerLidY = 0.0f;
+        right.lowerLidAngle = 0.0f;
+        right.lowerLidBend = 0.0f;
 
-        topColor = crimsonTop;
-        bottomColor = crimsonBottom;
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
     } else if ([n isEqualToString:@"scared"]) {
         // Wide tall eyes with bottom lid cut flat across
         left.scaleX = 0.95f;
@@ -1209,6 +1249,7 @@ static DeskCompanionViewController *g_viewController = nil;
 
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
+    [UIScreen mainScreen].brightness = 0.70f; // Mitigate IPS LCD backlight bleed on pitch black canvas
 }
 
 - (void)periodicPrune:(NSTimer *)timer {
@@ -1231,16 +1272,6 @@ static DeskCompanionViewController *g_viewController = nil;
     breatheScale.repeatCount = HUGE_VALF;
     breatheScale.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
     [_eyeContainer.layer addAnimation:breatheScale forKey:@"breatheScale"];
-
-    CABasicAnimation *breatheGlow = [CABasicAnimation animationWithKeyPath:@"shadowOpacity"];
-    breatheGlow.fromValue = [NSNumber numberWithFloat:0.75f];
-    breatheGlow.toValue = [NSNumber numberWithFloat:0.95f];
-    breatheGlow.duration = 4.2;
-    breatheGlow.autoreverses = YES;
-    breatheGlow.repeatCount = HUGE_VALF;
-    breatheGlow.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    [_leftEye.layer addAnimation:breatheGlow forKey:@"breatheGlow"];
-    [_rightEye.layer addAnimation:breatheGlow forKey:@"breatheGlow"];
 }
 
 - (void)setReducedMotion:(BOOL)reduced {
@@ -1249,8 +1280,6 @@ static DeskCompanionViewController *g_viewController = nil;
     [[NSUserDefaults standardUserDefaults] synchronize];
     if (_reducedMotion) {
         [_eyeContainer.layer removeAnimationForKey:@"breatheScale"];
-        [_leftEye.layer removeAnimationForKey:@"breatheGlow"];
-        [_rightEye.layer removeAnimationForKey:@"breatheGlow"];
     } else {
         [self startBreathingCycle];
     }
@@ -1418,7 +1447,7 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)triggerRandomBlink {
-    if (!_isBlinking && !_isSpeaking && !_isPanning && ![_currentExpression isEqualToString:@"sleep"] && ![_currentExpression isEqualToString:@"asleep"]) {
+    if (!_isBlinking && !_isSpeaking && !_isPanning && ![_currentExpression hasPrefix:@"sleep"] && ![_currentExpression isEqualToString:@"asleep"]) {
         [self blink];
     }
 }
@@ -1428,13 +1457,22 @@ static DeskCompanionViewController *g_viewController = nil;
     if (_isPanning || _isBlinking) return;
     _isBlinking = YES;
 
-    // Fast organic close: 70ms ease-out via eyelid path closure
+    // Fast organic close: 70ms ease-out to symmetric thin horizontal slit at midline
     ProceduralEyeConfig blinkLeft = _leftCurrentConfig;
     ProceduralEyeConfig blinkRight = _rightCurrentConfig;
-    blinkLeft.upperLidY = 1.0f;
-    blinkLeft.lowerLidY = 0.25f;
-    blinkRight.upperLidY = 1.0f;
-    blinkRight.lowerLidY = 0.25f;
+    blinkLeft.upperLidY = 0.49f;
+    blinkLeft.lowerLidY = 0.49f;
+    blinkLeft.upperLidAngle = 0.0f;
+    blinkLeft.lowerLidAngle = 0.0f;
+    blinkLeft.upperLidBend = 0.0f;
+    blinkLeft.lowerLidBend = 0.0f;
+
+    blinkRight.upperLidY = 0.49f;
+    blinkRight.lowerLidY = 0.49f;
+    blinkRight.upperLidAngle = 0.0f;
+    blinkRight.lowerLidAngle = 0.0f;
+    blinkRight.upperLidBend = 0.0f;
+    blinkRight.lowerLidBend = 0.0f;
 
     [self interpolateToLeft:blinkLeft right:blinkRight duration:0.070 easeOut:YES completion:^{
         // Organic bounce open: 110ms ease-in back to active expression
@@ -1446,7 +1484,7 @@ static DeskCompanionViewController *g_viewController = nil;
 
 // Organic Saccade Clusters with Gaze Hotspot Parallax
 - (void)triggerMicroSaccade {
-    if (_isBlinking || _isSpeaking || _isPanning || _reducedMotion || [_currentExpression isEqualToString:@"sleep"] || [_currentExpression isEqualToString:@"asleep"]) return;
+    if (_isBlinking || _isSpeaking || _isPanning || _reducedMotion || [_currentExpression hasPrefix:@"sleep"] || [_currentExpression isEqualToString:@"asleep"]) return;
 
     // Natural saccadic displacement in normalized hotspot space: -0.32 to +0.32
     float rx = ((float)(arc4random_uniform(9)) - 4.0f) * 0.08f;
