@@ -12,15 +12,10 @@ import os
 import sys
 import re
 
-# Strict repository standard: verify and enforce project virtual environment
-def _verify_venv():
-    is_venv = (sys.prefix != getattr(sys, "base_prefix", sys.prefix)) or ("VIRTUAL_ENV" in os.environ)
-    if not is_venv:
-        venv_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "bin", "python3")
-        if os.path.exists(venv_py) and sys.executable != venv_py:
-            os.execv(venv_py, [venv_py] + sys.argv)
-
-_verify_venv()
+# Strict repository standard: verify virtual environment isolation
+def is_in_venv():
+    """Verify that Python execution is isolated within the project virtual environment."""
+    return (sys.prefix != getattr(sys, "base_prefix", sys.prefix)) or ("VIRTUAL_ENV" in os.environ)
 
 SAFE_PATH_REGEX = re.compile(r"^/tmp/companion_[a-zA-Z0-9_\-\.]+$")
 
@@ -397,6 +392,12 @@ def interactive_cli():
             print("Error:", e)
 
 if __name__ == "__main__":
+    if not is_in_venv():
+        print(
+            "Warning: desk_companion.py is executing outside .venv. "
+            "Recommended: '.venv/bin/python3 desk_companion.py' or './start_companion.sh'.",
+            file=sys.stderr,
+        )
     if len(sys.argv) > 1 and sys.argv[1] == "demo":
         DeskCompanion().run_demo()
     else:
