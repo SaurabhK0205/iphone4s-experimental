@@ -116,6 +116,9 @@ class DeskCompanion:
         level = max(0.0, min(1.0, float(level)))
         return self._send_cmd({"command": "brightness", "level": level})
 
+    def set_reduced_motion(self, enable=True):
+        return self._send_cmd({"command": "reduced_motion", "enable": bool(enable)})
+
     def snapshot(self, camera="back", save_to=None):
         """Captures a photo via iPhone 4S camera ('back' or 'front') and retrieves it."""
         res = self._send_cmd({"command": "snapshot", "camera": camera}, timeout=12.0)
@@ -126,6 +129,80 @@ class DeskCompanion:
             save_to = os.path.abspath(save_to)
             
             # Retrieve file via scp (over USB or Wi-Fi)
+            ssh_host = self._active_host if self._active_host else "127.0.0.1"
+            ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
+            scp_cmd = [
+                "scp",
+                "-i", os.path.expanduser("~/.ssh/id_rsa_iphone"),
+                "-P", str(ssh_port),
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                f"root@{ssh_host}:{remote_path}",
+                save_to
+            ]
+            ret = subprocess.run(scp_cmd, capture_output=True)
+            if ret.returncode == 0 and os.path.exists(save_to):
+                res["local_file"] = save_to
+                return res
+            else:
+                return {"error": "scp_failed", "details": ret.stderr.decode()}
+        return res
+
+    def inspect_environment(self, save_dir="."):
+        """Captures both front (desk/user) and rear (workspace macro) angles."""
+        os.makedirs(save_dir, exist_ok=True)
+        ts = int(time.time())
+        front_path = os.path.join(save_dir, f"inspect_front_{ts}.jpg")
+        back_path = os.path.join(save_dir, f"inspect_back_{ts}.jpg")
+
+        front_res = self.snapshot("front", save_to=front_path)
+        time.sleep(0.5)
+        back_res = self.snapshot("back", save_to=back_path)
+
+        return {
+            "status": "ok",
+            "front": front_res,
+            "back": back_res,
+            "timestamp": ts
+        }
+
+    def record_audio(self, duration=3.0, save_to=None):
+        """Records physical microphone audio on iPhone 4S and retrieves linear PCM WAV."""
+        res = self._send_cmd({"command": "record_audio", "duration": float(duration)}, timeout=float(duration) + 8.0)
+        if res.get("status") == "ok" and "path" in res:
+            remote_path = res["path"]
+            if save_to is None:
+                save_to = f"companion_audio_{int(time.time())}.wav"
+            save_to = os.path.abspath(save_to)
+
+            ssh_host = self._active_host if self._active_host else "127.0.0.1"
+            ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
+            scp_cmd = [
+                "scp",
+                "-i", os.path.expanduser("~/.ssh/id_rsa_iphone"),
+                "-P", str(ssh_port),
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                f"root@{ssh_host}:{remote_path}",
+                save_to
+            ]
+            ret = subprocess.run(scp_cmd, capture_output=True)
+            if ret.returncode == 0 and os.path.exists(save_to):
+                res["local_file"] = save_to
+                return res
+            else:
+                return {"error": "scp_failed", "details": ret.stderr.decode()}
+        return res
+
+    def screenshot(self, save_to=None):
+        """Captures pixel-exact 640x960 Retina screen of PhysicalAgent and retrieves PNG."""
+        res = self._send_cmd({"command": "screenshot"}, timeout=8.0)
+        if res.get("status") == "ok" and "path" in res:
+            remote_path = res["path"]
+            if save_to is None:
+                save_to = f"companion_screen_{int(time.time())}.png"
+            save_to = os.path.abspath(save_to)
+
             ssh_host = self._active_host if self._active_host else "127.0.0.1"
             ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
             scp_cmd = [
@@ -221,6 +298,10 @@ def interactive_cli():
     print("  sound <name>        Play acoustic sound (confirm, begin, cancel, shutter, tweet, mail, tink, beep)")
     print("  torch <on|off>      Toggle rear camera LED flashlight")
     print("  photo [front|back]  Capture camera photo and save locally")
+    print("  inspect             Capture both front (desk) and rear (macro) angles")
+    print("  listen [duration]   Record audio from iPhone 4S mic and save WAV")
+    print("  screenshot          Capture pixel-exact Retina display PNG")
+    print("  motion <on|off>     Toggle reduced motion (disable saccades and breathing)")
     print("  blink               Trigger eye blink")
     print("  wave <on|off>       Toggle audio spectrum waveform visualizer")
     print("  zen                 Toggle Zen mode (dim HUD cards for night ambiance)")
@@ -261,6 +342,19 @@ def interactive_cli():
             elif cmd == "photo":
                 cam = arg if arg in ("front", "back") else "back"
                 res = companion.snapshot(cam)
+                print("Result:", res)
+            elif cmd == "inspect":
+                res = companion.inspect_environment()
+                print("Result:", res)
+            elif cmd == "listen":
+                dur = float(arg) if arg else 3.0
+                res = companion.record_audio(dur)
+                print("Result:", res)
+            elif cmd == "screenshot":
+                res = companion.screenshot()
+                print("Result:", res)
+            elif cmd == "motion":
+                res = companion.set_reduced_motion(arg.lower() not in ("off", "0", "false"))
                 print("Result:", res)
             elif cmd == "blink":
                 res = companion.blink()

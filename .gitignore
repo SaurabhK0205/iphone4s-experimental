@@ -23,6 +23,9 @@ test_native/*_raw
 *.jpg
 *.jpeg
 *.png
+*.wav
+*.caf
+*.m4a
 
 # Logs
 *.log
