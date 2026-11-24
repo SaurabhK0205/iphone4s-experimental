@@ -287,8 +287,8 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
         // Outer phosphor glow blooming directly into the obsidian black bezel
         self.layer.shadowColor = [UIColor colorWithRed:0.02 green:0.88 blue:1.0 alpha:1.0].CGColor;
         self.layer.shadowOffset = CGSizeZero;
-        self.layer.shadowRadius = 22.0f;
-        self.layer.shadowOpacity = 0.95f;
+        self.layer.shadowRadius = 8.0f;
+        self.layer.shadowOpacity = 0.65f;
 
         _config = ProceduralEyeConfigDefault();
         [self applyConfig:_config];
@@ -353,6 +353,11 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     t = CGAffineTransformScale(t, ClampF(config.scaleX, 0.05f, 3.0f), ClampF(config.scaleY, 0.05f, 3.0f));
     self.transform = t;
     self.center = CGPointMake(_defaultCenter.x + config.centerX, _defaultCenter.y + config.centerY);
+
+    // Dynamic phosphor bloom: zero shadow blur during blinks and vertical squashes
+    CGFloat sY = ClampF(config.scaleY, 0.0f, 1.0f);
+    self.layer.shadowRadius = 8.0f * (sY * sY);
+    self.layer.shadowOpacity = 0.65f * sY;
 
     [self setNeedsDisplay];
 }
@@ -1297,7 +1302,8 @@ static DeskCompanionViewController *g_viewController = nil;
     _lastAccel = (CMAcceleration){0.0, 0.0, -1.0};
     _lastShakeTime = 0.0;
 
-    [UIDevice currentDevice].proximityMonitoringEnabled = YES;
+    // Keep screen awake at all times: disable proximity display blanking
+    [UIDevice currentDevice].proximityMonitoringEnabled = NO;
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleProximityChange:)
                                                  name:UIDeviceProximityStateDidChangeNotification
