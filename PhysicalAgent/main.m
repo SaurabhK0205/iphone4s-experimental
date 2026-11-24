@@ -12,6 +12,7 @@
 #include <mach/mach.h>
 #include <signal.h>
 #include <libkern/OSAtomic.h>
+#include <dlfcn.h>
 
 // ========================================================
 // 1. ATMOSPHERIC CANVAS DEPTH (Pure Obsidian Black Canvas)
@@ -1293,8 +1294,8 @@ static DeskCompanionViewController *g_viewController = nil;
     _lastAccel = (CMAcceleration){0.0, 0.0, -1.0};
     _lastShakeTime = 0.0;
 
-    // Keep screen awake at all times: disable proximity display blanking
-    [UIDevice currentDevice].proximityMonitoringEnabled = NO;
+    // Enable hardware proximity monitoring for hand hover reactions
+    [UIDevice currentDevice].proximityMonitoringEnabled = YES;
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleProximityChange:)
                                                  name:UIDeviceProximityStateDidChangeNotification
@@ -2218,6 +2219,22 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)handleProximityChange:(NSNotification *)notification {
     BOOL isNear = [UIDevice currentDevice].proximityState;
     if (isNear) {
+        // Prevent iOS telephony screen blanking: force screen unblanked via BackBoardServices
+        static void (*s_BKSSetScreenBlanked)(BOOL) = NULL;
+        static dispatch_once_t s_bksOnce;
+        dispatch_once(&s_bksOnce, ^{
+            void *handle = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_NOW);
+            if (handle) {
+                s_BKSSetScreenBlanked = (void (*)(BOOL))dlsym(handle, "BKSDisplayServicesSetScreenBlanked");
+            }
+        });
+        if (s_BKSSetScreenBlanked) {
+            s_BKSSetScreenBlanked(NO);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                s_BKSSetScreenBlanked(NO);
+            });
+        }
+
         // Hand hover detected above iPhone 4S top bezel: surprise reaction and glance upward
         if (_reactionTimer) {
             [_reactionTimer invalidate];
