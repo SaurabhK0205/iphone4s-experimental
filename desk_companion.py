@@ -109,10 +109,36 @@ class DeskCompanion:
         self._active_port = target_port
         self._active_ssh_port = target_ssh
 
+        s = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(timeout)
             s.connect((target_host, target_port))
+        except (ConnectionRefusedError, socket.timeout, OSError) as conn_err:
+            if s:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+            # Connection failed before transmission; invalidate target and try alternate if auto-detecting
+            if self.host is None:
+                self._active_host = None
+                self._active_port = None
+                self._active_ssh_port = None
+                alt_host = WIFI_HOST if target_host == DEFAULT_HOST else DEFAULT_HOST
+                alt_port = WIFI_PORT if target_port == DEFAULT_PORT else DEFAULT_PORT
+                alt_ssh = WIFI_SSH_PORT if target_ssh == SSH_PORT else SSH_PORT
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(timeout)
+                    s.connect((alt_host, alt_port))
+                    self._active_host, self._active_port, self._active_ssh_port = alt_host, alt_port, alt_ssh
+                except Exception:
+                    return {"error": "connection_refused", "message": f"Companion server unreachable on {target_host}:{target_port} and {alt_host}:{alt_port}."}
+            else:
+                return {"error": str(conn_err)}
+
+        try:
             payload = json.dumps(cmd_dict).encode("utf-8")
             s.sendall(payload)
             data = s.recv(8192)
@@ -120,15 +146,11 @@ class DeskCompanion:
             if not data:
                 return {"error": "empty_response"}
             return json.loads(data.decode("utf-8"))
-        except (ConnectionRefusedError, socket.timeout, OSError) as conn_err:
+        except Exception as e:
             if self.host is None:
                 self._active_host = None
                 self._active_port = None
                 self._active_ssh_port = None
-            if isinstance(conn_err, ConnectionRefusedError):
-                return {"error": "connection_refused", "message": f"Companion server not reachable at {target_host}:{target_port}."}
-            return {"error": str(conn_err)}
-        except Exception as e:
             return {"error": str(e)}
 
     def ping(self):
@@ -208,13 +230,21 @@ class DeskCompanion:
 
     def record_audio(self, duration=3.0, save_to=None):
         """Records physical microphone audio on iPhone 4S and retrieves linear PCM WAV."""
-        res = self._send_cmd({"command": "record_audio", "duration": float(duration)}, timeout=float(duration) + 8.0)
+        try:
+            dur = float(duration)
+            if not (dur > 0.0) or dur != dur:
+                dur = 3.0
+            dur = max(0.1, min(dur, 30.0))
+        except (ValueError, TypeError):
+            dur = 3.0
+
+        res = self._send_cmd({"command": "record_audio", "duration": dur}, timeout=dur + 8.0)
         if res.get("status") == "ok" and "path" in res:
             remote_path = res["path"]
             if save_to is None:
                 save_to = f"companion_audio_{int(time.time())}.wav"
             save_to = os.path.abspath(save_to)
-            dl_res = self._download_file(remote_path, save_to, timeout=float(duration) + 10.0)
+            dl_res = self._download_file(remote_path, save_to, timeout=dur + 10.0)
             if dl_res.get("status") == "ok":
                 res["local_file"] = save_to
                 return res
@@ -368,8 +398,15 @@ def interactive_cli():
                 res = companion.screenshot()
                 print("Result:", res)
             elif cmd == "motion":
-                res = companion.set_reduced_motion(arg.lower() not in ("off", "0", "false"))
-                print("Result:", res)
+                val = (arg or "").strip().lower()
+                if val in ("on", "1", "true", "yes", "enable"):
+                    res = companion.set_reduced_motion(True)
+                    print("Result:", res)
+                elif val in ("off", "0", "false", "no", "disable"):
+                    res = companion.set_reduced_motion(False)
+                    print("Result:", res)
+                else:
+                    print("Usage: motion [on|off]")
             elif cmd == "blink":
                 res = companion.blink()
                 print("Result:", res)

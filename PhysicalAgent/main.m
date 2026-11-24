@@ -1002,6 +1002,10 @@ static DeskCompanionViewController *g_viewController = nil;
     NSError *recorderErr = nil;
     _audioRecorder = [[AVAudioRecorder alloc] initWithURL:recordURL settings:recordSettings error:&recorderErr];
     if (recorderErr || !_audioRecorder) {
+        if (_audioRecorder) {
+            [_audioRecorder release];
+            _audioRecorder = nil;
+        }
         [audioSession setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
         if (completion) completion(nil, 0, recorderErr ? recorderErr : [NSError errorWithDomain:@"DeskCompanionAudio" code:-3 userInfo:nil]);
         return;
