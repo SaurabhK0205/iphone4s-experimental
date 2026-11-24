@@ -31,10 +31,12 @@ SSH_PORT = 2222
 WIFI_SSH_PORT = 22
 
 class DeskCompanion:
-    def __init__(self, host=None, port=None, ssh_port=None):
+    def __init__(self, host=None, port=None, ssh_port=None, ssh_key=None, strict_host_key_checking=None):
         self.host = host
         self.port = port
         self.ssh_port = ssh_port
+        self.ssh_key = ssh_key or os.environ.get("COMPANION_SSH_KEY", os.path.expanduser("~/.ssh/id_rsa_iphone"))
+        self.strict_host_key_checking = strict_host_key_checking or os.environ.get("COMPANION_STRICT_HOST_KEY_CHECKING", "accept-new")
         self._active_host = None
         self._active_port = None
         self._active_ssh_port = None
@@ -74,7 +76,7 @@ class DeskCompanion:
 
         ssh_host = self._active_host if self._active_host else "127.0.0.1"
         ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
-        key_path = os.path.expanduser("~/.ssh/id_rsa_iphone")
+        key_path = self.ssh_key
 
         scp_cmd = [
             "scp",
@@ -83,7 +85,7 @@ class DeskCompanion:
             "-o", "ConnectTimeout=5",
             "-o", "ServerAliveInterval=3",
             "-o", "ServerAliveCountMax=2",
-            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}",
             f"root@{ssh_host}:{remote_path}",
             local_path
         ]
@@ -94,7 +96,7 @@ class DeskCompanion:
                 ret = subprocess.run(scp_cmd, capture_output=True, timeout=timeout)
                 if ret.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
                     # Clean up remote capture file after successful retrieval
-                    del_cmd = ["ssh", "-i", key_path, "-p", str(ssh_port), "-o", "ConnectTimeout=5", f"root@{ssh_host}", f"rm -f {remote_path}"]
+                    del_cmd = ["ssh", "-i", key_path, "-p", str(ssh_port), "-o", "ConnectTimeout=5", "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}", f"root@{ssh_host}", f"rm -f {remote_path}"]
                     subprocess.run(del_cmd, capture_output=True, timeout=5.0)
                     return {"status": "ok", "local_file": local_path}
                 last_err = ret.stderr.decode("utf-8", errors="replace")

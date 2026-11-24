@@ -128,6 +128,7 @@ static DeskCompanionViewController *g_viewController = nil;
     BOOL _isPanning;
     BOOL _zenMode;
     BOOL _reducedMotion;
+    BOOL _observersAdded;
     NSString *_currentExpression;
     CGPoint _defaultEyePositionLeft;
     CGPoint _defaultEyePositionRight;
@@ -401,6 +402,7 @@ static DeskCompanionViewController *g_viewController = nil;
                                              selector:@selector(handleAudioInterruption:)
                                                  name:AVAudioSessionInterruptionNotification
                                                object:nil];
+    _observersAdded = YES;
 
     [self updateClock];
     _clockTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(updateClock) userInfo:nil repeats:YES];
@@ -1175,16 +1177,18 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)handleAudioInterruption:(NSNotification *)notification {
-    NSNumber *interruptionType = [notification.userInfo objectForKey:AVAudioSessionInterruptionTypeKey];
-    if ([interruptionType unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan) {
-        if (_isRecording && _audioRecorder && [_audioRecorder isRecording]) {
-            [_audioRecorder stop];
-        }
-    } else if ([interruptionType unsignedIntegerValue] == AVAudioSessionInterruptionTypeEnded) {
-        NSNumber *options = [notification.userInfo objectForKey:AVAudioSessionInterruptionOptionKey];
-        if ([options unsignedIntegerValue] & AVAudioSessionInterruptionOptionShouldResume) {
-            NSError *actErr = nil;
-            [[AVAudioSession sharedInstance] setActive:YES error:&actErr];
+    @synchronized(self) {
+        NSNumber *interruptionType = [notification.userInfo objectForKey:AVAudioSessionInterruptionTypeKey];
+        if ([interruptionType unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan) {
+            if (_isRecording && _audioRecorder && [_audioRecorder isRecording]) {
+                [_audioRecorder stop];
+            }
+        } else if ([interruptionType unsignedIntegerValue] == AVAudioSessionInterruptionTypeEnded) {
+            NSNumber *options = [notification.userInfo objectForKey:AVAudioSessionInterruptionOptionKey];
+            if ([options unsignedIntegerValue] & AVAudioSessionInterruptionOptionShouldResume) {
+                NSError *actErr = nil;
+                [[AVAudioSession sharedInstance] setActive:YES error:&actErr];
+            }
         }
     }
 }
@@ -1251,7 +1255,10 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    if (_observersAdded) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self];
+        _observersAdded = NO;
+    }
     [_bgView release];
     [_statusBarPill release];
     [_connectionLabel release];
@@ -1468,7 +1475,7 @@ static void *SocketServerThread(void *arg) {
                         if (!cam || ![cam isKindOfClass:[NSString class]]) cam = @"back";
 
                         // Operation deadline to guarantee client_fd closure if capture hangs
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                             SafeSendAndClose(client_fd, nil);
                         });
 
@@ -1509,7 +1516,7 @@ static void *SocketServerThread(void *arg) {
                         if (duration > 30.0) duration = 30.0;
 
                         // Operation deadline to guarantee client_fd closure if recording hangs
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + 10.0) * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + 4.0) * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                             SafeSendAndClose(client_fd, nil);
                         });
 
@@ -1545,7 +1552,7 @@ static void *SocketServerThread(void *arg) {
                         NSString *savePath = [NSString stringWithFormat:@"/tmp/companion_screen_%@.png", shotId];
 
                         // Operation deadline to guarantee client_fd closure if screenshot hangs
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                             SafeSendAndClose(client_fd, nil);
                         });
 
