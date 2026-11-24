@@ -239,12 +239,7 @@ async function getAvailableModels(apiKey) {
 }
 
 async function runReview() {
-  const preferredModels = [
-    'gemini-3-flash-preview',
-    'gemini-flash-latest'
-  ];
-  let candidateModels = [...preferredModels];
-
+  const candidateModels = await getAvailableModels(GEMINI_API_KEY);
   let reviewBody = null;
   let lastError = null;
 
@@ -286,45 +281,6 @@ async function runReview() {
     } catch (err) {
       console.warn(`Gemini model ${modelName} failed:`, err.message || err);
       lastError = err.message || err;
-    }
-  }
-
-  // If preferred static models failed, try dynamic discovery as backup
-  if (!reviewBody) {
-    console.log('Preferred models failed, attempting dynamic model discovery...');
-    const discoveredModels = await getAvailableModels(GEMINI_API_KEY);
-    for (const modelName of discoveredModels) {
-      if (preferredModels.includes(modelName)) continue;
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
-      console.log(`Retrying with discovered model (${modelName})...`);
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(60000),
-          body: JSON.stringify({
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  { text: `${systemPrompt}\n\n--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${diff}` }
-                ]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: 8192
-            }
-          })
-        });
-        if (response.ok) {
-          const data = await response.json();
-          reviewBody = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (reviewBody) break;
-        }
-      } catch (err) {
-        console.warn(`Discovered model ${modelName} failed:`, err.message || err);
-      }
     }
   }
 

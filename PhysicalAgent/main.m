@@ -220,7 +220,7 @@ static DeskCompanionViewController *g_viewController = nil;
     _leftEye.clipsToBounds = YES;
     [_eyeContainer addSubview:_leftEye];
 
-    _leftIrisGradient = [CAGradientLayer layer];
+    _leftIrisGradient = [[CAGradientLayer alloc] init];
     _leftIrisGradient.frame = CGRectMake(0, 0, eyeW, eyeH);
     _leftIrisGradient.cornerRadius = eyeW / 2.0;
     _leftIrisGradient.colors = @[
@@ -257,7 +257,7 @@ static DeskCompanionViewController *g_viewController = nil;
     _rightEye.clipsToBounds = YES;
     [_eyeContainer addSubview:_rightEye];
 
-    _rightIrisGradient = [CAGradientLayer layer];
+    _rightIrisGradient = [[CAGradientLayer alloc] init];
     _rightIrisGradient.frame = CGRectMake(0, 0, eyeW, eyeH);
     _rightIrisGradient.cornerRadius = eyeW / 2.0;
     _rightIrisGradient.colors = @[
@@ -534,15 +534,19 @@ static DeskCompanionViewController *g_viewController = nil;
     UIColor *dimBlueBottom = [UIColor colorWithRed:0.06 green:0.12 blue:0.20 alpha:0.6];
 
     [UIView animateWithDuration:0.26 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        // Reset eye transforms to identity before adjusting frames (UIKit invariant)
+        // Reset eye transforms to identity before adjusting bounds and centers (UIKit invariant)
         self->_leftEye.transform = CGAffineTransformIdentity;
         self->_rightEye.transform = CGAffineTransformIdentity;
 
         if ([expression isEqualToString:@"happy"]) {
-            self->_leftEye.frame = CGRectMake(screenW/2.0 - eyeSpacing - 25, eyeY - 6, 50, 56);
-            self->_rightEye.frame = CGRectMake(screenW/2.0 + eyeSpacing - 25, eyeY - 6, 50, 56);
-            self->_leftIrisGradient.frame = self->_leftEye.bounds;
-            self->_rightIrisGradient.frame = self->_rightEye.bounds;
+            self->_leftEye.bounds = CGRectMake(0, 0, 50, 56);
+            self->_leftEye.center = CGPointMake(self->_defaultEyeCenterLeft.x, self->_defaultEyeCenterLeft.y - 16);
+            self->_rightEye.bounds = CGRectMake(0, 0, 50, 56);
+            self->_rightEye.center = CGPointMake(self->_defaultEyeCenterRight.x, self->_defaultEyeCenterRight.y - 16);
+            self->_leftIrisGradient.bounds = self->_leftEye.bounds;
+            self->_leftIrisGradient.position = CGPointMake(25, 28);
+            self->_rightIrisGradient.bounds = self->_rightEye.bounds;
+            self->_rightIrisGradient.position = CGPointMake(25, 28);
             self->_leftIrisGradient.colors = @[(id)greenTop.CGColor, (id)greenBottom.CGColor];
             self->_rightIrisGradient.colors = @[(id)greenTop.CGColor, (id)greenBottom.CGColor];
             self->_leftEye.layer.shadowColor = greenTop.CGColor;
@@ -559,10 +563,14 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_statusDot.layer.shadowColor = greenTop.CGColor;
         } else if ([expression isEqualToString:@"surprised"]) {
             // Dilating pupil core (1.35x) and expanded curious eye
-            self->_leftEye.frame = CGRectMake(screenW/2.0 - eyeSpacing - 30, eyeY - 14, 60, 84);
-            self->_rightEye.frame = CGRectMake(screenW/2.0 + eyeSpacing - 30, eyeY - 14, 60, 84);
-            self->_leftIrisGradient.frame = self->_leftEye.bounds;
-            self->_rightIrisGradient.frame = self->_rightEye.bounds;
+            self->_leftEye.bounds = CGRectMake(0, 0, 60, 84);
+            self->_leftEye.center = CGPointMake(self->_defaultEyeCenterLeft.x, self->_defaultEyeCenterLeft.y - 10);
+            self->_rightEye.bounds = CGRectMake(0, 0, 60, 84);
+            self->_rightEye.center = CGPointMake(self->_defaultEyeCenterRight.x, self->_defaultEyeCenterRight.y - 10);
+            self->_leftIrisGradient.bounds = self->_leftEye.bounds;
+            self->_leftIrisGradient.position = CGPointMake(30, 42);
+            self->_rightIrisGradient.bounds = self->_rightEye.bounds;
+            self->_rightIrisGradient.position = CGPointMake(30, 42);
             self->_leftIrisGradient.colors = @[(id)amberTop.CGColor, (id)amberBottom.CGColor];
             self->_rightIrisGradient.colors = @[(id)amberTop.CGColor, (id)amberBottom.CGColor];
             self->_leftEye.layer.shadowColor = amberTop.CGColor;
@@ -578,10 +586,14 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_statusDot.backgroundColor = amberTop;
             self->_statusDot.layer.shadowColor = amberTop.CGColor;
         } else if ([expression isEqualToString:@"thinking"]) {
-            self->_leftEye.frame = CGRectMake(screenW/2.0 - eyeSpacing - 22, eyeY - 18, 46, 46);
-            self->_rightEye.frame = CGRectMake(screenW/2.0 + eyeSpacing - 22, eyeY - 22, 48, 50);
-            self->_leftIrisGradient.frame = self->_leftEye.bounds;
-            self->_rightIrisGradient.frame = self->_rightEye.bounds;
+            self->_leftEye.bounds = CGRectMake(0, 0, 46, 46);
+            self->_leftEye.center = CGPointMake(self->_defaultEyeCenterLeft.x, self->_defaultEyeCenterLeft.y - 33);
+            self->_rightEye.bounds = CGRectMake(0, 0, 48, 50);
+            self->_rightEye.center = CGPointMake(self->_defaultEyeCenterRight.x, self->_defaultEyeCenterRight.y - 35);
+            self->_leftIrisGradient.bounds = self->_leftEye.bounds;
+            self->_leftIrisGradient.position = CGPointMake(23, 23);
+            self->_rightIrisGradient.bounds = self->_rightEye.bounds;
+            self->_rightIrisGradient.position = CGPointMake(24, 25);
             self->_leftIrisGradient.colors = @[(id)purpleTop.CGColor, (id)purpleBottom.CGColor];
             self->_rightIrisGradient.colors = @[(id)purpleTop.CGColor, (id)purpleBottom.CGColor];
             self->_leftEye.layer.shadowColor = purpleTop.CGColor;
@@ -598,10 +610,14 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_statusDot.layer.shadowColor = purpleTop.CGColor;
         } else if ([expression isEqualToString:@"alert"]) {
             // Contracted sharp pupil core (0.65x)
-            self->_leftEye.frame = CGRectMake(screenW/2.0 - eyeSpacing - 25, eyeY, 50, 76);
-            self->_rightEye.frame = CGRectMake(screenW/2.0 + eyeSpacing - 25, eyeY, 50, 76);
-            self->_leftIrisGradient.frame = self->_leftEye.bounds;
-            self->_rightIrisGradient.frame = self->_rightEye.bounds;
+            self->_leftEye.bounds = CGRectMake(0, 0, 50, 76);
+            self->_leftEye.center = self->_defaultEyeCenterLeft;
+            self->_rightEye.bounds = CGRectMake(0, 0, 50, 76);
+            self->_rightEye.center = self->_defaultEyeCenterRight;
+            self->_leftIrisGradient.bounds = self->_leftEye.bounds;
+            self->_leftIrisGradient.position = CGPointMake(25, 38);
+            self->_rightIrisGradient.bounds = self->_rightEye.bounds;
+            self->_rightIrisGradient.position = CGPointMake(25, 38);
             self->_leftIrisGradient.colors = @[(id)redTop.CGColor, (id)redBottom.CGColor];
             self->_rightIrisGradient.colors = @[(id)redTop.CGColor, (id)redBottom.CGColor];
             self->_leftEye.layer.shadowColor = redTop.CGColor;
@@ -617,10 +633,14 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_statusDot.backgroundColor = redTop;
             self->_statusDot.layer.shadowColor = redTop.CGColor;
         } else if ([expression isEqualToString:@"sleep"]) {
-            self->_leftEye.frame = CGRectMake(screenW/2.0 - eyeSpacing - 25, eyeY + 28, 50, 4);
-            self->_rightEye.frame = CGRectMake(screenW/2.0 + eyeSpacing - 25, eyeY + 28, 50, 4);
-            self->_leftIrisGradient.frame = self->_leftEye.bounds;
-            self->_rightIrisGradient.frame = self->_rightEye.bounds;
+            self->_leftEye.bounds = CGRectMake(0, 0, 50, 4);
+            self->_leftEye.center = CGPointMake(self->_defaultEyeCenterLeft.x, self->_defaultEyeCenterLeft.y + 28);
+            self->_rightEye.bounds = CGRectMake(0, 0, 50, 4);
+            self->_rightEye.center = CGPointMake(self->_defaultEyeCenterRight.x, self->_defaultEyeCenterRight.y + 28);
+            self->_leftIrisGradient.bounds = self->_leftEye.bounds;
+            self->_leftIrisGradient.position = CGPointMake(25, 2);
+            self->_rightIrisGradient.bounds = self->_rightEye.bounds;
+            self->_rightIrisGradient.position = CGPointMake(25, 2);
             self->_leftIrisGradient.colors = @[(id)dimBlueTop.CGColor, (id)dimBlueBottom.CGColor];
             self->_rightIrisGradient.colors = @[(id)dimBlueTop.CGColor, (id)dimBlueBottom.CGColor];
             self->_leftEye.layer.shadowColor = dimBlueTop.CGColor;
@@ -636,10 +656,14 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_statusDot.backgroundColor = dimBlueTop;
             self->_statusDot.layer.shadowColor = dimBlueTop.CGColor;
         } else if ([expression isEqualToString:@"glance_left"]) {
-            self->_leftEye.frame = CGRectMake(screenW/2.0 - eyeSpacing - 38, eyeY, 50, 76);
-            self->_rightEye.frame = CGRectMake(screenW/2.0 + eyeSpacing - 38, eyeY, 50, 76);
-            self->_leftIrisGradient.frame = self->_leftEye.bounds;
-            self->_rightIrisGradient.frame = self->_rightEye.bounds;
+            self->_leftEye.bounds = CGRectMake(0, 0, 50, 76);
+            self->_leftEye.center = CGPointMake(self->_defaultEyeCenterLeft.x - 13, self->_defaultEyeCenterLeft.y);
+            self->_rightEye.bounds = CGRectMake(0, 0, 50, 76);
+            self->_rightEye.center = CGPointMake(self->_defaultEyeCenterRight.x - 13, self->_defaultEyeCenterRight.y);
+            self->_leftIrisGradient.bounds = self->_leftEye.bounds;
+            self->_leftIrisGradient.position = CGPointMake(25, 38);
+            self->_rightIrisGradient.bounds = self->_rightEye.bounds;
+            self->_rightIrisGradient.position = CGPointMake(25, 38);
             self->_leftIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
             self->_rightIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
             self->_leftEye.layer.shadowColor = cyanTop.CGColor;
@@ -653,10 +677,14 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_rightSpecularPrimary.alpha = 0.85;
             self->_rightSpecularSecondary.alpha = 0.40;
         } else if ([expression isEqualToString:@"glance_right"]) {
-            self->_leftEye.frame = CGRectMake(screenW/2.0 - eyeSpacing - 12, eyeY, 50, 76);
-            self->_rightEye.frame = CGRectMake(screenW/2.0 + eyeSpacing - 12, eyeY, 50, 76);
-            self->_leftIrisGradient.frame = self->_leftEye.bounds;
-            self->_rightIrisGradient.frame = self->_rightEye.bounds;
+            self->_leftEye.bounds = CGRectMake(0, 0, 50, 76);
+            self->_leftEye.center = CGPointMake(self->_defaultEyeCenterLeft.x + 13, self->_defaultEyeCenterLeft.y);
+            self->_rightEye.bounds = CGRectMake(0, 0, 50, 76);
+            self->_rightEye.center = CGPointMake(self->_defaultEyeCenterRight.x + 13, self->_defaultEyeCenterRight.y);
+            self->_leftIrisGradient.bounds = self->_leftEye.bounds;
+            self->_leftIrisGradient.position = CGPointMake(25, 38);
+            self->_rightIrisGradient.bounds = self->_rightEye.bounds;
+            self->_rightIrisGradient.position = CGPointMake(25, 38);
             self->_leftIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
             self->_rightIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
             self->_leftEye.layer.shadowColor = cyanTop.CGColor;
@@ -671,10 +699,14 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_rightSpecularSecondary.alpha = 0.40;
         } else {
             // Default Neutral Stance
-            self->_leftEye.frame = self->_defaultEyeFrameLeft;
-            self->_rightEye.frame = self->_defaultEyeFrameRight;
-            self->_leftIrisGradient.frame = self->_leftEye.bounds;
-            self->_rightIrisGradient.frame = self->_rightEye.bounds;
+            self->_leftEye.bounds = CGRectMake(0, 0, 50, 76);
+            self->_leftEye.center = self->_defaultEyeCenterLeft;
+            self->_rightEye.bounds = CGRectMake(0, 0, 50, 76);
+            self->_rightEye.center = self->_defaultEyeCenterRight;
+            self->_leftIrisGradient.bounds = self->_leftEye.bounds;
+            self->_leftIrisGradient.position = CGPointMake(25, 38);
+            self->_rightIrisGradient.bounds = self->_rightEye.bounds;
+            self->_rightIrisGradient.position = CGPointMake(25, 38);
             self->_leftIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
             self->_rightIrisGradient.colors = @[(id)cyanTop.CGColor, (id)cyanBottom.CGColor];
             self->_leftEye.layer.shadowColor = cyanTop.CGColor;
@@ -1164,6 +1196,16 @@ static DeskCompanionViewController *g_viewController = nil;
     [_saccadeTimer invalidate];
     [_waveTimer invalidate];
     [_currentExpression release];
+    if (_leftIrisGradient) {
+        [_leftIrisGradient removeFromSuperlayer];
+        [_leftIrisGradient release];
+        _leftIrisGradient = nil;
+    }
+    if (_rightIrisGradient) {
+        [_rightIrisGradient removeFromSuperlayer];
+        [_rightIrisGradient release];
+        _rightIrisGradient = nil;
+    }
     if (_audioRecorder) {
         if ([_audioRecorder isRecording]) [_audioRecorder stop];
         _audioRecorder.delegate = nil;
