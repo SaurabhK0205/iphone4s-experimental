@@ -343,16 +343,35 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
 }
 
 - (void)applyConfig:(ProceduralEyeConfig)config {
+    BOOL pathChanged = (
+        fabsf(_config.upperLidY - config.upperLidY) > 0.005f ||
+        fabsf(_config.upperLidAngle - config.upperLidAngle) > 0.1f ||
+        fabsf(_config.upperLidBend - config.upperLidBend) > 0.01f ||
+        fabsf(_config.lowerLidY - config.lowerLidY) > 0.005f ||
+        fabsf(_config.lowerLidAngle - config.lowerLidAngle) > 0.1f ||
+        fabsf(_config.lowerLidBend - config.lowerLidBend) > 0.01f ||
+        fabsf(_config.upperInnerRadiusX - config.upperInnerRadiusX) > 0.01f ||
+        fabsf(_config.upperOuterRadiusX - config.upperOuterRadiusX) > 0.01f ||
+        fabsf(_config.lowerInnerRadiusX - config.lowerInnerRadiusX) > 0.01f ||
+        fabsf(_config.lowerOuterRadiusX - config.lowerOuterRadiusX) > 0.01f ||
+        fabsf(_config.hotSpotCenterX - config.hotSpotCenterX) > 0.01f ||
+        fabsf(_config.hotSpotCenterY - config.hotSpotCenterY) > 0.01f ||
+        fabsf(_config.glowSize - config.glowSize) > 0.01f
+    );
+
     _config = config;
 
-    // View Transform and Position
+    // Hardware-accelerated GPU layer transform: translate, rotate, and scale on PowerVR SGX GPU
+    // Mutates CALayer affineTransform exclusively with zero main-thread layout thrashing
     CGFloat rad = config.angle * (CGFloat)(M_PI / 180.0);
-    CGAffineTransform t = CGAffineTransformMakeRotation(rad);
+    CGAffineTransform t = CGAffineTransformMakeTranslation(config.centerX, config.centerY);
+    t = CGAffineTransformRotate(t, rad);
     t = CGAffineTransformScale(t, ClampF(config.scaleX, 0.05f, 3.0f), ClampF(config.scaleY, 0.05f, 3.0f));
-    self.transform = t;
-    self.center = CGPointMake(_defaultCenter.x + config.centerX, _defaultCenter.y + config.centerY);
+    self.layer.affineTransform = t;
 
-    [self setNeedsDisplay];
+    if (pathChanged) {
+        [self setNeedsDisplay];
+    }
 }
 
 - (void)drawRect:(CGRect)rect {
