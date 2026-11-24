@@ -1071,6 +1071,8 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)captureScreenToPath:(NSString *)path completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion;
 - (NSDictionary *)getTelemetry;
 - (void)toggleZenMode;
+- (void)updateLayoutForOrientation:(UIInterfaceOrientation)orientation;
+- (void)handleLongPress:(UILongPressGestureRecognizer *)gesture;
 @end
 
 @implementation DeskCompanionViewController
@@ -1245,6 +1247,10 @@ static DeskCompanionViewController *g_viewController = nil;
     [self.view addGestureRecognizer:doubleTap];
     [singleTap requireGestureRecognizerToFail:doubleTap];
 
+    UILongPressGestureRecognizer *longPress = [[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)] autorelease];
+    longPress.minimumPressDuration = 0.5;
+    [self.view addGestureRecognizer:longPress];
+
     // Timers & Observers
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleAudioInterruption:)
@@ -1261,6 +1267,73 @@ static DeskCompanionViewController *g_viewController = nil;
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
     [UIScreen mainScreen].brightness = 0.70f; // Mitigate IPS LCD backlight bleed on pitch black canvas
+
+    // Initial orientation layout adaptation
+    [self updateLayoutForOrientation:self.interfaceOrientation];
+}
+
+- (BOOL)shouldAutorotate {
+    return YES;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return UIInterfaceOrientationMaskAll;
+}
+
+- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)interfaceOrientation {
+    return YES;
+}
+
+- (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
+    [self updateLayoutForOrientation:toInterfaceOrientation];
+}
+
+- (void)updateLayoutForOrientation:(UIInterfaceOrientation)orientation {
+    CGRect winBounds = [UIScreen mainScreen].bounds;
+    CGFloat screenW, screenH;
+    if (UIInterfaceOrientationIsLandscape(orientation)) {
+        screenW = MAX(winBounds.size.width, winBounds.size.height);
+        screenH = MIN(winBounds.size.width, winBounds.size.height);
+    } else {
+        screenW = MIN(winBounds.size.width, winBounds.size.height);
+        screenH = MAX(winBounds.size.width, winBounds.size.height);
+    }
+
+    self.view.frame = CGRectMake(0, 0, screenW, screenH);
+    _bgView.frame = CGRectMake(0, 0, screenW, screenH);
+    _eyeContainer.frame = CGRectMake(0, 0, screenW, screenH);
+    _scanlineOverlay.frame = CGRectMake(0, 0, screenW, screenH);
+
+    CGFloat eyeW = 110.0;
+    CGFloat eyeH = 96.0;
+    CGFloat eyeSpacing = UIInterfaceOrientationIsLandscape(orientation) ? 32.0 : 20.0;
+    CGFloat totalW = eyeW * 2.0 + eyeSpacing;
+    CGFloat eyeY = UIInterfaceOrientationIsLandscape(orientation) ? (screenH - eyeH) / 2.0 : 185.0;
+
+    CGRect leftFrame = CGRectMake((screenW - totalW) / 2.0, eyeY, eyeW, eyeH);
+    CGRect rightFrame = CGRectMake(leftFrame.origin.x + eyeW + eyeSpacing, eyeY, eyeW, eyeH);
+
+    _defaultEyeFrameLeft = leftFrame;
+    _defaultEyeFrameRight = rightFrame;
+
+    _leftEye.frame = leftFrame;
+    _rightEye.frame = rightFrame;
+    _leftEye.defaultCenter = CGPointMake(leftFrame.origin.x + eyeW / 2.0f, leftFrame.origin.y + eyeH / 2.0f);
+    _rightEye.defaultCenter = CGPointMake(rightFrame.origin.x + eyeW / 2.0f, rightFrame.origin.y + eyeH / 2.0f);
+
+    _defaultEyePositionLeft = _leftEye.layer.position;
+    _defaultEyePositionRight = _rightEye.layer.position;
+
+    [_leftEye applyConfig:_leftCurrentConfig];
+    [_rightEye applyConfig:_rightCurrentConfig];
+    [_scanlineOverlay setNeedsDisplay];
+
+    CGFloat cardW = screenW - 32.0;
+    _thoughtCard.frame = CGRectMake(16, screenH - 52.0 - 18, cardW, 52.0);
+    _statusBarPill.frame = CGRectMake(16, 12, screenW - 32, 28);
+    _clockLabel.frame = CGRectMake(95, 0, screenW - 32 - 170, 28);
+    _batteryLabel.frame = CGRectMake(screenW - 32 - 75, 0, 63, 28);
+    _waveformContainer.frame = CGRectMake((screenW - 80.0)/2.0, eyeY + eyeH + (UIInterfaceOrientationIsLandscape(orientation) ? 12.0 : 24.0), 80.0, 20.0);
 }
 
 - (void)periodicPrune:(NSTimer *)timer {
@@ -1359,7 +1432,7 @@ static DeskCompanionViewController *g_viewController = nil;
         void (^comp)(void) = _interpolationCompletion;
         _interpolationCompletion = nil;
         comp();
-        Block_release(comp);
+        [comp release];
     }
 }
 
@@ -1374,11 +1447,11 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 
     if (_interpolationCompletion) {
-        Block_release(_interpolationCompletion);
+        [_interpolationCompletion release];
         _interpolationCompletion = nil;
     }
     if (completion) {
-        _interpolationCompletion = Block_copy(completion);
+        _interpolationCompletion = [completion copy];
     }
 
     _leftStartConfig = _leftCurrentConfig;
@@ -1573,11 +1646,17 @@ static DeskCompanionViewController *g_viewController = nil;
 // ========================================================
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
     [super touchesBegan:touches withEvent:event];
-    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
-    [self playSoundNamed:@"tink"];
 }
 
 - (void)handleSingleTap:(UITapGestureRecognizer *)gesture {
+    CGPoint pt = [gesture locationInView:self.view];
+    CGFloat screenW = self.view.bounds.size.width;
+    CGFloat screenH = self.view.bounds.size.height;
+
+    // Tactile acoustic and haptic pulse
+    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+    [self playSoundNamed:@"tink"];
+
     // Immediate tactile squash: scale(0.93) over 80ms with spring rebound
     [UIView animateWithDuration:0.08 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
         self->_eyeContainer.transform = CGAffineTransformMakeScale(0.93, 0.93);
@@ -1587,13 +1666,34 @@ static DeskCompanionViewController *g_viewController = nil;
         } completion:nil];
     }];
 
-    [self blink];
-    [self setExpression:@"happy"];
-    [self setStatusTitle:@"PHYSICAL TOUCH DETECTED" subtitle:@"Companion acknowledged your press"];
+    CGFloat normX = ClampF((pt.x - screenW * 0.5f) / (screenW * 0.5f), -1.0f, 1.0f);
+    CGFloat normY = ClampF((pt.y - screenH * 0.5f) / (screenH * 0.5f), -1.0f, 1.0f);
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self setExpression:@"neutral"];
-        [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
+    // Dynamic directional gaze tracking to touch coordinate
+    [self lookAtX:normX y:normY duration:0.12];
+
+    __unsafe_unretained DeskCompanionViewController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!weakSelf) return;
+        if (fabsf(normX) < 0.35f && fabsf(normY) < 0.35f) {
+            // Center tap: happy joy reaction
+            [weakSelf blink];
+            [weakSelf setExpression:@"happy"];
+        } else if (normX < -0.35f) {
+            // Left side tap: curious inquiry
+            [weakSelf setExpression:@"curious"];
+        } else if (normX > 0.35f) {
+            // Right side tap: skeptic wink
+            [weakSelf setExpression:@"skeptic"];
+        } else {
+            [weakSelf setExpression:@"surprised"];
+        }
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!weakSelf) return;
+            [weakSelf setExpression:@"neutral"];
+            [weakSelf lookAtX:0.0f y:0.0f duration:0.25];
+        });
     });
 }
 
@@ -1626,15 +1726,41 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 }
 
-// Double Tap: Zen Mode (fade HUD cards for night desk ambiance)
+// Double Tap: Joyful Glee Celebration Bounce
 - (void)handleDoubleTap:(UITapGestureRecognizer *)gesture {
-    [self toggleZenMode];
+    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+    [self playSoundNamed:@"confirm"];
+    [self setExpression:@"glee"];
+
+    [UIView animateWithDuration:0.12 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self->_eyeContainer.transform = CGAffineTransformMakeScale(1.08, 1.08);
+    } completion:^(BOOL finished) {
+        [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
+            self->_eyeContainer.transform = CGAffineTransformIdentity;
+        } completion:nil];
+    }];
+
+    __unsafe_unretained DeskCompanionViewController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (weakSelf) [weakSelf setExpression:@"neutral"];
+    });
+}
+
+// Long Press: Rest & Purr Drowsy State
+- (void)handleLongPress:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        [self setExpression:@"sleepy"];
+    } else if (gesture.state == UIGestureRecognizerStateEnded || gesture.state == UIGestureRecognizerStateCancelled) {
+        [self blink];
+        [self setExpression:@"neutral"];
+    }
 }
 
 - (void)toggleZenMode {
     _zenMode = !_zenMode;
     AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
-    [self playSoundNamed:@"tweet"];
+    [self playSoundNamed:@"confirm"];
 
     [UIView animateWithDuration:0.3 animations:^{
         CGFloat alpha = self->_zenMode ? 0.0 : 1.0;
@@ -2037,7 +2163,7 @@ static DeskCompanionViewController *g_viewController = nil;
         _proceduralDisplayLink = nil;
     }
     if (_interpolationCompletion) {
-        Block_release(_interpolationCompletion);
+        [_interpolationCompletion release];
         _interpolationCompletion = nil;
     }
     [_bgView release];
