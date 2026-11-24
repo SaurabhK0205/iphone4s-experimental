@@ -1073,10 +1073,15 @@ static DeskCompanionViewController *g_viewController = nil;
     BOOL _isRecording;
     void (^_audioRecordCompletion)(NSString *path, NSUInteger size, NSError *err);
 
-    // Motion & Orientation Sensors (CoreMotion)
+    // Motion & Orientation Sensors (CoreMotion & UIDevice)
     CMMotionManager *_motionManager;
+    NSOperationQueue *_motionQueue;
     NSTimeInterval _lastShakeTime;
     CMAcceleration _lastAccel;
+    UIInterfaceOrientation _currentOrientation;
+    UIInterfaceOrientation _pendingOrientation;
+    BOOL _isTransitioningOrientation;
+    NSTimeInterval _lastOrientationChangeTime;
 }
 
 - (void)setupProceduralEngine;
@@ -1094,7 +1099,12 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)playSoundNamed:(NSString *)name;
 - (BOOL)playAudioFilePath:(NSString *)path;
 - (void)handleProximityChange:(NSNotification *)notification;
+- (void)handleDeviceOrientationChange:(NSNotification *)notification;
 - (void)handleMotionData:(CMAcceleration)accel;
+- (void)setAppOrientation:(UIInterfaceOrientation)orientation;
+- (void)transitionToOrientation:(UIInterfaceOrientation)targetOrientation animated:(BOOL)animated duration:(NSTimeInterval)duration;
+- (void)handleAppDidEnterBackground:(NSNotification *)notification;
+- (void)handleAppWillEnterForeground:(NSNotification *)notification;
 - (void)updateAudioMeters:(NSTimer *)timer;
 - (void)setReducedMotion:(BOOL)reduced;
 - (void)takeSnapshot:(NSString *)cameraPosition completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion;
@@ -1322,25 +1332,144 @@ static DeskCompanionViewController *g_viewController = nil;
                                                  name:UIDeviceProximityStateDidChangeNotification
                                                object:nil];
 
+    // Enable hardware orientation change notifications from UIDevice
+    _currentOrientation = UIInterfaceOrientationPortrait;
+    _isTransitioningOrientation = NO;
+    _lastOrientationChangeTime = 0.0;
+    [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleDeviceOrientationChange:)
+                                                 name:UIDeviceOrientationDidChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAppDidEnterBackground:)
+                                                 name:UIApplicationDidEnterBackgroundNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAppWillEnterForeground:)
+                                                 name:UIApplicationWillEnterForegroundNotification
+                                               object:nil];
+
+    _pendingOrientation = 0;
+    if (!_motionQueue) {
+        _motionQueue = [[NSOperationQueue alloc] init];
+        _motionQueue.maxConcurrentOperationCount = 1;
+    }
+
     _motionManager = [[CMMotionManager alloc] init];
     if ([_motionManager isAccelerometerAvailable]) {
         _motionManager.accelerometerUpdateInterval = 1.0 / 25.0; // 25 Hz responsive desk motion
-        __unsafe_unretained DeskCompanionViewController *weakSelf = self;
-        [_motionManager startAccelerometerUpdatesToQueue:[NSOperationQueue mainQueue] withHandler:^(CMAccelerometerData *data, NSError *err) {
-            if (!weakSelf || !data) return;
-            [weakSelf handleMotionData:data.acceleration];
+        __block DeskCompanionViewController *blockSelf = self;
+        [_motionManager startAccelerometerUpdatesToQueue:_motionQueue withHandler:^(CMAccelerometerData *data, NSError *err) {
+            if (!blockSelf || !data) return;
+            [blockSelf handleMotionData:data.acceleration];
         }];
+    }
+}
+
+- (void)handleDeviceOrientationChange:(NSNotification *)notification {
+    UIDeviceOrientation devOrient = [UIDevice currentDevice].orientation;
+    UIInterfaceOrientation target = _currentOrientation;
+    if (devOrient == UIDeviceOrientationPortrait) target = UIInterfaceOrientationPortrait;
+    else if (devOrient == UIDeviceOrientationPortraitUpsideDown) target = UIInterfaceOrientationPortraitUpsideDown;
+    else if (devOrient == UIDeviceOrientationLandscapeLeft) target = UIInterfaceOrientationLandscapeRight;
+    else if (devOrient == UIDeviceOrientationLandscapeRight) target = UIInterfaceOrientationLandscapeLeft;
+
+    if (target != _currentOrientation) {
+        [self transitionToOrientation:target animated:YES duration:0.38];
+    }
+}
+
+- (void)handleAppDidEnterBackground:(NSNotification *)notification {
+    if (_motionManager && [_motionManager isAccelerometerActive]) {
+        [_motionManager stopAccelerometerUpdates];
+    }
+    _isTransitioningOrientation = NO;
+    _pendingOrientation = 0;
+    [self.view.layer removeAllAnimations];
+    [self updateLayoutForOrientation:_currentOrientation];
+}
+
+- (void)handleAppWillEnterForeground:(NSNotification *)notification {
+    if (_motionManager && [_motionManager isAccelerometerAvailable] && ![_motionManager isAccelerometerActive]) {
+        if (!_motionQueue) {
+            _motionQueue = [[NSOperationQueue alloc] init];
+            _motionQueue.maxConcurrentOperationCount = 1;
+        }
+        __block DeskCompanionViewController *blockSelf = self;
+        [_motionManager startAccelerometerUpdatesToQueue:_motionQueue withHandler:^(CMAccelerometerData *data, NSError *err) {
+            if (!blockSelf || !data) return;
+            [blockSelf handleMotionData:data.acceleration];
+        }];
+    }
+}
+
+- (void)setAppOrientation:(UIInterfaceOrientation)orientation {
+    [self transitionToOrientation:orientation animated:YES duration:0.38];
+}
+
+- (void)transitionToOrientation:(UIInterfaceOrientation)targetOrientation animated:(BOOL)animated duration:(NSTimeInterval)duration {
+    if (targetOrientation == 0) return;
+
+    NSTimeInterval now = CACurrentMediaTime();
+    if (_isTransitioningOrientation) {
+        _pendingOrientation = targetOrientation;
+        return;
+    }
+
+    if (now - _lastOrientationChangeTime < 0.35 && targetOrientation != _currentOrientation) {
+        _pendingOrientation = targetOrientation;
+        return;
+    }
+
+    if (targetOrientation == _currentOrientation) {
+        _pendingOrientation = 0;
+        return;
+    }
+
+    _lastOrientationChangeTime = now;
+    _currentOrientation = targetOrientation;
+    _pendingOrientation = 0;
+
+    if (animated) {
+        _isTransitioningOrientation = YES;
+        NSTimeInterval dur = (duration > 0.0) ? duration : 0.38;
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+
+        __block DeskCompanionViewController *blockSelf = self;
+        [UIView animateWithDuration:dur
+                              delay:0.0
+                            options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
+                         animations:^{
+            if (blockSelf) [blockSelf updateLayoutForOrientation:targetOrientation];
+        } completion:^(BOOL finished) {
+            if (!blockSelf) return;
+            blockSelf->_isTransitioningOrientation = NO;
+            [blockSelf->_leftEye setNeedsDisplay];
+            [blockSelf->_rightEye setNeedsDisplay];
+            [blockSelf->_scanlineOverlay setNeedsDisplay];
+            if (blockSelf->_pendingOrientation != 0) {
+                UIInterfaceOrientation next = blockSelf->_pendingOrientation;
+                blockSelf->_pendingOrientation = 0;
+                if (next != blockSelf->_currentOrientation) {
+                    [blockSelf transitionToOrientation:next animated:YES duration:0.38];
+                }
+            }
+        }];
+    } else {
+        [self updateLayoutForOrientation:targetOrientation];
     }
 }
 
 - (void)viewWillLayoutSubviews {
     [super viewWillLayoutSubviews];
-    [self updateLayoutForOrientation:self.interfaceOrientation];
+    if (!_isTransitioningOrientation) {
+        [self updateLayoutForOrientation:_currentOrientation];
+    }
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    [self updateLayoutForOrientation:self.interfaceOrientation];
 }
 
 - (BOOL)shouldAutorotate {
@@ -1356,15 +1485,17 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
-    [self updateLayoutForOrientation:toInterfaceOrientation];
+    _currentOrientation = toInterfaceOrientation;
+    [self updateLayoutForOrientation:_currentOrientation];
 }
 
 - (void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)fromInterfaceOrientation {
-    [self updateLayoutForOrientation:self.interfaceOrientation];
+    _currentOrientation = self.interfaceOrientation;
+    [self updateLayoutForOrientation:_currentOrientation];
 }
 
 - (void)updateLayout {
-    [self updateLayoutForOrientation:self.interfaceOrientation];
+    [self updateLayoutForOrientation:_currentOrientation];
 }
 
 - (void)updateLayoutForOrientation:(UIInterfaceOrientation)orientation {
@@ -1373,32 +1504,46 @@ static DeskCompanionViewController *g_viewController = nil;
     CGFloat screenMax = MAX(screenBounds.size.width, screenBounds.size.height);
     CGFloat screenMin = MIN(screenBounds.size.width, screenBounds.size.height);
 
-    CGFloat W = isLandscape ? screenMax : screenMin;
-    CGFloat H = isLandscape ? screenMin : screenMax;
-    if (W <= 0.0f || H <= 0.0f) return;
+    // Keep self.view centered at UIWindow optical midpoint (screenMin * 0.5f, screenMax * 0.5f)
+    self.view.center = CGPointMake(screenMin * 0.5f, screenMax * 0.5f);
 
-    CGRect fullRect = CGRectMake(0, 0, W, H);
-    self.view.bounds = fullRect;
-    self.view.center = CGPointMake(W * 0.5f, H * 0.5f);
+    CGFloat stageW = isLandscape ? screenMax : screenMin;
+    CGFloat stageH = isLandscape ? screenMin : screenMax;
+    if (stageW <= 0.0f || stageH <= 0.0f) return;
+
+    self.view.bounds = CGRectMake(0, 0, stageW, stageH);
+
+    // Apply rotation transform matching orientation around window center
+    if (orientation == UIInterfaceOrientationLandscapeRight) {
+        self.view.transform = CGAffineTransformMakeRotation((CGFloat)M_PI_2);
+    } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
+        self.view.transform = CGAffineTransformMakeRotation((CGFloat)-M_PI_2);
+    } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
+        self.view.transform = CGAffineTransformMakeRotation((CGFloat)M_PI);
+    } else {
+        self.view.transform = CGAffineTransformIdentity;
+    }
+
+    CGRect fullRect = CGRectMake(0, 0, stageW, stageH);
 
     _bgView.bounds = fullRect;
-    _bgView.center = CGPointMake(W * 0.5f, H * 0.5f);
+    _bgView.center = CGPointMake(stageW * 0.5f, stageH * 0.5f);
 
     _eyeContainer.bounds = fullRect;
-    _eyeContainer.center = CGPointMake(W * 0.5f, H * 0.5f);
+    _eyeContainer.center = CGPointMake(stageW * 0.5f, stageH * 0.5f);
 
     _scanlineOverlay.bounds = fullRect;
-    _scanlineOverlay.center = CGPointMake(W * 0.5f, H * 0.5f);
+    _scanlineOverlay.center = CGPointMake(stageW * 0.5f, stageH * 0.5f);
 
     CGFloat eyeW = isLandscape ? 96.0f : 84.0f;
     CGFloat eyeH = isLandscape ? 136.0f : 120.0f;
     CGFloat eyeSpacing = isLandscape ? 44.0f : 36.0f;
     CGFloat totalW = eyeW * 2.0f + eyeSpacing;
-    CGFloat eyeY = (H - eyeH) * 0.5f;
+    CGFloat eyeY = (stageH - eyeH) * 0.5f;
 
-    CGFloat leftCenterX = (W - totalW) * 0.5f + eyeW * 0.5f;
+    CGFloat leftCenterX = (stageW - totalW) * 0.5f + eyeW * 0.5f;
     CGFloat rightCenterX = leftCenterX + eyeW + eyeSpacing;
-    CGFloat centerY = H * 0.5f;
+    CGFloat centerY = stageH * 0.5f;
 
     // Reset layer affine transforms to identity before recalculating geometry and centers
     _leftEye.layer.affineTransform = CGAffineTransformIdentity;
@@ -1411,7 +1556,7 @@ static DeskCompanionViewController *g_viewController = nil;
     _leftEye.defaultCenter = _leftEye.center;
     _rightEye.defaultCenter = _rightEye.center;
 
-    _defaultEyeFrameLeft = CGRectMake((W - totalW) * 0.5f, eyeY, eyeW, eyeH);
+    _defaultEyeFrameLeft = CGRectMake((stageW - totalW) * 0.5f, eyeY, eyeW, eyeH);
     _defaultEyeFrameRight = CGRectMake(_defaultEyeFrameLeft.origin.x + eyeW + eyeSpacing, eyeY, eyeW, eyeH);
 
     _defaultEyePositionLeft = _leftEye.center;
@@ -1422,17 +1567,17 @@ static DeskCompanionViewController *g_viewController = nil;
 
     [_scanlineOverlay setNeedsDisplay];
 
-    CGFloat cardW = W - 32.0f;
+    CGFloat cardW = stageW - 32.0f;
     _thoughtCard.bounds = CGRectMake(0, 0, cardW, 52.0f);
-    _thoughtCard.center = CGPointMake(W * 0.5f, H - 26.0f - 18.0f);
+    _thoughtCard.center = CGPointMake(stageW * 0.5f, stageH - 26.0f - 18.0f);
 
-    _statusBarPill.bounds = CGRectMake(0, 0, W - 32.0f, 28.0f);
-    _statusBarPill.center = CGPointMake(W * 0.5f, 14.0f + 12.0f);
+    _statusBarPill.bounds = CGRectMake(0, 0, stageW - 32.0f, 28.0f);
+    _statusBarPill.center = CGPointMake(stageW * 0.5f, 14.0f + 12.0f);
 
-    _clockLabel.frame = CGRectMake(95.0f, 0, W - 32.0f - 170.0f, 28.0f);
-    _batteryLabel.frame = CGRectMake(W - 32.0f - 75.0f, 0, 63.0f, 28.0f);
+    _clockLabel.frame = CGRectMake(95.0f, 0, stageW - 32.0f - 170.0f, 28.0f);
+    _batteryLabel.frame = CGRectMake(stageW - 32.0f - 75.0f, 0, 63.0f, 28.0f);
     _waveformContainer.bounds = CGRectMake(0, 0, 80.0f, 20.0f);
-    _waveformContainer.center = CGPointMake(W * 0.5f, centerY + eyeH * 0.5f + (isLandscape ? 12.0f : 24.0f));
+    _waveformContainer.center = CGPointMake(stageW * 0.5f, centerY + eyeH * 0.5f + (isLandscape ? 12.0f : 24.0f));
 }
 
 - (void)periodicPrune:(NSTimer *)timer {
@@ -2351,53 +2496,88 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 
 - (void)handleMotionData:(CMAcceleration)accel {
     _lastAccel = accel;
+    NSTimeInterval now = CACurrentMediaTime();
+
+    // Physical orientation tracking from hardware accelerometer (functions autonomously even if SpringBoard is locked)
+    UIInterfaceOrientation detectedOrient = 0;
+    float ax = (float)accel.x;
+    float ay = (float)accel.y;
+    float az = (float)accel.z;
+    float absX = fabsf(ax);
+    float absY = fabsf(ay);
+    float absZ = fabsf(az);
+
+    // Only update orientation when device is tilted up from desk (absZ < 0.90) and dominant axis is clear
+    if (absZ < 0.90f) {
+        if (absX > absY + 0.20f && absX > 0.35f) {
+            detectedOrient = (ax > 0.0f) ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationLandscapeLeft;
+        } else if (absY > absX + 0.20f && absY > 0.35f) {
+            detectedOrient = (ay < 0.0f) ? UIInterfaceOrientationPortrait : UIInterfaceOrientationPortraitUpsideDown;
+        }
+    }
+    if (detectedOrient != 0) {
+        __block DeskCompanionViewController *blockSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!blockSelf) return;
+            [blockSelf transitionToOrientation:detectedOrient animated:YES duration:0.38];
+        });
+    }
 
     // Detect sudden desk bumps or device shake (accel magnitude > 2.2g)
     double mag = sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
-    NSTimeInterval now = CACurrentMediaTime();
 
     if (mag > 2.2 || fabsf((float)accel.x) > 1.4f || fabsf((float)accel.y) > 1.6f) {
         if (now - _lastShakeTime > 1.8) {
             _lastShakeTime = now;
-            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
-            [self playSoundNamed:@"beep"];
+            __block DeskCompanionViewController *blockSelf = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!blockSelf) return;
+                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+                [blockSelf playSoundNamed:@"beep"];
 
-            if (_reactionTimer) {
-                [_reactionTimer invalidate];
-                _reactionTimer = nil;
-            }
+                if (blockSelf->_reactionTimer) {
+                    [blockSelf->_reactionTimer invalidate];
+                    blockSelf->_reactionTimer = nil;
+                }
 
-            [self setExpression:@"confused" duration:0.15];
+                [blockSelf setExpression:@"confused" duration:0.15];
 
-            // Dizzy wobble animation on eye container
-            CAKeyframeAnimation *wobble = [CAKeyframeAnimation animationWithKeyPath:@"transform.rotation.z"];
-            wobble.values = @[ @(0.0f), @(-0.10f), @(0.10f), @(-0.06f), @(0.04f), @(0.0f) ];
-            wobble.duration = 0.35;
-            wobble.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-            [_eyeContainer.layer addAnimation:wobble forKey:@"dizzyWobble"];
+                // Dizzy wobble animation on eye container
+                CAKeyframeAnimation *wobble = [CAKeyframeAnimation animationWithKeyPath:@"transform.rotation.z"];
+                wobble.values = @[ @(0.0f), @(-0.10f), @(0.10f), @(-0.06f), @(0.04f), @(0.0f) ];
+                wobble.duration = 0.35;
+                wobble.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+                [blockSelf->_eyeContainer.layer addAnimation:wobble forKey:@"dizzyWobble"];
 
-            [self setStatusTitle:@"MOTION JOLT //" subtitle:[NSString stringWithFormat:@"Shake detected (%.1fg)", mag]];
-            _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:2.2 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
+                [blockSelf setStatusTitle:@"MOTION JOLT //" subtitle:[NSString stringWithFormat:@"Shake detected (%.1fg)", mag]];
+                blockSelf->_reactionTimer = [NSTimer scheduledTimerWithTimeInterval:2.2 target:blockSelf selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
+            });
         }
     } else if (!_isInterpolating && !_isPanning && !_isBlinking && (!_reactionTimer || ![_reactionTimer isValid])) {
         // Ambient desk tilt parallax: slight organic eye offset tracking gravity
         if (!_reducedMotion) {
             CGFloat tiltX = ClampF((CGFloat)accel.x * 0.40f, -0.40f, 0.40f);
             CGFloat tiltY = ClampF((CGFloat)(-accel.y) * 0.30f, -0.30f, 0.30f);
-            ProceduralEyeConfig leftCfg = _leftTargetExpressionConfig;
-            ProceduralEyeConfig rightCfg = _rightTargetExpressionConfig;
-            leftCfg.centerX += tiltX * 8.0f;
-            leftCfg.centerY += tiltY * 6.0f;
-            rightCfg.centerX += tiltX * 8.0f;
-            rightCfg.centerY += tiltY * 6.0f;
-            leftCfg.hotSpotCenterX = tiltX;
-            leftCfg.hotSpotCenterY = tiltY;
-            rightCfg.hotSpotCenterX = tiltX;
-            rightCfg.hotSpotCenterY = tiltY;
-            _leftCurrentConfig = leftCfg;
-            _rightCurrentConfig = rightCfg;
-            [_leftEye applyConfig:_leftCurrentConfig];
-            [_rightEye applyConfig:_rightCurrentConfig];
+            __block DeskCompanionViewController *blockSelf = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!blockSelf) return;
+                if (!blockSelf->_isInterpolating && !blockSelf->_isPanning && !blockSelf->_isBlinking && (!blockSelf->_reactionTimer || ![blockSelf->_reactionTimer isValid])) {
+                    ProceduralEyeConfig leftCfg = blockSelf->_leftTargetExpressionConfig;
+                    ProceduralEyeConfig rightCfg = blockSelf->_rightTargetExpressionConfig;
+                    leftCfg.centerX += tiltX * 8.0f;
+                    leftCfg.centerY += tiltY * 6.0f;
+                    rightCfg.centerX += tiltX * 8.0f;
+                    rightCfg.centerY += tiltY * 6.0f;
+                    leftCfg.hotSpotCenterX = tiltX;
+                    leftCfg.hotSpotCenterY = tiltY;
+                    rightCfg.hotSpotCenterX = tiltX;
+                    rightCfg.hotSpotCenterY = tiltY;
+                    blockSelf->_leftCurrentConfig = leftCfg;
+                    blockSelf->_rightCurrentConfig = rightCfg;
+                    [blockSelf->_leftEye applyConfig:blockSelf->_leftCurrentConfig];
+                    [blockSelf->_rightEye applyConfig:blockSelf->_rightCurrentConfig];
+                }
+            });
         }
     }
 }
@@ -2513,10 +2693,19 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 - (void)captureScreenToPath:(NSString *)path completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-        UIGraphicsBeginImageContextWithOptions(self.view.bounds.size, YES, 2.0);
-        [self.view.layer renderInContext:UIGraphicsGetCurrentContext()];
-        UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
+        UIWindow *win = self.view.window ? self.view.window : [UIApplication sharedApplication].keyWindow;
+        UIImage *img = nil;
+        if (win) {
+            UIGraphicsBeginImageContextWithOptions(win.bounds.size, YES, 2.0);
+            [win.layer renderInContext:UIGraphicsGetCurrentContext()];
+            img = UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+        } else {
+            UIGraphicsBeginImageContextWithOptions(self.view.bounds.size, YES, 2.0);
+            [self.view.layer renderInContext:UIGraphicsGetCurrentContext()];
+            img = UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+        }
 
         if (!img) {
             [pool drain];
@@ -2568,6 +2757,7 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         freeMemMB = (int)((vm_stat.free_count * pagesize) / (1024 * 1024));
     }
 
+    CGAffineTransform vt = self.view.transform;
     return @{
         @"device": @"iPhone 4S (N94AP)",
         @"os": @"iOS 6.1.3 (10B329)",
@@ -2585,6 +2775,18 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
             @"y": @(_lastAccel.y),
             @"z": @(_lastAccel.z)
         },
+        @"vc_interface_orientation": @((int)self.interfaceOrientation),
+        @"current_orientation": @((int)_currentOrientation),
+        @"status_bar_orientation": @((int)[UIApplication sharedApplication].statusBarOrientation),
+        @"device_orientation": @((int)[UIDevice currentDevice].orientation),
+        @"view_bounds": NSStringFromCGRect(self.view.bounds),
+        @"view_frame": NSStringFromCGRect(self.view.frame),
+        @"view_center": NSStringFromCGPoint(self.view.center),
+        @"view_transform": [NSString stringWithFormat:@"[%.2f, %.2f, %.2f, %.2f, %.2f, %.2f]",
+            vt.a, vt.b, vt.c, vt.d, vt.tx, vt.ty],
+        @"eye_container_frame": NSStringFromCGRect(_eyeContainer ? _eyeContainer.frame : CGRectZero),
+        @"left_eye_center": NSStringFromCGPoint(_leftEye ? _leftEye.center : CGPointZero),
+        @"right_eye_center": NSStringFromCGPoint(_rightEye ? _rightEye.center : CGPointZero),
         @"is_recording": @(_isRecording),
         @"is_playing_audio": @(_audioPlayer != nil && [_audioPlayer isPlaying]),
         @"camera_available": @(YES),
@@ -2597,10 +2799,10 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 }
 
 - (void)dealloc {
-    if (_observersAdded) {
-        [[NSNotificationCenter defaultCenter] removeObserver:self];
-        _observersAdded = NO;
-    }
+    [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    _observersAdded = NO;
+
     if (_micMeterTimer) {
         [_micMeterTimer invalidate];
         _micMeterTimer = nil;
@@ -2609,6 +2811,11 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         [_motionManager stopAccelerometerUpdates];
         [_motionManager release];
         _motionManager = nil;
+    }
+    if (_motionQueue) {
+        [_motionQueue cancelAllOperations];
+        [_motionQueue release];
+        _motionQueue = nil;
     }
     if (_audioPlayer) {
         if ([_audioPlayer isPlaying]) [_audioPlayer stop];
@@ -2950,7 +3157,7 @@ static void *SocketServerThread(void *arg) {
                             else targetOrient = UIInterfaceOrientationPortrait;
 
                             if (g_viewController) {
-                                [g_viewController updateLayoutForOrientation:targetOrient];
+                                [g_viewController setAppOrientation:targetOrient];
                             }
                         });
                         [response setObject:@"ok" forKey:@"status"];
@@ -3156,6 +3363,10 @@ static void *SocketServerThread(void *arg) {
 
 - (BOOL)application:(UIApplication *)application openURL:(NSURL *)url sourceApplication:(NSString *)sourceApplication annotation:(id)annotation {
     return YES;
+}
+
+- (UIInterfaceOrientationMask)application:(UIApplication *)application supportedInterfaceOrientationsForWindow:(UIWindow *)window {
+    return UIInterfaceOrientationMaskAll;
 }
 
 - (void)dealloc {
