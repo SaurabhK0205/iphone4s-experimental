@@ -1397,16 +1397,22 @@ static DeskCompanionViewController *g_viewController = nil;
     CGFloat rightCenterX = leftCenterX + eyeW + eyeSpacing;
     CGFloat centerY = H * 0.5f;
 
+    // Reset layer affine transforms to identity before recalculating geometry and centers
+    _leftEye.layer.affineTransform = CGAffineTransformIdentity;
+    _rightEye.layer.affineTransform = CGAffineTransformIdentity;
+
     _leftEye.bounds = CGRectMake(0, 0, eyeW, eyeH);
     _rightEye.bounds = CGRectMake(0, 0, eyeW, eyeH);
-    _leftEye.defaultCenter = CGPointMake(leftCenterX, centerY);
-    _rightEye.defaultCenter = CGPointMake(rightCenterX, centerY);
+    _leftEye.center = CGPointMake(leftCenterX, centerY);
+    _rightEye.center = CGPointMake(rightCenterX, centerY);
+    _leftEye.defaultCenter = _leftEye.center;
+    _rightEye.defaultCenter = _rightEye.center;
 
     _defaultEyeFrameLeft = CGRectMake((W - totalW) * 0.5f, eyeY, eyeW, eyeH);
     _defaultEyeFrameRight = CGRectMake(_defaultEyeFrameLeft.origin.x + eyeW + eyeSpacing, eyeY, eyeW, eyeH);
 
-    _defaultEyePositionLeft = _leftEye.defaultCenter;
-    _defaultEyePositionRight = _rightEye.defaultCenter;
+    _defaultEyePositionLeft = _leftEye.center;
+    _defaultEyePositionRight = _rightEye.center;
 
     [_leftEye applyConfig:_leftCurrentConfig];
     [_rightEye applyConfig:_rightCurrentConfig];
@@ -1775,26 +1781,51 @@ static DeskCompanionViewController *g_viewController = nil;
     CGFloat normX = ClampF((pt.x - screenW * 0.5f) / (screenW * 0.5f), -1.0f, 1.0f);
     CGFloat normY = ClampF((pt.y - screenH * 0.5f) / (screenH * 0.5f), -1.0f, 1.0f);
 
-    // Look at touched point immediately
-    [self lookAtX:normX y:normY duration:0.12];
-
+    NSString *reactionExp = @"happy";
     if (fabsf(normX) < 0.35f && fabsf(normY) < 0.35f) {
         // Center tap: happy joy blink
         [self blink];
-        [self setExpression:@"happy"];
+        reactionExp = @"happy";
     } else if (normX < -0.35f) {
         // Left side tap: curious head tilt
-        [self setExpression:@"curious"];
+        reactionExp = @"curious";
     } else if (normX > 0.35f) {
         // Right side tap: skeptic wink
-        [self setExpression:@"skeptic"];
+        reactionExp = @"skeptic";
     } else if (normY < -0.35f) {
         // Top forehead tap: surprised glance up
-        [self setExpression:@"surprised"];
+        reactionExp = @"surprised";
     } else {
         // Bottom chin tap: cheerful glee smile
-        [self setExpression:@"glee"];
+        reactionExp = @"glee";
     }
+
+    // Set expression while simultaneously looking toward touched location
+    ProceduralEyeConfig targetLeft, targetRight;
+    UIColor *topColor = nil, *bottomColor = nil;
+    GetEmotionPreset(reactionExp, &targetLeft, &targetRight, &topColor, &bottomColor);
+
+    targetLeft.hotSpotCenterX = normX;
+    targetLeft.hotSpotCenterY = normY;
+    targetLeft.centerX = normX * 10.0f;
+    targetLeft.centerY = normY * 8.0f;
+
+    targetRight.hotSpotCenterX = normX;
+    targetRight.hotSpotCenterY = normY;
+    targetRight.centerX = normX * 10.0f;
+    targetRight.centerY = normY * 8.0f;
+
+    _leftTargetExpressionConfig = targetLeft;
+    _rightTargetExpressionConfig = targetRight;
+
+    [_leftEye setGradientColors:@[ (id)topColor.CGColor, (id)bottomColor.CGColor ]];
+    [_rightEye setGradientColors:@[ (id)topColor.CGColor, (id)bottomColor.CGColor ]];
+    [_leftEye setGlowColor:topColor];
+    [_rightEye setGlowColor:topColor];
+    _statusDot.backgroundColor = topColor;
+    _statusDot.layer.shadowColor = topColor.CGColor;
+
+    [self interpolateToLeft:targetLeft right:targetRight duration:0.18 easeOut:YES completion:nil];
 
     _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:1.8 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
 }
@@ -2903,8 +2934,11 @@ static void *SocketServerThread(void *arg) {
                             else if ([orientStr isEqualToString:@"upside_down"]) targetOrient = UIInterfaceOrientationPortraitUpsideDown;
                             else targetOrient = UIInterfaceOrientationPortrait;
 
-                            if ([[UIDevice currentDevice] respondsToSelector:@selector(setOrientation:)]) {
-                                [[UIDevice currentDevice] performSelector:@selector(setOrientation:) withObject:(id)targetOrient];
+                            typedef void (*SetOrientationFunc)(id, SEL, UIInterfaceOrientation);
+                            SEL sel = @selector(setOrientation:);
+                            if ([[UIDevice currentDevice] respondsToSelector:sel]) {
+                                SetOrientationFunc setOrient = (SetOrientationFunc)[[UIDevice currentDevice] methodForSelector:sel];
+                                if (setOrient) setOrient([UIDevice currentDevice], sel, targetOrient);
                             }
                             if (g_viewController) {
                                 [g_viewController updateLayoutForOrientation:targetOrient];
