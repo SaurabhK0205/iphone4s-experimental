@@ -1075,9 +1075,11 @@ static DeskCompanionViewController *g_viewController = nil;
 
     // Motion & Orientation Sensors (CoreMotion & UIDevice)
     CMMotionManager *_motionManager;
+    NSOperationQueue *_motionQueue;
     NSTimeInterval _lastShakeTime;
     CMAcceleration _lastAccel;
     UIInterfaceOrientation _currentOrientation;
+    UIInterfaceOrientation _pendingOrientation;
     BOOL _isTransitioningOrientation;
     NSTimeInterval _lastOrientationChangeTime;
 }
@@ -1348,11 +1350,15 @@ static DeskCompanionViewController *g_viewController = nil;
                                                  name:UIApplicationWillEnterForegroundNotification
                                                object:nil];
 
+    _pendingOrientation = 0;
+    _motionQueue = [[NSOperationQueue alloc] init];
+    _motionQueue.maxConcurrentOperationCount = 1;
+
     _motionManager = [[CMMotionManager alloc] init];
     if ([_motionManager isAccelerometerAvailable]) {
         _motionManager.accelerometerUpdateInterval = 1.0 / 25.0; // 25 Hz responsive desk motion
         __unsafe_unretained DeskCompanionViewController *weakSelf = self;
-        [_motionManager startAccelerometerUpdatesToQueue:[NSOperationQueue mainQueue] withHandler:^(CMAccelerometerData *data, NSError *err) {
+        [_motionManager startAccelerometerUpdatesToQueue:_motionQueue withHandler:^(CMAccelerometerData *data, NSError *err) {
             if (!weakSelf || !data) return;
             [weakSelf handleMotionData:data.acceleration];
         }];
@@ -1377,12 +1383,16 @@ static DeskCompanionViewController *g_viewController = nil;
     if (_motionManager && [_motionManager isAccelerometerActive]) {
         [_motionManager stopAccelerometerUpdates];
     }
+    _isTransitioningOrientation = NO;
+    _pendingOrientation = 0;
+    [self.view.layer removeAllAnimations];
+    [self updateLayoutForOrientation:_currentOrientation];
 }
 
 - (void)handleAppWillEnterForeground:(NSNotification *)notification {
-    if (_motionManager && [_motionManager isAccelerometerAvailable] && ![_motionManager isAccelerometerActive]) {
+    if (_motionManager && [_motionManager isAccelerometerAvailable] && ![_motionManager isAccelerometerActive] && _motionQueue) {
         __unsafe_unretained DeskCompanionViewController *weakSelf = self;
-        [_motionManager startAccelerometerUpdatesToQueue:[NSOperationQueue mainQueue] withHandler:^(CMAccelerometerData *data, NSError *err) {
+        [_motionManager startAccelerometerUpdatesToQueue:_motionQueue withHandler:^(CMAccelerometerData *data, NSError *err) {
             if (!weakSelf || !data) return;
             [weakSelf handleMotionData:data.acceleration];
         }];
@@ -1395,7 +1405,11 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)transitionToOrientation:(UIInterfaceOrientation)targetOrientation animated:(BOOL)animated duration:(NSTimeInterval)duration {
-    if (targetOrientation == _currentOrientation && !_isTransitioningOrientation) return;
+    if (targetOrientation == _currentOrientation) return;
+    if (_isTransitioningOrientation) {
+        _pendingOrientation = targetOrientation;
+        return;
+    }
     _currentOrientation = targetOrientation;
 
     if (animated) {
@@ -1413,6 +1427,11 @@ static DeskCompanionViewController *g_viewController = nil;
             [self->_leftEye setNeedsDisplay];
             [self->_rightEye setNeedsDisplay];
             [self->_scanlineOverlay setNeedsDisplay];
+            if (self->_pendingOrientation != 0 && self->_pendingOrientation != self->_currentOrientation) {
+                UIInterfaceOrientation next = self->_pendingOrientation;
+                self->_pendingOrientation = 0;
+                [self transitionToOrientation:next animated:YES duration:0.38];
+            }
         }];
     } else {
         [self updateLayoutForOrientation:targetOrientation];
@@ -2475,7 +2494,9 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     NSTimeInterval now = CACurrentMediaTime();
     if (detectedOrient != _currentOrientation && (now - _lastOrientationChangeTime > 0.40)) {
         _lastOrientationChangeTime = now;
-        [self transitionToOrientation:detectedOrient animated:YES duration:0.38];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self transitionToOrientation:detectedOrient animated:YES duration:0.38];
+        });
     }
 
     // Detect sudden desk bumps or device shake (accel magnitude > 2.2g)
@@ -2484,45 +2505,51 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     if (mag > 2.2 || fabsf((float)accel.x) > 1.4f || fabsf((float)accel.y) > 1.6f) {
         if (now - _lastShakeTime > 1.8) {
             _lastShakeTime = now;
-            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
-            [self playSoundNamed:@"beep"];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+                [self playSoundNamed:@"beep"];
 
-            if (_reactionTimer) {
-                [_reactionTimer invalidate];
-                _reactionTimer = nil;
-            }
+                if (self->_reactionTimer) {
+                    [self->_reactionTimer invalidate];
+                    self->_reactionTimer = nil;
+                }
 
-            [self setExpression:@"confused" duration:0.15];
+                [self setExpression:@"confused" duration:0.15];
 
-            // Dizzy wobble animation on eye container
-            CAKeyframeAnimation *wobble = [CAKeyframeAnimation animationWithKeyPath:@"transform.rotation.z"];
-            wobble.values = @[ @(0.0f), @(-0.10f), @(0.10f), @(-0.06f), @(0.04f), @(0.0f) ];
-            wobble.duration = 0.35;
-            wobble.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-            [_eyeContainer.layer addAnimation:wobble forKey:@"dizzyWobble"];
+                // Dizzy wobble animation on eye container
+                CAKeyframeAnimation *wobble = [CAKeyframeAnimation animationWithKeyPath:@"transform.rotation.z"];
+                wobble.values = @[ @(0.0f), @(-0.10f), @(0.10f), @(-0.06f), @(0.04f), @(0.0f) ];
+                wobble.duration = 0.35;
+                wobble.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+                [self->_eyeContainer.layer addAnimation:wobble forKey:@"dizzyWobble"];
 
-            [self setStatusTitle:@"MOTION JOLT //" subtitle:[NSString stringWithFormat:@"Shake detected (%.1fg)", mag]];
-            _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:2.2 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
+                [self setStatusTitle:@"MOTION JOLT //" subtitle:[NSString stringWithFormat:@"Shake detected (%.1fg)", mag]];
+                self->_reactionTimer = [NSTimer scheduledTimerWithTimeInterval:2.2 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
+            });
         }
     } else if (!_isInterpolating && !_isPanning && !_isBlinking && (!_reactionTimer || ![_reactionTimer isValid])) {
         // Ambient desk tilt parallax: slight organic eye offset tracking gravity
         if (!_reducedMotion) {
             CGFloat tiltX = ClampF((CGFloat)accel.x * 0.40f, -0.40f, 0.40f);
             CGFloat tiltY = ClampF((CGFloat)(-accel.y) * 0.30f, -0.30f, 0.30f);
-            ProceduralEyeConfig leftCfg = _leftTargetExpressionConfig;
-            ProceduralEyeConfig rightCfg = _rightTargetExpressionConfig;
-            leftCfg.centerX += tiltX * 8.0f;
-            leftCfg.centerY += tiltY * 6.0f;
-            rightCfg.centerX += tiltX * 8.0f;
-            rightCfg.centerY += tiltY * 6.0f;
-            leftCfg.hotSpotCenterX = tiltX;
-            leftCfg.hotSpotCenterY = tiltY;
-            rightCfg.hotSpotCenterX = tiltX;
-            rightCfg.hotSpotCenterY = tiltY;
-            _leftCurrentConfig = leftCfg;
-            _rightCurrentConfig = rightCfg;
-            [_leftEye applyConfig:_leftCurrentConfig];
-            [_rightEye applyConfig:_rightCurrentConfig];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!self->_isInterpolating && !self->_isPanning && !self->_isBlinking && (!self->_reactionTimer || ![self->_reactionTimer isValid])) {
+                    ProceduralEyeConfig leftCfg = self->_leftTargetExpressionConfig;
+                    ProceduralEyeConfig rightCfg = self->_rightTargetExpressionConfig;
+                    leftCfg.centerX += tiltX * 8.0f;
+                    leftCfg.centerY += tiltY * 6.0f;
+                    rightCfg.centerX += tiltX * 8.0f;
+                    rightCfg.centerY += tiltY * 6.0f;
+                    leftCfg.hotSpotCenterX = tiltX;
+                    leftCfg.hotSpotCenterY = tiltY;
+                    rightCfg.hotSpotCenterX = tiltX;
+                    rightCfg.hotSpotCenterY = tiltY;
+                    self->_leftCurrentConfig = leftCfg;
+                    self->_rightCurrentConfig = rightCfg;
+                    [self->_leftEye applyConfig:self->_leftCurrentConfig];
+                    [self->_rightEye applyConfig:self->_rightCurrentConfig];
+                }
+            });
         }
     }
 }
@@ -2745,10 +2772,9 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 
 - (void)dealloc {
     [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
-    if (_observersAdded) {
-        [[NSNotificationCenter defaultCenter] removeObserver:self];
-        _observersAdded = NO;
-    }
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    _observersAdded = NO;
+
     if (_micMeterTimer) {
         [_micMeterTimer invalidate];
         _micMeterTimer = nil;
@@ -2757,6 +2783,11 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         [_motionManager stopAccelerometerUpdates];
         [_motionManager release];
         _motionManager = nil;
+    }
+    if (_motionQueue) {
+        [_motionQueue cancelAllOperations];
+        [_motionQueue release];
+        _motionQueue = nil;
     }
     if (_audioPlayer) {
         if ([_audioPlayer isPlaying]) [_audioPlayer stop];
