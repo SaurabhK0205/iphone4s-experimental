@@ -226,8 +226,10 @@ async function getAvailableModels(apiKey) {
           .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
           .map((m) => m.name.replace(/^models\//, ''));
         if (supported.length > 0) {
-          const flashModels = supported.filter((m) => m.includes('flash'));
-          const otherModels = supported.filter((m) => !m.includes('flash'));
+          const nonReviewKeywords = ['tts', 'embed', 'image', 'audio', 'realtime', 'live', 'preview'];
+          const textModels = supported.filter((m) => !nonReviewKeywords.some((k) => m.toLowerCase().includes(k)));
+          const flashModels = textModels.filter((m) => m.includes('flash'));
+          const otherModels = textModels.filter((m) => !m.includes('flash'));
           return [...flashModels, ...otherModels];
         }
       }
@@ -235,7 +237,7 @@ async function getAvailableModels(apiKey) {
   } catch (err) {
     console.warn('Could not query model list, falling back to static list:', err.message || err);
   }
-  return ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  return ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
 }
 
 async function runReview() {

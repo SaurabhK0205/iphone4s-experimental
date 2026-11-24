@@ -12,13 +12,14 @@ import os
 import sys
 import re
 import uuid
+import shlex
 
 # Strict repository standard: verify virtual environment isolation
 def is_in_venv():
     """Verify that Python execution is isolated within the project virtual environment."""
     return (sys.prefix != getattr(sys, "base_prefix", sys.prefix)) or ("VIRTUAL_ENV" in os.environ)
 
-SAFE_PATH_REGEX = re.compile(r"^/tmp/companion_[a-zA-Z0-9_\-\.]+$")
+SAFE_PATH_REGEX = re.compile(r"^/tmp/companion_[a-zA-Z0-9_.-]+$")
 
 def _is_safe_remote_path(path):
     return bool(path and SAFE_PATH_REGEX.match(path))
@@ -96,7 +97,7 @@ class DeskCompanion:
                 ret = subprocess.run(scp_cmd, capture_output=True, timeout=timeout)
                 if ret.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
                     # Clean up remote capture file after successful retrieval
-                    del_cmd = ["ssh", "-i", key_path, "-p", str(ssh_port), "-o", "ConnectTimeout=5", "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}", f"root@{ssh_host}", f"rm -f {remote_path}"]
+                    del_cmd = ["ssh", "-i", key_path, "-p", str(ssh_port), "-o", "ConnectTimeout=5", "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}", f"root@{ssh_host}", f"rm -f -- {shlex.quote(remote_path)}"]
                     subprocess.run(del_cmd, capture_output=True, timeout=5.0)
                     return {"status": "ok", "local_file": local_path}
                 last_err = ret.stderr.decode("utf-8", errors="replace")

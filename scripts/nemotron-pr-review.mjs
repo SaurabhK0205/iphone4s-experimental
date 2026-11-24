@@ -282,7 +282,7 @@ async function runReview() {
               { role: 'user', content: `--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${diff}` }
             ],
             temperature: 0.1,
-            max_tokens: 4096
+            max_tokens: 8192
           })
         });
 

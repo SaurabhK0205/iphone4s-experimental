@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <mach/mach.h>
 #include <signal.h>
+#include <libkern/OSAtomic.h>
 
 // ========================================================
 // 1. ATMOSPHERIC CANVAS DEPTH (Radial Gradient Background)
@@ -1319,14 +1320,46 @@ static DeskCompanionViewController *g_viewController = nil;
 // ========================================================
 // TCP COMMAND SERVER (Port 5000)
 // ========================================================
-static void SafeSendAndClose(int fd, NSData *data) {
-    if (fd < 0) return;
-    if (fcntl(fd, F_GETFD) == -1) return;
-    if (data && [data length] > 0) {
-        send(fd, [data bytes], [data length], 0);
-        send(fd, "\n", 1, 0);
+@interface CompanionClientContext : NSObject {
+@public
+    int clientFd;
+    int64_t generation;
+    BOOL isClosed;
+}
+- (id)initWithFd:(int)fd generation:(int64_t)gen;
+@end
+
+@implementation CompanionClientContext
+- (id)initWithFd:(int)fd generation:(int64_t)gen {
+    self = [super init];
+    if (self) {
+        clientFd = fd;
+        generation = gen;
+        isClosed = NO;
     }
-    close(fd);
+    return self;
+}
+@end
+
+static int64_t g_connectionGeneration = 0;
+
+static void SafeSendAndClose(CompanionClientContext *ctx, NSData *data) {
+    if (!ctx) return;
+    int fdToClose = -1;
+    @synchronized(ctx) {
+        if (!ctx->isClosed) {
+            ctx->isClosed = YES;
+            fdToClose = ctx->clientFd;
+            ctx->clientFd = -1;
+            if (fdToClose >= 0 && data && [data length] > 0) {
+                send(fdToClose, [data bytes], [data length], 0);
+                send(fdToClose, "\n", 1, 0);
+            }
+            if (fdToClose >= 0) {
+                close(fdToClose);
+            }
+        }
+    }
 }
 
 static void *SocketServerThread(void *arg) {
@@ -1370,9 +1403,12 @@ static void *SocketServerThread(void *arg) {
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
+        int64_t gen = OSAtomicIncrement64Barrier(&g_connectionGeneration);
+        CompanionClientContext *ctx = [[CompanionClientContext alloc] initWithFd:client_fd generation:gen];
+
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             char buffer[4096];
-            ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
+            ssize_t bytes_read = read(ctx->clientFd, buffer, sizeof(buffer) - 1);
             if (bytes_read > 0) {
                 buffer[bytes_read] = '\0';
                 NSData *jsonData = [NSData dataWithBytes:buffer length:bytes_read];
@@ -1474,11 +1510,14 @@ static void *SocketServerThread(void *arg) {
                         NSString *cam = [cmdDict objectForKey:@"camera"];
                         if (!cam || ![cam isKindOfClass:[NSString class]]) cam = @"back";
 
-                        // Operation deadline to guarantee client_fd closure if capture hangs
+                        // Operation deadline to guarantee client fd closure if capture hangs
+                        [ctx retain];
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                            SafeSendAndClose(client_fd, nil);
+                            SafeSendAndClose(ctx, nil);
+                            [ctx release];
                         });
 
+                        [ctx retain];
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
                                 [g_viewController takeSnapshot:cam completion:^(NSString *path, NSUInteger size, NSError *err) {
@@ -1494,14 +1533,16 @@ static void *SocketServerThread(void *arg) {
                                     }
                                     NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
                                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                        SafeSendAndClose(client_fd, data);
+                                        SafeSendAndClose(ctx, data);
+                                        [ctx release];
                                     });
                                 }];
                             } else {
                                 NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
                                 NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
                                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                    SafeSendAndClose(client_fd, data);
+                                    SafeSendAndClose(ctx, data);
+                                    [ctx release];
                                 });
                             }
                         });
@@ -1515,11 +1556,14 @@ static void *SocketServerThread(void *arg) {
                         if (duration <= 0.1) duration = 3.0;
                         if (duration > 30.0) duration = 30.0;
 
-                        // Operation deadline to guarantee client_fd closure if recording hangs
+                        // Operation deadline to guarantee client fd closure if recording hangs
+                        [ctx retain];
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + 4.0) * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                            SafeSendAndClose(client_fd, nil);
+                            SafeSendAndClose(ctx, nil);
+                            [ctx release];
                         });
 
+                        [ctx retain];
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
                                 [g_viewController recordAudioDuration:duration completion:^(NSString *path, NSUInteger size, NSError *err) {
@@ -1535,14 +1579,16 @@ static void *SocketServerThread(void *arg) {
                                     }
                                     NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
                                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                        SafeSendAndClose(client_fd, data);
+                                        SafeSendAndClose(ctx, data);
+                                        [ctx release];
                                     });
                                 }];
                             } else {
                                 NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
                                 NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
                                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                    SafeSendAndClose(client_fd, data);
+                                    SafeSendAndClose(ctx, data);
+                                    [ctx release];
                                 });
                             }
                         });
@@ -1551,11 +1597,14 @@ static void *SocketServerThread(void *arg) {
                         NSString *shotId = [[NSProcessInfo processInfo] globallyUniqueString];
                         NSString *savePath = [NSString stringWithFormat:@"/tmp/companion_screen_%@.png", shotId];
 
-                        // Operation deadline to guarantee client_fd closure if screenshot hangs
+                        // Operation deadline to guarantee client fd closure if screenshot hangs
+                        [ctx retain];
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                            SafeSendAndClose(client_fd, nil);
+                            SafeSendAndClose(ctx, nil);
+                            [ctx release];
                         });
 
+                        [ctx retain];
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
                                 [g_viewController captureScreenToPath:savePath completion:^(NSString *path, NSUInteger size, NSError *err) {
@@ -1570,14 +1619,16 @@ static void *SocketServerThread(void *arg) {
                                     }
                                     NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
                                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                        SafeSendAndClose(client_fd, data);
+                                        SafeSendAndClose(ctx, data);
+                                        [ctx release];
                                     });
                                 }];
                             } else {
                                 NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
                                 NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
                                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                    SafeSendAndClose(client_fd, data);
+                                    SafeSendAndClose(ctx, data);
+                                    [ctx release];
                                 });
                             }
                         });
@@ -1590,16 +1641,17 @@ static void *SocketServerThread(void *arg) {
 
                     if (!handledAsynchronously) {
                         NSData *respData = [NSJSONSerialization dataWithJSONObject:response options:0 error:nil];
-                        SafeSendAndClose(client_fd, respData);
+                        SafeSendAndClose(ctx, respData);
                     }
                 } else {
                     [response setObject:@"invalid_json" forKey:@"error"];
                     NSData *respData = [NSJSONSerialization dataWithJSONObject:response options:0 error:nil];
-                    SafeSendAndClose(client_fd, respData);
+                    SafeSendAndClose(ctx, respData);
                 }
             } else {
-                close(client_fd);
+                SafeSendAndClose(ctx, nil);
             }
+            [ctx release];
         });
     }
     return NULL;
