@@ -1078,6 +1078,8 @@ static DeskCompanionViewController *g_viewController = nil;
     NSTimeInterval _lastShakeTime;
     CMAcceleration _lastAccel;
     UIInterfaceOrientation _currentOrientation;
+    BOOL _isTransitioningOrientation;
+    NSTimeInterval _lastOrientationChangeTime;
 }
 
 - (void)setupProceduralEngine;
@@ -1098,6 +1100,7 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)handleDeviceOrientationChange:(NSNotification *)notification;
 - (void)handleMotionData:(CMAcceleration)accel;
 - (void)setAppOrientation:(UIInterfaceOrientation)orientation;
+- (void)transitionToOrientation:(UIInterfaceOrientation)targetOrientation animated:(BOOL)animated duration:(NSTimeInterval)duration;
 - (void)updateAudioMeters:(NSTimer *)timer;
 - (void)setReducedMotion:(BOOL)reduced;
 - (void)takeSnapshot:(NSString *)cameraPosition completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion;
@@ -1327,6 +1330,8 @@ static DeskCompanionViewController *g_viewController = nil;
 
     // Enable hardware orientation change notifications from UIDevice
     _currentOrientation = UIInterfaceOrientationPortrait;
+    _isTransitioningOrientation = NO;
+    _lastOrientationChangeTime = 0.0;
     [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleDeviceOrientationChange:)
@@ -1353,19 +1358,46 @@ static DeskCompanionViewController *g_viewController = nil;
     else if (devOrient == UIDeviceOrientationLandscapeRight) target = UIInterfaceOrientationLandscapeLeft;
 
     if (target != _currentOrientation) {
-        _currentOrientation = target;
-        [self updateLayoutForOrientation:_currentOrientation];
+        _lastOrientationChangeTime = CACurrentMediaTime();
+        [self transitionToOrientation:target animated:YES duration:0.38];
     }
 }
 
 - (void)setAppOrientation:(UIInterfaceOrientation)orientation {
-    _currentOrientation = orientation;
-    [self updateLayoutForOrientation:_currentOrientation];
+    _lastOrientationChangeTime = CACurrentMediaTime();
+    [self transitionToOrientation:orientation animated:YES duration:0.38];
+}
+
+- (void)transitionToOrientation:(UIInterfaceOrientation)targetOrientation animated:(BOOL)animated duration:(NSTimeInterval)duration {
+    if (targetOrientation == _currentOrientation && !_isTransitioningOrientation) return;
+    _currentOrientation = targetOrientation;
+
+    if (animated) {
+        _isTransitioningOrientation = YES;
+        NSTimeInterval dur = (duration > 0.0) ? duration : 0.38;
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+
+        [UIView animateWithDuration:dur
+                              delay:0.0
+                            options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
+                         animations:^{
+            [self updateLayoutForOrientation:targetOrientation];
+        } completion:^(BOOL finished) {
+            self->_isTransitioningOrientation = NO;
+            [self->_leftEye setNeedsDisplay];
+            [self->_rightEye setNeedsDisplay];
+            [self->_scanlineOverlay setNeedsDisplay];
+        }];
+    } else {
+        [self updateLayoutForOrientation:targetOrientation];
+    }
 }
 
 - (void)viewWillLayoutSubviews {
     [super viewWillLayoutSubviews];
-    [self updateLayoutForOrientation:_currentOrientation];
+    if (!_isTransitioningOrientation) {
+        [self updateLayoutForOrientation:_currentOrientation];
+    }
 }
 
 - (void)viewDidLayoutSubviews {
@@ -2414,14 +2446,14 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
             detectedOrient = (ay < 0.0f) ? UIInterfaceOrientationPortrait : UIInterfaceOrientationPortraitUpsideDown;
         }
     }
-    if (detectedOrient != _currentOrientation) {
-        _currentOrientation = detectedOrient;
-        [self updateLayoutForOrientation:_currentOrientation];
+    NSTimeInterval now = CACurrentMediaTime();
+    if (detectedOrient != _currentOrientation && (now - _lastOrientationChangeTime > 0.40)) {
+        _lastOrientationChangeTime = now;
+        [self transitionToOrientation:detectedOrient animated:YES duration:0.38];
     }
 
     // Detect sudden desk bumps or device shake (accel magnitude > 2.2g)
     double mag = sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
-    NSTimeInterval now = CACurrentMediaTime();
 
     if (mag > 2.2 || fabsf((float)accel.x) > 1.4f || fabsf((float)accel.y) > 1.6f) {
         if (now - _lastShakeTime > 1.8) {
