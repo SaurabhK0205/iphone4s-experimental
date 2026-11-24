@@ -157,8 +157,8 @@ static ProceduralEyeConfig ProceduralEyeConfigFromArray(NSArray *arr, Procedural
         return fallback;
     }
     ProceduralEyeConfig c;
-    c.centerX = SafeFloatFromArray(arr, 0, fallback.centerX);
-    c.centerY = SafeFloatFromArray(arr, 1, fallback.centerY);
+    c.centerX = ClampF(SafeFloatFromArray(arr, 0, fallback.centerX), -200.0f, 200.0f);
+    c.centerY = ClampF(SafeFloatFromArray(arr, 1, fallback.centerY), -200.0f, 200.0f);
     c.scaleX = ClampF(SafeFloatFromArray(arr, 2, fallback.scaleX), 0.05f, 3.0f);
     c.scaleY = ClampF(SafeFloatFromArray(arr, 3, fallback.scaleY), 0.05f, 3.0f);
     c.angle = ClampF(SafeFloatFromArray(arr, 4, fallback.angle), -180.0f, 180.0f);
@@ -176,8 +176,8 @@ static ProceduralEyeConfig ProceduralEyeConfigFromArray(NSArray *arr, Procedural
     c.lowerLidY = ClampF(SafeFloatFromArray(arr, 16, fallback.lowerLidY), 0.0f, 1.0f);
     c.lowerLidAngle = ClampF(SafeFloatFromArray(arr, 17, fallback.lowerLidAngle), -90.0f, 90.0f);
     c.lowerLidBend = ClampF(SafeFloatFromArray(arr, 18, fallback.lowerLidBend), -2.0f, 2.0f);
-    c.saturation = SafeFloatFromArray(arr, 19, fallback.saturation);
-    c.lightness = SafeFloatFromArray(arr, 20, fallback.lightness);
+    c.saturation = ClampF(SafeFloatFromArray(arr, 19, fallback.saturation), -1.0f, 1.0f);
+    c.lightness = ClampF(SafeFloatFromArray(arr, 20, fallback.lightness), -1.0f, 1.0f);
     c.glowSize = ClampF(SafeFloatFromArray(arr, 21, fallback.glowSize), 0.1f, 3.0f);
     c.hotSpotCenterX = ClampF(SafeFloatFromArray(arr, 22, fallback.hotSpotCenterX), -1.0f, 1.0f);
     c.hotSpotCenterY = ClampF(SafeFloatFromArray(arr, 23, fallback.hotSpotCenterY), -1.0f, 1.0f);
@@ -378,10 +378,11 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
         cBL = _config.lowerInnerRadiusX;
     }
 
-    CGFloat rTL = ClampF(cTL * cornerBase, 4.0f, W * 0.5f);
-    CGFloat rTR = ClampF(cTR * cornerBase, 4.0f, W * 0.5f);
-    CGFloat rBR = ClampF(cBR * cornerBase, 4.0f, W * 0.5f);
-    CGFloat rBL = ClampF(cBL * cornerBase, 4.0f, W * 0.5f);
+    CGFloat maxCorner = fminf(W * 0.5f, H * 0.5f);
+    CGFloat rTL = ClampF(cTL * cornerBase, 4.0f, maxCorner);
+    CGFloat rTR = ClampF(cTR * cornerBase, 4.0f, maxCorner);
+    CGFloat rBR = ClampF(cBR * cornerBase, 4.0f, maxCorner);
+    CGFloat rBL = ClampF(cBL * cornerBase, 4.0f, maxCorner);
 
     UIBezierPath *eyePath = [UIBezierPath bezierPath];
     [eyePath moveToPoint:CGPointMake(rTL, 0.0f)];
@@ -1033,6 +1034,7 @@ static DeskCompanionViewController *g_viewController = nil;
     NSTimer *_saccadeTimer;
     NSTimer *_pruneTimer;
     NSTimer *_reactionTimer;
+    NSUInteger _saccadeGeneration;
     BOOL _isBlinking;
     BOOL _isPanning;
     BOOL _zenMode;
@@ -1506,7 +1508,14 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)interpolateToLeft:(ProceduralEyeConfig)left right:(ProceduralEyeConfig)right duration:(NSTimeInterval)dur easeOut:(BOOL)easeOut completion:(void (^)(void))completion {
+    if (_interpolationCompletion) {
+        [_interpolationCompletion release];
+        _interpolationCompletion = nil;
+    }
+
     if (dur <= 0.005) {
+        _isInterpolating = NO;
+        _proceduralDisplayLink.paused = YES;
         _leftCurrentConfig = left;
         _rightCurrentConfig = right;
         [_leftEye applyConfig:_leftCurrentConfig];
@@ -1515,10 +1524,6 @@ static DeskCompanionViewController *g_viewController = nil;
         return;
     }
 
-    if (_interpolationCompletion) {
-        [_interpolationCompletion release];
-        _interpolationCompletion = nil;
-    }
     if (completion) {
         _interpolationCompletion = [completion copy];
     }
@@ -1539,6 +1544,9 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)setExpression:(NSString *)expression duration:(NSTimeInterval)dur {
+    _isBlinking = NO;
+    _saccadeGeneration++;
+
     [_currentExpression release];
     _currentExpression = [expression copy];
 
@@ -1561,6 +1569,9 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)lookAtX:(CGFloat)x y:(CGFloat)y duration:(NSTimeInterval)dur {
+    _isBlinking = NO;
+    _saccadeGeneration++;
+
     ProceduralEyeConfig lookLeft = _leftTargetExpressionConfig;
     ProceduralEyeConfig lookRight = _rightTargetExpressionConfig;
 
@@ -1584,6 +1595,9 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)setProceduralParamsLeft:(NSArray *)left right:(NSArray *)right duration:(NSTimeInterval)dur {
+    _isBlinking = NO;
+    _saccadeGeneration++;
+
     ProceduralEyeConfig leftCfg = ProceduralEyeConfigFromArray(left, _leftCurrentConfig);
     ProceduralEyeConfig rightCfg = ProceduralEyeConfigFromArray(right, _rightCurrentConfig);
 
@@ -1632,6 +1646,8 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)triggerMicroSaccade {
     if (_isBlinking || _isSpeaking || _isPanning || _reducedMotion || [_currentExpression hasPrefix:@"sleep"] || [_currentExpression isEqualToString:@"asleep"]) return;
 
+    NSUInteger gen = ++_saccadeGeneration;
+
     // Natural saccadic displacement in normalized hotspot space: -0.32 to +0.32
     float rx = ((float)(arc4random_uniform(9)) - 4.0f) * 0.08f;
     float ry = ((float)(arc4random_uniform(5)) - 2.0f) * 0.08f;
@@ -1648,7 +1664,7 @@ static DeskCompanionViewController *g_viewController = nil;
     [self interpolateToLeft:saccadeLeft right:saccadeRight duration:0.10 easeOut:YES completion:^{
         // Hold fixation for 1.8 seconds, then return
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (weakSelf && !weakSelf->_isBlinking && !weakSelf->_isPanning) {
+            if (weakSelf && weakSelf->_saccadeGeneration == gen && !weakSelf->_isBlinking && !weakSelf->_isPanning) {
                 [weakSelf interpolateToLeft:weakSelf->_leftTargetExpressionConfig right:weakSelf->_rightTargetExpressionConfig duration:0.22 easeOut:YES completion:nil];
             }
         });
@@ -1770,6 +1786,18 @@ static DeskCompanionViewController *g_viewController = nil;
 
     CGFloat normX = ClampF(translation.x / 140.0f, -1.0f, 1.0f);
     CGFloat normY = ClampF(translation.y / 200.0f, -1.0f, 1.0f);
+
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        _isPanning = YES;
+        _isBlinking = NO;
+        _saccadeGeneration++;
+        _isInterpolating = NO;
+        _proceduralDisplayLink.paused = YES;
+        if (_interpolationCompletion) {
+            [_interpolationCompletion release];
+            _interpolationCompletion = nil;
+        }
+    }
 
     if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged) {
         _isPanning = YES;
@@ -2445,6 +2473,18 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (NSDictionary *)getTelemetry {
+    if ([NSThread isMainThread]) {
+        return [self _syncGetTelemetry];
+    }
+    __block NSDictionary *dict = nil;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        dict = [[self _syncGetTelemetry] retain];
+    });
+    NSDictionary *result = [dict autorelease];
+    return result ? result : @{};
+}
+
+- (NSDictionary *)_syncGetTelemetry {
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
     float batt = [UIDevice currentDevice].batteryLevel * 100.0f;
     UIDeviceBatteryState state = [UIDevice currentDevice].batteryState;
@@ -2775,6 +2815,12 @@ static void *SocketServerThread(void *arg) {
                         CGFloat x = (xObj && [xObj respondsToSelector:@selector(floatValue)]) ? [xObj floatValue] : 0.0f;
                         CGFloat y = (yObj && [yObj respondsToSelector:@selector(floatValue)]) ? [yObj floatValue] : 0.0f;
                         NSTimeInterval dur = (durObj && [durObj respondsToSelector:@selector(doubleValue)]) ? [durObj doubleValue] : 0.22;
+                        if (isnan(x) || isinf(x)) x = 0.0f;
+                        if (isnan(y) || isinf(y)) y = 0.0f;
+                        x = ClampF(x, -1.0f, 1.0f);
+                        y = ClampF(y, -1.0f, 1.0f);
+                        if (isnan(dur) || isinf(dur) || dur < 0.0) dur = 0.22;
+                        dur = fmin(dur, 60.0);
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) [g_viewController lookAtX:x y:y duration:dur];
                         });
@@ -2786,6 +2832,8 @@ static void *SocketServerThread(void *arg) {
                         NSArray *rightArr = [cmdDict objectForKey:@"right"];
                         id durObj = [cmdDict objectForKey:@"duration"];
                         NSTimeInterval dur = (durObj && [durObj respondsToSelector:@selector(doubleValue)]) ? [durObj doubleValue] : 0.28;
+                        if (isnan(dur) || isinf(dur) || dur < 0.0) dur = 0.28;
+                        dur = fmin(dur, 60.0);
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) [g_viewController setProceduralParamsLeft:leftArr right:rightArr duration:dur];
                         });
@@ -2793,6 +2841,8 @@ static void *SocketServerThread(void *arg) {
                     } else if ([command isEqualToString:@"scanlines"]) {
                         id opObj = [cmdDict objectForKey:@"opacity"];
                         CGFloat op = (opObj && [opObj respondsToSelector:@selector(floatValue)]) ? [opObj floatValue] : 0.12f;
+                        if (isnan(op) || isinf(op)) op = 0.12f;
+                        op = ClampF(op, 0.0f, 0.40f);
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) [g_viewController setScanlineOpacity:op];
                         });

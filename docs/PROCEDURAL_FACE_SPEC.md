@@ -57,18 +57,18 @@ Each eye is mathematically defined by 25 parameters, grouped into five functiona
 | 16 | `LowerLidY` | `[0.0, 1.0]` | `0.0` | Vertical intrusion of lower lid (0.0 = open, 1.0 = closed) |
 | 17 | `LowerLidAngle` | `[-45.0, 45.0]` | `0.0` | Tilt angle of lower eyelid edge (degrees) |
 | 18 | `LowerLidBend` | `[-1.0, 1.0]` | `0.0` | Curvature arch of lower eyelid (>0 curved down, <0 raised) |
-| 19 | `Saturation` | `[-1.0, 1.0]` | `0.0` | Color saturation modifier (-1 = monochrome, +1 = vivid) |
-| 20 | `Lightness` | `[-1.0, 1.0]` | `0.0` | Color brightness modifier |
-| 21 | `GlowSize` | `[0.0, 2.0]` | `1.0` | Cornea light hotspot radius multiplier |
+| 19 | `Saturation` | `[-1.0, 1.0]` | `0.0` | Reserved color saturation modifier |
+| 20 | `Lightness` | `[-1.0, 1.0]` | `0.0` | Reserved color brightness modifier |
+| 21 | `GlowSize` | `[0.1, 3.0]` | `1.0` | Pupil and radiant core hotspot radius multiplier |
 | 22 | `HotSpotCenterX` | `[-1.0, 1.0]` | `0.0` | Normalized horizontal gaze direction within iris |
 | 23 | `HotSpotCenterY` | `[-1.0, 1.0]` | `0.0` | Normalized vertical gaze direction within iris |
 | 24 | `GlowLightness` | `[0.0, 1.0]` | `0.85` | Specular glare intensity |
 
 ### Whole Face Global Parameters
-* `faceAngle`: Rotation of the entire face stage in degrees (`[-30.0, 30.0]`).
-* `faceCenterX`, `faceCenterY`: Optical center translation offsets (`[-40.0, 40.0]`).
-* `faceScaleX`, `faceScaleY`: Whole-face squish/stretch for breathing and impact recoil.
-* `scanlineOpacity`: CRT scanline grid contrast overlay (`[0.0, 0.40]`).
+* `scanlineOpacity`: CRT scanline grid contrast overlay (`[0.0, 0.40]`). Exogenous socket control available via `"scanlines"` command.
+* `faceAngle`: Rotation of the entire face stage in degrees (`[-30.0, 30.0]`). Internal/planned motion.
+* `faceCenterX`, `faceCenterY`: Optical center translation offsets (`[-40.0, 40.0]`). Internal/planned motion.
+* `faceScaleX`, `faceScaleY`: Whole-face squish/stretch for breathing and impact recoil. Internal/planned motion.
 
 ***
 
@@ -90,11 +90,11 @@ The base eye contour is generated via an 8-point cubic Bézier path (`UIBezierPa
 Instead of simple rectangular clipping, eyelids are rendered as curved vector masks:
 
 * **Upper Eyelid Fold**:
-  * Origin point $A = (-W/2, y_{lid\_top} - \tan(\theta_{lid}) \cdot W/2)$
-  * Destination point $B = (W/2, y_{lid\_top} + \tan(\theta_{lid}) \cdot W/2)$
-  * Midpoint control curve:
-    $$C = \left(0, y_{lid\_top} - bend_{lid\_top} \cdot \frac{H}{3}\right)$$
-  * The path closes upwards over the eye bounds to create the occluding mask.
+  * Origin point $A = (-W, y_{lid\_top})$
+  * Destination point $B = (2W, y_{lid\_top})$
+  * Parabolic deflection height: $bendH = H \cdot (1.0 - y_{lid\_top}) \cdot bend_{lid\_top}$
+  * Midpoint control point: $C = (W/2, y_{lid\_top} + bendH)$
+  * Path closes upwards over the eye bounds to create the occluding mask, rotated by $UpperLidAngle$.
 
 * **Lower Eyelid Fold**:
   * Mirrors the upper eyelid with inverse vertical displacement, enabling smiling crescent eyes or skeptical squinting.
@@ -107,7 +107,7 @@ The engine defines 21 core emotional presets synthesized directly from official 
 
 1. **`neutral`**: Balanced rounded squircle (`radii = 0.55`), relaxed eyelids (`lidY = 0.0`), radiant electric cyber-cyan glow (`#00E5FF`).
 2. **`blink_high`**: Thin horizontal cyan slit high in socket (`UpperLidY = 0.22`, `LowerLidY = 0.72`).
-3. **`happy`**: Arched dome (`⌒ ⌒`): lower eyelid cuts upward with concave bend (`LowerLidY = 0.52`, `LowerLidBend = 0.50`), upper corners rounded (`radii = 0.85`).
+3. **`happy`**: Arched dome (`⌒ ⌒`): lower eyelid cuts upward with concave bend (`LowerLidY = 0.50`, `LowerLidBend = 0.50`), upper corners rounded (`radii = 0.85`).
 4. **`glee`**: Deep squeezed joy crescent (`LowerLidY = 0.65`, `UpperLidY = 0.12`, `radii = 0.90`).
 5. **`blink_low`**: Thin horizontal cyan slit low in socket (`UpperLidY = 0.72`, `LowerLidY = 0.22`).
 6. **`sad_down`**: Drooping eyelids (`/ \`) with gaze shifted downward (`UpperLidY = 0.38`, `UpperLidAngle = -15.0`, `centerY = 14.0`).
@@ -155,15 +155,15 @@ Additional expressive state aliases:
 ## 6. Emil Kowalski Motion Principles & Timing
 
 1. **Ambient State Changes**:
-   * Transitions between emotional presets use spring interpolation over **260ms to 320ms**.
-   * Timing curve: Custom ease-out on enter (starts fast, feels alive), fast ease-in on exit.
+   * Transitions between emotional presets use smooth cubic ease-out interpolation over **260ms to 320ms** (default 280ms).
+   * Timing curve: Smooth cubic ease-out on enter (starts fast, feels responsive and alive).
 2. **Tactile Interaction**:
    * On screen touch: Immediate 80ms tactile squash (`scale(0.93)`) with simultaneous ERM vibration pulse and Tink click.
    * Zero animation delay for socket commands and telemetry polling.
 3. **Organic Blinks**:
-   * Fast close: 70ms ease-out via eyelid path closure.
-   * Organic rebound open: 110ms ease-in with slight 2% overshoot.
+   * Fast close: 60ms cubic ease-out squash into razor-thin 4% slit.
+   * Organic rebound open: 110ms cubic ease-in reopening to target expression.
 4. **Cause-Based Gaze**:
-   * Saccades always move the gaze hotspot first (100ms), followed by subtle corneal follow-through (secondary action).
+   * Saccades displace gaze hotspot by -0.32 to +0.32 over 100ms, hold fixation for 1.8 seconds, then return smoothly over 220ms.
 5. **Reduced Motion**:
    * When enabled via settings, ambient eye saccades and breathing cycles are suppressed, while preserving static parametric expression shapes.
