@@ -1455,6 +1455,17 @@ static void *SocketServerThread(void *arg) {
         int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) continue;
 
+        // Network isolation filter: restrict ingress to loopback and private RFC1918 subnets
+        uint32_t ip = ntohl(client_addr.sin_addr.s_addr);
+        BOOL isLoopback = ((ip >> 24) == 127);
+        BOOL isPrivate10 = ((ip >> 24) == 10);
+        BOOL isPrivate172 = ((ip >> 20) == 0xAC1);
+        BOOL isPrivate192 = ((ip >> 16) == 0xC0A8);
+        if (!isLoopback && !isPrivate10 && !isPrivate172 && !isPrivate192) {
+            close(client_fd);
+            continue;
+        }
+
         int nosigpipe = 1;
         setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
         struct timeval tv;
@@ -1476,6 +1487,22 @@ static void *SocketServerThread(void *arg) {
                 NSMutableDictionary *response = [NSMutableDictionary dictionary];
 
                 if (cmdDict && [cmdDict isKindOfClass:[NSDictionary class]]) {
+                    // Command authorization validation
+                    NSString *configuredToken = [[NSUserDefaults standardUserDefaults] stringForKey:@"PhysicalAgentAuthToken"];
+                    if (!configuredToken || [configuredToken length] == 0) {
+                        configuredToken = [[[NSProcessInfo processInfo] environment] objectForKey:@"PHYSICAL_AGENT_AUTH_TOKEN"];
+                    }
+                    if (configuredToken && [configuredToken length] > 0) {
+                        NSString *token = [cmdDict objectForKey:@"token"];
+                        if (!token || ![token isEqualToString:configuredToken]) {
+                            NSDictionary *errResp = @{@"status": @"error", @"error": @"unauthorized", @"message": @"Command authentication required"};
+                            NSData *errData = [NSJSONSerialization dataWithJSONObject:errResp options:0 error:nil];
+                            SafeSendAndClose(ctx, errData);
+                            [ctx release];
+                            return;
+                        }
+                    }
+
                     NSString *command = [cmdDict objectForKey:@"command"];
                     BOOL handledAsynchronously = NO;
 

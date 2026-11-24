@@ -35,7 +35,7 @@ SSH_PORT = 2222
 WIFI_SSH_PORT = 22
 
 class DeskCompanion:
-    def __init__(self, host=None, port=None, ssh_port=None, ssh_key=None, strict_host_key_checking=None, known_hosts=None):
+    def __init__(self, host=None, port=None, ssh_port=None, ssh_key=None, strict_host_key_checking=None, known_hosts=None, auth_token=None):
         self.host = host
         self.port = port
         self.ssh_port = ssh_port
@@ -45,6 +45,7 @@ class DeskCompanion:
         if not os.path.exists(default_known_hosts):
             default_known_hosts = os.path.expanduser("~/.ssh/known_hosts")
         self.known_hosts = known_hosts or os.environ.get("COMPANION_KNOWN_HOSTS", default_known_hosts)
+        self.auth_token = auth_token or os.environ.get("PHYSICAL_AGENT_AUTH_TOKEN")
         self._active_host = None
         self._active_port = None
         self._active_ssh_port = None
@@ -167,6 +168,9 @@ class DeskCompanion:
         # Phase 2: Transmission and reception (newline-delimited frames, never repeated on alternate transport)
         with s:
             try:
+                if self.auth_token:
+                    cmd_dict = dict(cmd_dict)
+                    cmd_dict["token"] = self.auth_token
                 payload = json.dumps(cmd_dict).encode("utf-8") + b"\n"
                 s.sendall(payload)
                 buffer = b""
