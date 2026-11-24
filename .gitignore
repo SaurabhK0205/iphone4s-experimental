@@ -23,9 +23,20 @@ test_native/*_raw
 *.jpg
 *.jpeg
 *.png
+*.wav
+*.caf
+*.m4a
 
 # Logs
 *.log
 
+# Local architecture reference & private engineering notes
+ARCHITECTURE_REFERENCE.md
+*.local.md
+*.private.md
+
 # macOS
 .DS_Store
+
+# Research repositories
+research_repos/

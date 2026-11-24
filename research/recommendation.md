@@ -95,7 +95,7 @@ Notice a common thread among all three hardcore projects: **They require root ac
 Because your iPhone 4S is running stock iOS 9.3.6 (and the 2019 Phoenix jailbreak expired):
 * **Option A: Re-Jailbreak iOS 9.3.6 via Sideloaded Sideloadly / Phoenix**
   * Re-signs the Phoenix IPA with a free Apple ID so it runs without crashing.
-* **Option B: The Purist Path — Downgrade to iOS 6.1.3 Untethered via `Legacy-iOS-Kit`**
+* **Option B: The Purist Path: Downgrade to iOS 6.1.3 Untethered via `Legacy-iOS-Kit`**
   * Apple officially still signs OTA blobs for iOS 6.1.3 for iPhone 4S!
   * `Legacy-iOS-Kit` automates the downgrade completely from your Mac.
   * iOS 6.1.3 features the legendary **untethered p0sixspwn jailbreak** (persists forever across reboots, never expires, boots in 15 seconds, and has the original classic Siri UI).

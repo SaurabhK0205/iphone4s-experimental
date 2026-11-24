@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DeskCompanion - Python Host Bridge for PhysicalAgent (iPhone 4S on iOS 6.1.3)
+DeskCompanion: Python Host Bridge for PhysicalAgent (iPhone 4S on iOS 6.1.3)
 Communicates bi-directionally over 30-pin USB via usbmuxd / iproxy.
 """
 
@@ -10,6 +10,22 @@ import subprocess
 import time
 import os
 import sys
+import re
+import uuid
+import shlex
+
+# Strict repository standard: verify virtual environment isolation
+def is_in_venv():
+    """Verify that Python execution is isolated within the project virtual environment."""
+    repo_venv = os.path.realpath(os.path.join(os.path.dirname(__file__), ".venv"))
+    curr_prefix = os.path.realpath(sys.prefix)
+    curr_exec = os.path.realpath(sys.executable)
+    return curr_prefix.startswith(repo_venv) or curr_exec.startswith(repo_venv)
+
+SAFE_PATH_REGEX = re.compile(r"^/tmp/companion_[a-zA-Z0-9_-]+\.(jpg|wav|png)$")
+
+def _is_safe_remote_path(path):
+    return bool(path and SAFE_PATH_REGEX.match(path))
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5555
@@ -19,10 +35,17 @@ SSH_PORT = 2222
 WIFI_SSH_PORT = 22
 
 class DeskCompanion:
-    def __init__(self, host=None, port=None, ssh_port=None):
+    def __init__(self, host=None, port=None, ssh_port=None, ssh_key=None, strict_host_key_checking=None, known_hosts=None, auth_token=None):
         self.host = host
         self.port = port
         self.ssh_port = ssh_port
+        self.ssh_key = ssh_key or os.environ.get("COMPANION_SSH_KEY", os.path.expanduser("~/.ssh/id_rsa_iphone"))
+        self.strict_host_key_checking = strict_host_key_checking or os.environ.get("COMPANION_STRICT_HOST_KEY_CHECKING", "yes")
+        default_known_hosts = os.path.expanduser("~/.ssh/iphone_known_hosts")
+        if not os.path.exists(default_known_hosts):
+            default_known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+        self.known_hosts = known_hosts or os.environ.get("COMPANION_KNOWN_HOSTS", default_known_hosts)
+        self.auth_token = auth_token or os.environ.get("PHYSICAL_AGENT_AUTH_TOKEN")
         self._active_host = None
         self._active_port = None
         self._active_ssh_port = None
@@ -55,27 +78,129 @@ class DeskCompanion:
         self._active_host, self._active_port, self._active_ssh_port = WIFI_HOST, WIFI_PORT, WIFI_SSH_PORT
         return self._active_host, self._active_port, self._active_ssh_port
 
+    def _download_file(self, remote_path, local_path, timeout=15.0, retries=3):
+        """Downloads remote file from iPhone 4S via SCP with retries and bounds."""
+        if not _is_safe_remote_path(remote_path):
+            return {"error": "untrusted_remote_path", "details": f"Remote path '{remote_path}' rejected by safety validation filter"}
+
+        ssh_host = self._active_host if self._active_host else "127.0.0.1"
+        ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
+        key_path = self.ssh_key
+
+        if self.known_hosts:
+            if not os.path.exists(self.known_hosts):
+                return {"error": "known_hosts_missing", "details": f"Configured known_hosts file '{self.known_hosts}' does not exist"}
+
+        scp_cmd = [
+            "scp",
+            "-i", key_path,
+            "-P", str(ssh_port),
+            "-o", "ConnectTimeout=5",
+            "-o", "ServerAliveInterval=3",
+            "-o", "ServerAliveCountMax=2",
+            "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}",
+        ]
+        if self.known_hosts:
+            scp_cmd.extend(["-o", f"UserKnownHostsFile={self.known_hosts}"])
+        scp_cmd.extend([f"root@{ssh_host}:{remote_path}", local_path])
+
+        last_err = ""
+        for attempt in range(1, retries + 1):
+            try:
+                ret = subprocess.run(scp_cmd, capture_output=True, timeout=timeout)
+                if ret.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    # Clean up remote capture file after successful retrieval
+                    try:
+                        del_cmd = [
+                            "ssh",
+                            "-i", key_path,
+                            "-p", str(ssh_port),
+                            "-o", "ConnectTimeout=5",
+                            "-o", f"StrictHostKeyChecking={self.strict_host_key_checking}",
+                        ]
+                        if self.known_hosts:
+                            del_cmd.extend(["-o", f"UserKnownHostsFile={self.known_hosts}"])
+                        del_cmd.extend([f"root@{ssh_host}", f"rm -f -- {shlex.quote(remote_path)}"])
+                        subprocess.run(del_cmd, capture_output=True, timeout=5.0)
+                    except Exception:
+                        pass
+                    return {"status": "ok", "local_file": local_path}
+                last_err = ret.stderr.decode("utf-8", errors="replace")
+            except subprocess.TimeoutExpired:
+                last_err = f"SCP transfer timed out after {timeout} seconds"
+            except Exception as e:
+                last_err = str(e)
+            if attempt < retries:
+                time.sleep(0.4 * attempt)
+
+        return {"error": "scp_failed", "details": last_err}
+
     def _send_cmd(self, cmd_dict, timeout=8.0):
         target_host, target_port, target_ssh = self._get_connection_target()
         self._active_host = target_host
         self._active_port = target_port
         self._active_ssh_port = target_ssh
 
+        # Phase 1: Connect to target (retry on alternate transport only if connect fails before sending)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(timeout)
             s.connect((target_host, target_port))
-            payload = json.dumps(cmd_dict).encode("utf-8")
-            s.sendall(payload)
-            data = s.recv(8192)
+        except (ConnectionRefusedError, socket.timeout, OSError) as conn_err:
             s.close()
-            if not data:
-                return {"error": "empty_response"}
-            return json.loads(data.decode("utf-8"))
-        except ConnectionRefusedError:
-            return {"error": "connection_refused", "message": f"Companion server not reachable at {target_host}:{target_port}."}
-        except Exception as e:
-            return {"error": str(e)}
+            if self.host is None:
+                self._active_host = None
+                self._active_port = None
+                self._active_ssh_port = None
+                alt_host = WIFI_HOST if target_host == DEFAULT_HOST else DEFAULT_HOST
+                alt_port = WIFI_PORT if target_port == DEFAULT_PORT else DEFAULT_PORT
+                if target_ssh == SSH_PORT:
+                    alt_ssh = WIFI_SSH_PORT
+                elif target_ssh == WIFI_SSH_PORT:
+                    alt_ssh = SSH_PORT
+                else:
+                    alt_ssh = self.ssh_port or (2222 if alt_host == "127.0.0.1" else 22)
+                s_alt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s_alt.settimeout(timeout)
+                try:
+                    s_alt.connect((alt_host, alt_port))
+                    self._active_host, self._active_port, self._active_ssh_port = alt_host, alt_port, alt_ssh
+                    s = s_alt
+                except Exception:
+                    s_alt.close()
+                    return {"error": "connection_refused", "message": f"Companion server unreachable on {target_host}:{target_port} and {alt_host}:{alt_port}."}
+            else:
+                return {"error": str(conn_err)}
+
+        # Phase 2: Transmission and reception (newline-delimited frames, bounded monotonic deadline and frame size)
+        with s:
+            try:
+                if self.auth_token:
+                    cmd_dict = dict(cmd_dict)
+                    cmd_dict["token"] = self.auth_token
+                payload = json.dumps(cmd_dict).encode("utf-8") + b"\n"
+                s.sendall(payload)
+                buffer = b""
+                deadline = time.monotonic() + timeout
+                max_bytes = 65536
+                while b"\n" not in buffer:
+                    remaining_time = deadline - time.monotonic()
+                    if remaining_time <= 0 or len(buffer) >= max_bytes:
+                        self._active_host, self._active_port, self._active_ssh_port = None, None, None
+                        return {"error": "read_timeout_or_limit_exceeded"}
+                    s.settimeout(max(0.1, remaining_time))
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                if not buffer:
+                    self._active_host, self._active_port, self._active_ssh_port = None, None, None
+                    return {"error": "empty_response"}
+                line = buffer.split(b"\n", 1)[0]
+                return json.loads(line.decode("utf-8"))
+            except Exception as e:
+                self._active_host, self._active_port, self._active_ssh_port = None, None, None
+                return {"error": str(e)}
 
     def ping(self):
         return self._send_cmd({"command": "ping"})
@@ -83,9 +208,37 @@ class DeskCompanion:
     def telemetry(self):
         return self._send_cmd({"command": "telemetry"})
 
-    def set_expression(self, expression_name):
-        """happy, surprised, thinking, alert, sleep, glance_left, glance_right, neutral"""
-        return self._send_cmd({"command": "expression", "name": expression_name})
+    def set_expression(self, expression_name, duration=0.28):
+        """Sets procedural robot eye expression.
+        Supported official Cozmo presets:
+          neutral, blink_high, happy, glee, blink_low, sad_down, sad_up,
+          worried, focused, annoyed, surprised, skeptic, frustrated,
+          unimpressed, sleepy, suspicious, squint, angry, furious,
+          scared, awe.
+        Also supports: curious, thinking, alert, asleep, confused,
+          glance_left, glance_right.
+        """
+        return self._send_cmd({"command": "expression", "name": expression_name, "duration": float(duration)})
+
+    def look_at(self, x=0.0, y=0.0, duration=0.22):
+        """Sets companion gaze direction using normalized coordinates [-1.0, 1.0]."""
+        x_clamped = max(-1.0, min(1.0, float(x)))
+        y_clamped = max(-1.0, min(1.0, float(y)))
+        return self._send_cmd({"command": "look_at", "x": x_clamped, "y": y_clamped, "duration": float(duration)})
+
+    def set_eye_params(self, left_params=None, right_params=None, duration=0.28):
+        """Sets the 25 procedural parameters for left and/or right eye."""
+        cmd = {"command": "procedural_eye_params", "duration": float(duration)}
+        if left_params is not None:
+            cmd["left"] = list(left_params)
+        if right_params is not None:
+            cmd["right"] = list(right_params)
+        return self._send_cmd(cmd)
+
+    def set_scanlines(self, opacity=0.12):
+        """Sets CRT scanline overlay opacity [0.0, 0.40]."""
+        opacity_clamped = max(0.0, min(0.40, float(opacity)))
+        return self._send_cmd({"command": "scanlines", "opacity": opacity_clamped})
 
     def set_status(self, title, subtitle=None):
         cmd = {"command": "status", "title": title}
@@ -116,33 +269,81 @@ class DeskCompanion:
         level = max(0.0, min(1.0, float(level)))
         return self._send_cmd({"command": "brightness", "level": level})
 
+    def set_reduced_motion(self, enable=True):
+        return self._send_cmd({"command": "reduced_motion", "enable": bool(enable)})
+
     def snapshot(self, camera="back", save_to=None):
         """Captures a photo via iPhone 4S camera ('back' or 'front') and retrieves it."""
-        res = self._send_cmd({"command": "snapshot", "camera": camera}, timeout=12.0)
+        res = self._send_cmd({"command": "snapshot", "camera": camera}, timeout=15.0)
         if res.get("status") == "ok" and "path" in res:
             remote_path = res["path"]
             if save_to is None:
-                save_to = f"snapshot_{camera}_{int(time.time())}.jpg"
+                save_to = f"snapshot_{camera}_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             save_to = os.path.abspath(save_to)
-            
-            # Retrieve file via scp (over USB or Wi-Fi)
-            ssh_host = self._active_host if self._active_host else "127.0.0.1"
-            ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
-            scp_cmd = [
-                "scp",
-                "-i", os.path.expanduser("~/.ssh/id_rsa_iphone"),
-                "-P", str(ssh_port),
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                f"root@{ssh_host}:{remote_path}",
-                save_to
-            ]
-            ret = subprocess.run(scp_cmd, capture_output=True)
-            if ret.returncode == 0 and os.path.exists(save_to):
+            dl_res = self._download_file(remote_path, save_to, timeout=12.0)
+            if dl_res.get("status") == "ok":
                 res["local_file"] = save_to
                 return res
-            else:
-                return {"error": "scp_failed", "details": ret.stderr.decode()}
+            return dl_res
+        return res
+
+    def inspect_environment(self, save_dir="."):
+        """Captures both front (desk/user) and rear (workspace macro) angles with hardware settle delay."""
+        os.makedirs(save_dir, exist_ok=True)
+        ts = int(time.time())
+        req_id = uuid.uuid4().hex[:6]
+        front_path = os.path.join(save_dir, f"inspect_front_{ts}_{req_id}.jpg")
+        back_path = os.path.join(save_dir, f"inspect_back_{ts}_{req_id}.jpg")
+
+        front_res = self.snapshot("front", save_to=front_path)
+        # Settle delay between camera switches to allow iOS 6 mediaserverd camera ISP hardware release
+        time.sleep(1.0)
+        back_res = self.snapshot("back", save_to=back_path)
+
+        overall_status = "ok" if (front_res.get("status") == "ok" and back_res.get("status") == "ok") else "partial_failure"
+        return {
+            "status": overall_status,
+            "front": front_res,
+            "back": back_res,
+            "timestamp": ts
+        }
+
+    def record_audio(self, duration=3.0, save_to=None):
+        """Records physical microphone audio on iPhone 4S and retrieves linear PCM WAV."""
+        try:
+            dur = float(duration)
+            if not (dur > 0.0) or dur != dur:
+                dur = 3.0
+            dur = max(0.1, min(dur, 30.0))
+        except (ValueError, TypeError):
+            dur = 3.0
+
+        res = self._send_cmd({"command": "record_audio", "duration": dur}, timeout=dur + 8.0)
+        if res.get("status") == "ok" and "path" in res:
+            remote_path = res["path"]
+            if save_to is None:
+                save_to = f"companion_audio_{int(time.time())}_{uuid.uuid4().hex[:6]}.wav"
+            save_to = os.path.abspath(save_to)
+            dl_res = self._download_file(remote_path, save_to, timeout=dur + 10.0)
+            if dl_res.get("status") == "ok":
+                res["local_file"] = save_to
+                return res
+            return dl_res
+        return res
+
+    def screenshot(self, save_to=None):
+        """Captures pixel-exact 640x960 Retina screen of PhysicalAgent and retrieves PNG."""
+        res = self._send_cmd({"command": "screenshot"}, timeout=10.0)
+        if res.get("status") == "ok" and "path" in res:
+            remote_path = res["path"]
+            if save_to is None:
+                save_to = f"companion_screen_{int(time.time())}_{uuid.uuid4().hex[:6]}.png"
+            save_to = os.path.abspath(save_to)
+            dl_res = self._download_file(remote_path, save_to, timeout=10.0)
+            if dl_res.get("status") == "ok":
+                res["local_file"] = save_to
+                return res
+            return dl_res
         return res
 
     def say(self, text, voice="Samantha"):
@@ -214,13 +415,19 @@ def interactive_cli():
     print(" Target: Physical iPhone 4S (iOS 6.1.3) via 30-Pin USB")
     print("=" * 60)
     print("Commands:")
-    print("  express <name>      Set expression (happy, surprised, thinking, alert, sleep, neutral, glance_left, glance_right)")
+    print("  express <name>      Set procedural expression (neutral, happy, glee, curious, skeptic, surprised, thinking, focused, annoyed, alert, sleepy, asleep, confused, frustrated, sad)")
+    print("  look <x> <y>        Direct companion gaze using normalized floats (-1.0 to 1.0)")
+    print("  scanlines <opacity> Set retro CRT scanline contrast (0.0 to 0.40)")
     print("  status <text>       Set HUD status text")
     print("  say <text>          Speak aloud and animate companion")
     print("  vibrate             Trigger haptic vibration motor")
     print("  sound <name>        Play acoustic sound (confirm, begin, cancel, shutter, tweet, mail, tink, beep)")
     print("  torch <on|off>      Toggle rear camera LED flashlight")
     print("  photo [front|back]  Capture camera photo and save locally")
+    print("  inspect             Capture both front (desk) and rear (macro) angles")
+    print("  listen [duration]   Record audio from iPhone 4S mic and save WAV")
+    print("  screenshot          Capture pixel-exact Retina display PNG")
+    print("  motion <on|off>     Toggle reduced motion (disable saccades and breathing)")
     print("  blink               Trigger eye blink")
     print("  wave <on|off>       Toggle audio spectrum waveform visualizer")
     print("  zen                 Toggle Zen mode (dim HUD cards for night ambiance)")
@@ -244,6 +451,16 @@ def interactive_cli():
             elif cmd == "express":
                 res = companion.set_expression(arg if arg else "neutral")
                 print("Result:", res)
+            elif cmd == "look":
+                coords = [float(c) for c in arg.split()] if arg else [0.0, 0.0]
+                lx = coords[0] if len(coords) > 0 else 0.0
+                ly = coords[1] if len(coords) > 1 else 0.0
+                res = companion.look_at(lx, ly)
+                print("Result:", res)
+            elif cmd == "scanlines":
+                op = float(arg) if arg else 0.12
+                res = companion.set_scanlines(op)
+                print("Result:", res)
             elif cmd == "status":
                 res = companion.set_status(arg)
                 print("Result:", res)
@@ -262,6 +479,26 @@ def interactive_cli():
                 cam = arg if arg in ("front", "back") else "back"
                 res = companion.snapshot(cam)
                 print("Result:", res)
+            elif cmd == "inspect":
+                res = companion.inspect_environment()
+                print("Result:", res)
+            elif cmd == "listen":
+                dur = float(arg) if arg else 3.0
+                res = companion.record_audio(dur)
+                print("Result:", res)
+            elif cmd == "screenshot":
+                res = companion.screenshot()
+                print("Result:", res)
+            elif cmd == "motion":
+                val = (arg or "").strip().lower()
+                if val in ("on", "1", "true", "yes", "enable"):
+                    res = companion.set_reduced_motion(True)
+                    print("Result:", res)
+                elif val in ("off", "0", "false", "no", "disable"):
+                    res = companion.set_reduced_motion(False)
+                    print("Result:", res)
+                else:
+                    print("Usage: motion [on|off]")
             elif cmd == "blink":
                 res = companion.blink()
                 print("Result:", res)
@@ -284,6 +521,13 @@ def interactive_cli():
             print("Error:", e)
 
 if __name__ == "__main__":
+    if not is_in_venv():
+        print(
+            "FATAL: Execution outside dedicated virtual environment (.venv) is strictly prohibited. "
+            "Run via '.venv/bin/python3 desk_companion.py' or './start_companion.sh'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if len(sys.argv) > 1 and sys.argv[1] == "demo":
         DeskCompanion().run_demo()
     else:

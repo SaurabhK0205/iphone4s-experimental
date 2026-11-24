@@ -1,10 +1,10 @@
-# PHYSICAL AGENT // DESK COMPANION — Agent Instructions & Operating Rules
+# PHYSICAL AGENT // DESK COMPANION: Agent Instructions & Operating Rules
 
 See [CLAUDE.md](./CLAUDE.md) for the complete, canonical rules and conventions governing this repository, and [DESIGN.md](./DESIGN.md) for the visual and motion design system.
 
 ---
 
-## 1. Engineering Reliability — GRAVITAS Workflow (MANDATORY)
+## 1. Engineering Reliability: GRAVITAS Workflow (MANDATORY)
 
 Follow GRAVITAS invariants for all implementation, debugging, refactoring, toolchain updates, and hardware interaction:
 
@@ -17,7 +17,7 @@ Follow GRAVITAS invariants for all implementation, debugging, refactoring, toolc
 
 ---
 
-## 2. Design Engineering & Motion — Emil Kowalski Rules (MANDATORY)
+## 2. Design Engineering & Motion: Emil Kowalski Rules (MANDATORY)
 
 Applied to both the iOS 6 Retina display UI (`PhysicalAgent.app`) and any host companion GUI/Web surfaces:
 
@@ -39,23 +39,23 @@ Applied to both the iOS 6 Retina display UI (`PhysicalAgent.app`) and any host c
 
 ---
 
-## 3. Visual Craft & UI Quality — Impeccable 7-Pass Review (MANDATORY)
+## 3. Visual Craft & UI Quality: Impeccable 7-Pass Review (MANDATORY)
 
 Whenever touching `PhysicalAgent` UI or companion frontend interfaces, run the Impeccable review passes before committing:
 
 | Pass | Focus | Applied to PhysicalAgent |
 |------|-------|--------------------------|
 | **Critique** | Contrast, spacing, hierarchy | Contrast ratio >= 7:1 against obsidian `#030406` canvas. Clear visual hierarchy between eyes, HUD, and clock. |
-| **Layout** | Grid density, focal point | 320x480pt Retina stage; focal point placed at optical center (Y: 185pt). Generous breathing room. |
+| **Layout** | Grid density, focal point | 320x480pt Retina stage; focal point placed at optical center (Y: 175pt). Generous breathing room. |
 | **Typeset** | Font hierarchy, tabular figures | Courier monospace for telemetry and clock (`font-variant-numeric: tabular-nums`). Helvetica Neue for brand labels. |
-| **Animate** | Micro-interactions & transitions | Organic eye blinks (80ms close, 100ms open), directional eye saccades, spring morphing between emotions. |
+| **Animate** | Micro-interactions & transitions | Organic eye blinks (80ms close, 110ms open), directional eye saccades, spring morphing between emotions. |
 | **Adapt** | Display ergonomics & angles | Optimized for 45° to 60° desk dock viewing angles. Legible from 2 to 3 feet away. Touch targets >= 44x44pt. |
 | **Harden** | Disconnections & edge cases | Graceful fallback when USB/Wi-Fi drops. Zero crashing on malformed socket JSON. Screen stays awake (`idleTimerDisabled = YES`). |
 | **Polish** | Final craft pass | Glow radius, shadow opacity, sub-pixel layer alignment, zero text clipping. |
 
 ---
 
-## 4. Believable Product UI & Restraint — Benji Taylor Rules (MANDATORY)
+## 4. Believable Product UI & Restraint: Benji Taylor Rules (MANDATORY)
 
 1. **Restraint over Slop**: Real words only where the story is about. Budget of 3 to 7 real strings on screen. No filler slop, no stock AI tropes (no purple sparkles, no decorative fluff).
 2. **Every Motion has a Cause**: The companion blinks because living eyes dry out; eyes glance left because an alert occurred on the left; pupils contract because bright light was detected. No random frantic animations.
@@ -63,7 +63,32 @@ Whenever touching `PhysicalAgent` UI or companion frontend interfaces, run the I
 
 ---
 
-## 5. Strict Repository & Runtime Invariants
+## 5. Branching, Pull Requests & AI Review Gates (MANDATORY & BLOCKING)
+
+Adapted from the production standards of `reeler` (`instagram-saved-reels`):
+
+1. **Protected Branches & Staging-First Promotion (MANDATORY)**:
+   - **`main` and `staging` are protected**. Direct pushes to `main` and `staging` are strictly prohibited for all agents and contributors; only the repository owner (`saurabhk0205`) retains bypass permissions.
+   - **Every unit of work must branch off `staging`**: Never branch off or push directly to `main`.
+   - **PRs always target `staging`**: Open topic pull requests against `staging` for all features, fixes, UI updates, and toolchain changes.
+   - **Promotion to `main`**: Once changes are merged and thoroughly verified on `staging` (including physical hardware testing on iPhone 4S), open a promotion PR from `staging` into `main`. The owner merges `staging` into `main`.
+2. **Multi-Model AI Code Review Gates (BLOCKING)**:
+   Every opened or updated PR is automatically audited by four specialized AI reviewers:
+   - **CodeRabbit AI**: Real-time architectural and diff analysis via `.coderabbit.yaml`.
+   - **Qodo PR-Agent**: Automated code review powered by Gemini via `.github/workflows/pr-agent.yml` and `.pr_agent.toml`.
+   - **Gemini Code Auditor**: Production quality, anti-AI-slop, and hardware constraint review via `.github/workflows/ai-code-review.yml`.
+   - **NVIDIA Nemotron 3 Ultra 550B Auditor**: Deep architectural, concurrency, and security reasoning via `.github/workflows/ai-code-review.yml`.
+3. **Addressing Review Findings**:
+   - **NEVER merge while an automated review or re-check is running**.
+   - Review every finding: for valid issues, fix and push to the topic branch; for false positives, provide documented technical reasoning.
+   - All reviewer checks must be completed and passing before merge.
+4. **Zero AI Slop Rule**:
+   - Strictly ban em-dash characters in code, documentation, strings, or commit messages. Use colons (:), standard hyphens (-), or parentheses instead.
+   - Ban sycophantic praise, robot apologies, conversational filler, and generic boilerplate.
+
+---
+
+## 6. Strict Repository & Runtime Invariants
 
 1. **Python Virtual Environment**:
    - ALWAYS run Python scripts and tools using the dedicated project virtual environment at `.venv/bin/python3`.

@@ -1,0 +1,93 @@
+name: AI Code Reviewers
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, review_requested, synchronize]
+  pull_request_target:
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-code-review-${{ github.event_name }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fork_gatekeeper:
+    name: Fork PR Authorization Gatekeeper
+    if: github.event.pull_request.head.repo.full_name != github.repository && !contains(github.event.pull_request.labels.*.name, 'safe-to-test')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate Untrusted Fork PR
+        run: |
+          echo "Error: Pull requests from external forks require maintainer authorization before running AI reviews with repository secrets."
+          echo "A repository maintainer must review the diff and apply the 'safe-to-test' label to trigger automated AI code reviews."
+          exit 1
+
+  gemini_review:
+    name: Gemini Code Auditor
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && contains(github.event.pull_request.labels.*.name, 'safe-to-test'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || '' }}
+          fetch-depth: 100
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Gemini PR Review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/gemini-pr-review.mjs
+
+  nemotron_review:
+    name: NVIDIA Nemotron 3 Ultra 550B Auditor
+    needs: gemini_review
+    if: >-
+      always() &&
+      !cancelled() &&
+      ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && contains(github.event.pull_request.labels.*.name, 'safe-to-test')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || '' }}
+          fetch-depth: 100
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Nemotron PR Review
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/nemotron-pr-review.mjs
