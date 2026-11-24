@@ -209,10 +209,14 @@ class DeskCompanion:
         return self._send_cmd({"command": "telemetry"})
 
     def set_expression(self, expression_name, duration=0.28):
-        """Sets procedural eye expression.
-        Supported presets: neutral, happy, glee, curious, skeptic, surprised,
-        thinking, focused, annoyed, alert, sleepy, asleep, confused, frustrated, sad,
-        glance_left, glance_right.
+        """Sets procedural robot eye expression.
+        Supported official Cozmo presets:
+          neutral, blink_high, happy, glee, blink_low, sad_down, sad_up,
+          worried, focused, annoyed, surprised, skeptic, frustrated,
+          unimpressed, sleepy, suspicious, squint, angry, furious,
+          scared, awe.
+        Also supports: curious, thinking, alert, asleep, confused,
+          glance_left, glance_right.
         """
         return self._send_cmd({"command": "expression", "name": expression_name, "duration": float(duration)})
 

@@ -101,22 +101,54 @@ Instead of simple rectangular clipping, eyelids are rendered as curved vector ma
 
 ---
 
-## 4. Emotional State Preset Library
+## 4. Emotional State Preset Library (Official Cozmo & Vector 21 Rig)
 
-The engine defines 12 core emotional presets synthesized from Cozmo, Vector, and Chambers' research:
+The engine defines 21 core emotional presets synthesized directly from official Anki Cozmo and Vector robotics rigs:
 
-1. **`neutral`**: Balanced rounded squircle (`radii = 0.35`), relaxed eyelids (`lidY = 0.0`), subtle atmospheric cyber-cyan glow (`#38BFFC`).
-2. **`happy`**: Raised lower eyelids (`LowerLidY = 0.55`, `LowerLidBend = 0.60`), slightly tilted corners, vibrant emerald tint (`#33EBA8`).
-3. **`glee`**: Deep crescent eyes (`LowerLidY = 0.80`, `UpperLidY = 0.20`), compressed scale (`scaleY = 0.45`), emerald accent.
-4. **`curious`**: One eye scaled 1.15x and tilted outward 4 degrees, gaze hotspot shifted diagonally toward point of interest.
-5. **`skeptic`**: Asymmetrical expression. Left eye neutral; right eye narrowed (`UpperLidY = 0.45`, `UpperLidAngle = -12.0`, `UpperLidBend = -0.30`).
-6. **`surprised`**: Expanded scale (`scaleX = 1.15`, `scaleY = 1.30`), dilated pupil hotspot (`GlowSize = 1.40`), warm amber glow (`#FBBF2E`).
-7. **`thinking`**: Both eyes shifted upward and inward (`HotSpotCenterY = -0.70`), slight asymmetrical squint, amethyst accent (`#B066FF`).
-8. **`focused`**: Horizontal narrowing (`scaleY = 0.65`), lowered upper lids (`UpperLidY = 0.35`, `UpperLidAngle = 8.0`), sharp cyan glow.
-9. **`annoyed`**: Upper eyelids flattened downward (`UpperLidY = 0.50`, `UpperLidBend = -0.40`), crimson-amber accent (`#FA8C16`).
-10. **`alert`**: Contracted pupil hotspot (`GlowSize = 0.60`), steep angular upper lids (`UpperLidAngle = 18.0`), crimson glow (`#FA5252`).
-11. **`sleepy`**: Upper eyelids drooped to 70% closure (`UpperLidY = 0.70`), dim slate blue glow (`#385B7A`).
-12. **`asleep`**: Eyelids fully closed (`UpperLidY = 0.95`), rendering as a calm 2pt horizontal resting slit at optical baseline.
+1. **`neutral`**: Balanced rounded squircle (`radii = 0.55`), relaxed eyelids (`lidY = 0.0`), radiant electric cyber-cyan glow (`#00E5FF`).
+2. **`blink_high`**: Thin horizontal cyan slit high in socket (`UpperLidY = 0.22`, `LowerLidY = 0.72`).
+3. **`happy`**: Arched dome (`⌒ ⌒`): lower eyelid cuts upward with concave bend (`LowerLidY = 0.52`, `LowerLidBend = 0.50`), upper corners rounded (`radii = 0.85`).
+4. **`glee`**: Deep squeezed joy crescent (`LowerLidY = 0.65`, `UpperLidY = 0.12`, `radii = 0.90`).
+5. **`blink_low`**: Thin horizontal cyan slit low in socket (`UpperLidY = 0.72`, `LowerLidY = 0.22`).
+6. **`sad_down`**: Drooping eyelids (`/ \`) with gaze shifted downward (`UpperLidY = 0.38`, `UpperLidAngle = -15.0`, `centerY = 14.0`).
+7. **`sad_up`**: Drooping eyelids (`/ \`) with gaze shifted upward pleadingly (`UpperLidY = 0.38`, `UpperLidAngle = -15.0`, `centerY = -12.0`).
+8. **`worried`**: Upper lids slanted (`/ \`) with inner corners high and outer corners drooped (`UpperLidY = 0.28`, `UpperLidAngle = -14.0`, amber accent).
+9. **`focused`**: Sharp horizontal squircle bars with flat eyelids (`UpperLidY = 0.36`, `LowerLidY = 0.36`, `bend = 0.0`).
+10. **`annoyed`**: Upper eyelids drooped flat halfway down (`UpperLidY = 0.50`, crimson-amber accent).
+11. **`surprised`**: Tall rounded open squircles (`scaleX = 0.95`, `scaleY = 1.25`, `GlowSize = 1.35`, `radii = 0.85`).
+12. **`skeptic`**: Asymmetrical: left eye wide open; right eye narrowed with furrowed brow (`UpperLidY = 0.45`, `UpperLidAngle = -12.0`, `LowerLidY = 0.20`).
+13. **`frustrated`**: Half-closed flat eyelids (`UpperLidY = 0.45`, `LowerLidY = 0.20`, crimson-amber accent).
+14. **`unimpressed`**: Flat drooped deadpan upper lids (`UpperLidY = 0.55`, `scaleY = 0.85`).
+15. **`sleepy`**: Upper eyelids drooped with outward slant (`UpperLidY = 0.65`, `UpperLidAngle = -8.0`, slate-blue accent).
+16. **`suspicious`**: Narrow horizontal squint with slight inward slant (`UpperLidY = 0.48`, `UpperLidAngle = 8.0`, `LowerLidY = 0.25`).
+17. **`squint`**: Tight horizontal slits centered at optical baseline (`UpperLidY = 0.46`, `LowerLidY = 0.46`).
+18. **`angry`**: Aggressive V-brow (`\ /`): steep inward slant (`UpperLidY = 0.36`, `UpperLidAngle = 18.0`, crimson-amber accent).
+19. **`furious`**: Deep angry V-brow (`\ /`): extreme inward slant (`UpperLidY = 0.46`, `UpperLidAngle = 26.0`, `LowerLidY = 0.15`, fiery crimson accent).
+20. **`scared`**: Wide tall eyes with bottom eyelid cut flat across (`scaleY = 1.15`, `LowerLidY = 0.36`, `LowerLidBend = 0.0`).
+21. **`awe`**: Giant rounded glowing eyes with maximized luminous core (`scaleX = 1.15`, `scaleY = 1.20`, `GlowSize = 1.50`, `radii = 0.85`).
+
+Additional expressive state aliases:
+- `curious`: Tilted asymmetric inquiry with directional gaze offset.
+- `thinking`: Eyes shifted upward and inward with subtle brow tilt, amethyst accent.
+- `alert`: Contracted gaze hotspot, angular upper lids, crimson accent.
+- `asleep`: Eyelids fully closed, rendering as a calm resting slit.
+- `glance_left`, `glance_right`: Directed horizontal gaze shifts.
+
+---
+
+## 5. Visual Craft & Pure Obsidian Black Canvas
+
+1. **Bezel Blending Architecture**:
+   - The screen canvas is strictly pure pitch black (`#000000`).
+   - Zero radial gradient, zero blue vignette, zero light bleed.
+   - On the physical iPhone 4S Retina display, the pitch-black pixels blend seamlessly into the front glass bezel, transforming the entire phone into a unified robot head/visor.
+2. **Retro CRT & OLED Illumination**:
+   - Eyes bloom directly against the black canvas with a 20pt soft cyan shadow glow.
+   - Luminous White-Hot Core: A high-brightness white hotspot (`#FFFFFF` to `#C8FFFF`) radiates inside each cyan eye and smoothly tracks gaze coordinates (`HotSpotCenterX`, `HotSpotCenterY`).
+   - CRT Raster Scanlines: A subtle horizontal raster scanline overlay (1pt line every 3pt, 16% opacity) reproduces the analog phosphor monitor texture of 1980s-90s electronics.
+3. **Pure Face Mode (Zero HUD Clutter)**:
+   - Status bar pills, thought cards, and audio waveforms are hidden by default (`alpha = 0.0`).
+   - Double-tapping the physical screen smoothly toggles Zen mode (`toggleZenMode`) to inspect telemetry if needed.
 
 ---
 

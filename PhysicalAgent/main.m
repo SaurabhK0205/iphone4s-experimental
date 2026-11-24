@@ -13,12 +13,9 @@
 #include <libkern/OSAtomic.h>
 
 // ========================================================
-// 1. ATMOSPHERIC CANVAS DEPTH (Radial Gradient Background)
+// 1. ATMOSPHERIC CANVAS DEPTH (Pure Obsidian Black Canvas)
 // ========================================================
-@interface RadialGradientBackgroundView : UIView {
-    CGGradientRef _gradient;
-    CGColorSpaceRef _colorSpace;
-}
+@interface RadialGradientBackgroundView : UIView
 @end
 
 @implementation RadialGradientBackgroundView
@@ -26,37 +23,18 @@
 - (id)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        _colorSpace = CGColorSpaceCreateDeviceRGB();
-        if (_colorSpace) {
-            CGFloat components[8] = {
-                0.032f, 0.047f, 0.086f, 1.0f, // Optical center core
-                0.004f, 0.007f, 0.016f, 1.0f  // Obsidian canvas perimeter
-            };
-            CGFloat locations[2] = { 0.0f, 1.0f };
-            _gradient = CGGradientCreateWithColorComponents(_colorSpace, components, locations, 2);
-        }
+        self.backgroundColor = [UIColor blackColor];
     }
     return self;
 }
 
 - (void)drawRect:(CGRect)rect {
-    if (!_gradient) return;
+    // Pitch black canvas (#000000) merging seamlessly with iPhone 4S black bezels
     CGContextRef ctx = UIGraphicsGetCurrentContext();
-    CGPoint focalCenter = CGPointMake(self.bounds.size.width / 2.0f, 175.0f);
-    CGFloat endRadius = 320.0f;
-    CGContextDrawRadialGradient(ctx, _gradient, focalCenter, 0.0f, focalCenter, endRadius, kCGGradientDrawsAfterEndLocation);
-}
-
-- (void)dealloc {
-    if (_gradient) {
-        CGGradientRelease(_gradient);
-        _gradient = NULL;
+    if (ctx) {
+        CGContextSetRGBFillColor(ctx, 0.0f, 0.0f, 0.0f, 1.0f);
+        CGContextFillRect(ctx, rect);
     }
-    if (_colorSpace) {
-        CGColorSpaceRelease(_colorSpace);
-        _colorSpace = NULL;
-    }
-    [super dealloc];
 }
 @end
 
@@ -108,14 +86,14 @@ static inline ProceduralEyeConfig ProceduralEyeConfigDefault(void) {
     c.scaleX = 1.0f;
     c.scaleY = 1.0f;
     c.angle = 0.0f;
-    c.lowerInnerRadiusX = 0.35f;
-    c.lowerInnerRadiusY = 0.35f;
-    c.upperInnerRadiusX = 0.35f;
-    c.upperInnerRadiusY = 0.35f;
-    c.upperOuterRadiusX = 0.35f;
-    c.upperOuterRadiusY = 0.35f;
-    c.lowerOuterRadiusX = 0.35f;
-    c.lowerOuterRadiusY = 0.35f;
+    c.lowerInnerRadiusX = 0.55f;
+    c.lowerInnerRadiusY = 0.55f;
+    c.upperInnerRadiusX = 0.55f;
+    c.upperInnerRadiusY = 0.55f;
+    c.upperOuterRadiusX = 0.55f;
+    c.upperOuterRadiusY = 0.55f;
+    c.lowerOuterRadiusX = 0.55f;
+    c.lowerOuterRadiusY = 0.55f;
     c.upperLidY = 0.0f;
     c.upperLidAngle = 0.0f;
     c.upperLidBend = 0.0f;
@@ -223,7 +201,7 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     if (self) {
         self.backgroundColor = [UIColor clearColor];
         self.userInteractionEnabled = NO;
-        _scanlineOpacity = 0.12f;
+        _scanlineOpacity = 0.16f; // Authentic subtle retro CRT scanline depth
     }
     return self;
 }
@@ -252,14 +230,9 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     CGPoint _defaultCenter;
     ProceduralEyeConfig _config;
 
-    UIView *_eyeContentContainer;
-    CAShapeLayer *_eyeBodyShapeLayer;
-    CAGradientLayer *_irisGradientLayer;
-    CAShapeLayer *_eyelidMaskLayer;
-
-    UIView *_pupilCore;
-    UIView *_specularPrimary;
-    UIView *_specularSecondary;
+    CGGradientRef _irisGradient;
+    CGGradientRef _hotSpotGradient;
+    CGColorSpaceRef _rgbColorSpace;
 }
 @property (nonatomic, assign) ProceduralEyeConfig config;
 @property (nonatomic, assign) CGPoint defaultCenter;
@@ -280,56 +253,30 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
         _isLeftEye = isLeft;
         _defaultCenter = CGPointMake(frame.origin.x + frame.size.width / 2.0f, frame.origin.y + frame.size.height / 2.0f);
         self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
 
-        // Container clipped by eyelids
-        _eyeContentContainer = [[UIView alloc] initWithFrame:self.bounds];
-        _eyeContentContainer.backgroundColor = [UIColor clearColor];
-        _eyeContentContainer.clipsToBounds = YES;
-        [self addSubview:_eyeContentContainer];
+        _rgbColorSpace = CGColorSpaceCreateDeviceRGB();
+        if (_rgbColorSpace) {
+            CGFloat irisComponents[8] = {
+                0.02f, 0.88f, 1.0f, 1.0f, // Top: electric cyan
+                0.00f, 0.62f, 0.88f, 1.0f  // Bottom: deep cyber cyan
+            };
+            CGFloat irisLocs[2] = { 0.0f, 1.0f };
+            _irisGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, irisComponents, irisLocs, 2);
 
-        // Eye Body Squircle Mask
-        _eyeBodyShapeLayer = [[CAShapeLayer alloc] init];
-        _eyeBodyShapeLayer.frame = self.bounds;
-        _eyeBodyShapeLayer.fillColor = [UIColor whiteColor].CGColor;
+            CGFloat hotComponents[8] = {
+                1.0f, 1.0f, 1.0f, 0.95f, // Center: pure glowing white-hot core
+                0.02f, 0.88f, 1.0f, 0.0f  // Outer: seamless blend into cyan
+            };
+            CGFloat hotLocs[2] = { 0.0f, 1.0f };
+            _hotSpotGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, hotComponents, hotLocs, 2);
+        }
 
-        // Iris Gradient Layer
-        _irisGradientLayer = [[CAGradientLayer alloc] init];
-        _irisGradientLayer.frame = self.bounds;
-        _irisGradientLayer.colors = @[
-            (id)[UIColor colorWithRed:0.22 green:0.75 blue:0.98 alpha:1.0].CGColor,
-            (id)[UIColor colorWithRed:0.01 green:0.48 blue:0.80 alpha:1.0].CGColor
-        ];
-        _irisGradientLayer.mask = _eyeBodyShapeLayer;
-        [_eyeContentContainer.layer insertSublayer:_irisGradientLayer atIndex:0];
-
-        // Pupil Core
-        _pupilCore = [[UIView alloc] initWithFrame:CGRectMake((frame.size.width - 22.0f)/2.0f, (frame.size.height - 34.0f)/2.0f, 22.0f, 34.0f)];
-        _pupilCore.backgroundColor = [UIColor colorWithRed:0.015 green:0.025 blue:0.045 alpha:0.95];
-        _pupilCore.layer.cornerRadius = 11.0f;
-        [_eyeContentContainer addSubview:_pupilCore];
-
-        // Specular Catchlights
-        _specularPrimary = [[UIView alloc] initWithFrame:CGRectMake(frame.size.width - 17.0f, 11.0f, 9.0f, 7.0f)];
-        _specularPrimary.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.85];
-        _specularPrimary.layer.cornerRadius = 3.5f;
-        [_eyeContentContainer addSubview:_specularPrimary];
-
-        _specularSecondary = [[UIView alloc] initWithFrame:CGRectMake(11.0f, frame.size.height - 19.0f, 4.0f, 4.0f)];
-        _specularSecondary.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.40];
-        _specularSecondary.layer.cornerRadius = 2.0f;
-        [_eyeContentContainer addSubview:_specularSecondary];
-
-        // Eyelid Mask Layer applied to _eyeContentContainer so all interior elements are clipped
-        _eyelidMaskLayer = [[CAShapeLayer alloc] init];
-        _eyelidMaskLayer.frame = CGRectMake(-15.0f, -15.0f, frame.size.width + 30.0f, frame.size.height + 30.0f);
-        _eyelidMaskLayer.fillColor = [UIColor blackColor].CGColor;
-        _eyeContentContainer.layer.mask = _eyelidMaskLayer;
-
-        // Outer Glow on self
-        self.layer.shadowColor = [UIColor colorWithRed:0.22 green:0.75 blue:0.98 alpha:1.0].CGColor;
+        // Outer glow blooming directly into the obsidian black bezel
+        self.layer.shadowColor = [UIColor colorWithRed:0.0 green:0.88 blue:1.0 alpha:1.0].CGColor;
         self.layer.shadowOffset = CGSizeZero;
-        self.layer.shadowRadius = 14.0f;
-        self.layer.shadowOpacity = 0.85f;
+        self.layer.shadowRadius = 20.0f;
+        self.layer.shadowOpacity = 0.95f;
 
         _config = ProceduralEyeConfigDefault();
         [self applyConfig:_config];
@@ -338,8 +285,44 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
 }
 
 - (void)setGradientColors:(NSArray *)colors {
-    if (colors && _irisGradientLayer) {
-        _irisGradientLayer.colors = colors;
+    if (colors && [colors count] >= 2 && _rgbColorSpace) {
+        id obj1 = [colors objectAtIndex:0];
+        id obj2 = [colors objectAtIndex:1];
+        CGColorRef cg1 = [obj1 isKindOfClass:[UIColor class]] ? [(UIColor *)obj1 CGColor] : (CGColorRef)obj1;
+        CGColorRef cg2 = [obj2 isKindOfClass:[UIColor class]] ? [(UIColor *)obj2 CGColor] : (CGColorRef)obj2;
+
+        const CGFloat *comp1 = cg1 ? CGColorGetComponents(cg1) : NULL;
+        const CGFloat *comp2 = cg2 ? CGColorGetComponents(cg2) : NULL;
+        size_t n1 = cg1 ? CGColorGetNumberOfComponents(cg1) : 0;
+        size_t n2 = cg2 ? CGColorGetNumberOfComponents(cg2) : 0;
+
+        CGFloat r1 = (n1 >= 3 && comp1) ? comp1[0] : 0.02f;
+        CGFloat g1 = (n1 >= 3 && comp1) ? comp1[1] : 0.88f;
+        CGFloat b1 = (n1 >= 3 && comp1) ? comp1[2] : 1.0f;
+        CGFloat a1 = (n1 >= 4 && comp1) ? comp1[3] : 1.0f;
+
+        CGFloat r2 = (n2 >= 3 && comp2) ? comp2[0] : 0.00f;
+        CGFloat g2 = (n2 >= 3 && comp2) ? comp2[1] : 0.62f;
+        CGFloat b2 = (n2 >= 3 && comp2) ? comp2[2] : 0.88f;
+        CGFloat a2 = (n2 >= 4 && comp2) ? comp2[3] : 1.0f;
+
+        if (_irisGradient) {
+            CGGradientRelease(_irisGradient);
+            _irisGradient = NULL;
+        }
+        CGFloat irisComponents[8] = { r1, g1, b1, a1, r2, g2, b2, a2 };
+        CGFloat irisLocs[2] = { 0.0f, 1.0f };
+        _irisGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, irisComponents, irisLocs, 2);
+
+        if (_hotSpotGradient) {
+            CGGradientRelease(_hotSpotGradient);
+            _hotSpotGradient = NULL;
+        }
+        CGFloat hotComponents[8] = { 1.0f, 1.0f, 1.0f, 0.95f, r1, g1, b1, 0.0f };
+        CGFloat hotLocs[2] = { 0.0f, 1.0f };
+        _hotSpotGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, hotComponents, hotLocs, 2);
+
+        [self setNeedsDisplay];
     }
 }
 
@@ -352,382 +335,525 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
 - (void)applyConfig:(ProceduralEyeConfig)config {
     _config = config;
 
-    CGFloat W = self.bounds.size.width;
-    CGFloat H = self.bounds.size.height;
-    if (W <= 0.0f || H <= 0.0f) return;
-
-    // Corner radius assignment based on eye orientation:
-    // Left eye: Top-Left is Outer, Top-Right is Inner, Bottom-Right is Inner, Bottom-Left is Outer
-    // Right eye: Top-Left is Inner, Top-Right is Outer, Bottom-Right is Outer, Bottom-Left is Inner
-    CGFloat rTL_x, rTL_y, rTR_x, rTR_y, rBR_x, rBR_y, rBL_x, rBL_y;
-    if (_isLeftEye) {
-        rTL_x = ClampF(config.upperOuterRadiusX, 0.02f, 1.0f) * (W * 0.5f);
-        rTL_y = ClampF(config.upperOuterRadiusY, 0.02f, 1.0f) * (H * 0.5f);
-        rTR_x = ClampF(config.upperInnerRadiusX, 0.02f, 1.0f) * (W * 0.5f);
-        rTR_y = ClampF(config.upperInnerRadiusY, 0.02f, 1.0f) * (H * 0.5f);
-        rBR_x = ClampF(config.lowerInnerRadiusX, 0.02f, 1.0f) * (W * 0.5f);
-        rBR_y = ClampF(config.lowerInnerRadiusY, 0.02f, 1.0f) * (H * 0.5f);
-        rBL_x = ClampF(config.lowerOuterRadiusX, 0.02f, 1.0f) * (W * 0.5f);
-        rBL_y = ClampF(config.lowerOuterRadiusY, 0.02f, 1.0f) * (H * 0.5f);
-    } else {
-        rTL_x = ClampF(config.upperInnerRadiusX, 0.02f, 1.0f) * (W * 0.5f);
-        rTL_y = ClampF(config.upperInnerRadiusY, 0.02f, 1.0f) * (H * 0.5f);
-        rTR_x = ClampF(config.upperOuterRadiusX, 0.02f, 1.0f) * (W * 0.5f);
-        rTR_y = ClampF(config.upperOuterRadiusY, 0.02f, 1.0f) * (H * 0.5f);
-        rBR_x = ClampF(config.lowerOuterRadiusX, 0.02f, 1.0f) * (W * 0.5f);
-        rBR_y = ClampF(config.lowerOuterRadiusY, 0.02f, 1.0f) * (H * 0.5f);
-        rBL_x = ClampF(config.lowerInnerRadiusX, 0.02f, 1.0f) * (W * 0.5f);
-        rBL_y = ClampF(config.lowerInnerRadiusY, 0.02f, 1.0f) * (H * 0.5f);
-    }
-
-    const CGFloat kappa = 0.55228475f;
-    UIBezierPath *path = [UIBezierPath bezierPath];
-    [path moveToPoint:CGPointMake(rTL_x, 0.0f)];
-    [path addLineToPoint:CGPointMake(W - rTR_x, 0.0f)];
-    [path addCurveToPoint:CGPointMake(W, rTR_y)
-            controlPoint1:CGPointMake(W - rTR_x + rTR_x * kappa, 0.0f)
-            controlPoint2:CGPointMake(W, rTR_y - rTR_y * kappa)];
-    [path addLineToPoint:CGPointMake(W, H - rBR_y)];
-    [path addCurveToPoint:CGPointMake(W - rBR_x, H)
-            controlPoint1:CGPointMake(W, H - rBR_y + rBR_y * kappa)
-            controlPoint2:CGPointMake(W - rBR_x + rBR_x * kappa, H)];
-    [path addLineToPoint:CGPointMake(rBL_x, H)];
-    [path addCurveToPoint:CGPointMake(0.0f, H - rBL_y)
-            controlPoint1:CGPointMake(rBL_x - rBL_x * kappa, H)
-            controlPoint2:CGPointMake(0.0f, H - rBL_y + rBL_y * kappa)];
-    [path addLineToPoint:CGPointMake(0.0f, rTL_y)];
-    [path addCurveToPoint:CGPointMake(rTL_x, 0.0f)
-            controlPoint1:CGPointMake(0.0f, rTL_y - rTL_y * kappa)
-            controlPoint2:CGPointMake(rTL_x - rTL_x * kappa, 0.0f)];
-    [path closePath];
-
-    _eyeBodyShapeLayer.path = path.CGPath;
-
-    // Eyelid mask geometry
-    CGFloat topLidY = ClampF(config.upperLidY, 0.0f, 1.0f) * H;
-    CGFloat bottomLidY = H - ClampF(config.lowerLidY, 0.0f, 1.0f) * H;
-    if (bottomLidY < topLidY) bottomLidY = topLidY;
-
-    CGFloat angleSign = _isLeftEye ? 1.0f : -1.0f;
-    CGFloat topSlope = tanf(config.upperLidAngle * (CGFloat)(M_PI / 180.0) * angleSign);
-    CGFloat bottomSlope = tanf(config.lowerLidAngle * (CGFloat)(M_PI / 180.0) * angleSign);
-
-    CGFloat topBendOffset = config.upperLidBend * (H * 0.25f);
-    CGFloat bottomBendOffset = config.lowerLidBend * (H * 0.25f);
-
-    CGFloat pad = 12.0f;
-    CGFloat xLeft = -pad;
-    CGFloat xRight = W + pad;
-    CGFloat xMid = W * 0.5f;
-
-    CGFloat yTopLeft = topLidY - topSlope * (W * 0.5f + pad);
-    CGFloat yTopRight = topLidY + topSlope * (W * 0.5f + pad);
-    CGFloat yTopMid = topLidY + topBendOffset;
-
-    CGFloat yBottomRight = bottomLidY + bottomSlope * (W * 0.5f + pad);
-    CGFloat yBottomLeft = bottomLidY - bottomSlope * (W * 0.5f + pad);
-    CGFloat yBottomMid = bottomLidY - bottomBendOffset;
-
-    UIBezierPath *maskPath = [UIBezierPath bezierPath];
-    [maskPath moveToPoint:CGPointMake(xLeft, yTopLeft)];
-    [maskPath addQuadCurveToPoint:CGPointMake(xRight, yTopRight) controlPoint:CGPointMake(xMid, yTopMid)];
-    [maskPath addLineToPoint:CGPointMake(xRight, yBottomRight)];
-    [maskPath addQuadCurveToPoint:CGPointMake(xLeft, yBottomLeft) controlPoint:CGPointMake(xMid, yBottomMid)];
-    [maskPath closePath];
-
-    _eyelidMaskLayer.path = maskPath.CGPath;
-
-    // Pupil Core and Specular Glints
-    CGFloat pScale = ClampF(config.glowSize, 0.15f, 2.0f);
-    _pupilCore.transform = CGAffineTransformMakeScale(pScale, pScale);
-
-    CGFloat pupilDx = ClampF(config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.22f);
-    CGFloat pupilDy = ClampF(config.hotSpotCenterY, -1.0f, 1.0f) * (H * 0.22f);
-    _pupilCore.center = CGPointMake(W * 0.5f + pupilDx, H * 0.5f + pupilDy);
-
-    _specularPrimary.center = CGPointMake(W - 17.0f + pupilDx * 0.40f, 11.0f + pupilDy * 0.40f);
-    _specularSecondary.center = CGPointMake(11.0f + pupilDx * 0.20f, H - 19.0f + pupilDy * 0.20f);
-
-    _specularPrimary.alpha = config.glowLightness;
-    _specularSecondary.alpha = config.glowLightness * 0.45f;
-
     // View Transform and Position
     CGFloat rad = config.angle * (CGFloat)(M_PI / 180.0);
     CGAffineTransform t = CGAffineTransformMakeRotation(rad);
     t = CGAffineTransformScale(t, ClampF(config.scaleX, 0.05f, 3.0f), ClampF(config.scaleY, 0.05f, 3.0f));
     self.transform = t;
     self.center = CGPointMake(_defaultCenter.x + config.centerX, _defaultCenter.y + config.centerY);
+
+    [self setNeedsDisplay];
+}
+
+- (void)drawRect:(CGRect)rect {
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (!ctx) return;
+
+    CGFloat W = self.bounds.size.width;
+    CGFloat H = self.bounds.size.height;
+    if (W <= 0.0f || H <= 0.0f) return;
+
+    // Corner radius assignment based on eye orientation
+    CGFloat cTL_x, cTL_y, cTR_x, cTR_y, cBR_x, cBR_y, cBL_x, cBL_y;
+    if (_isLeftEye) {
+        cTL_x = _config.upperOuterRadiusX; cTL_y = _config.upperOuterRadiusY;
+        cTR_x = _config.upperInnerRadiusX; cTR_y = _config.upperInnerRadiusY;
+        cBR_x = _config.lowerInnerRadiusX; cBR_y = _config.lowerInnerRadiusY;
+        cBL_x = _config.lowerOuterRadiusX; cBL_y = _config.lowerOuterRadiusY;
+    } else {
+        cTL_x = _config.upperInnerRadiusX; cTL_y = _config.upperInnerRadiusY;
+        cTR_x = _config.upperOuterRadiusX; cTR_y = _config.upperOuterRadiusY;
+        cBR_x = _config.lowerOuterRadiusX; cBR_y = _config.lowerOuterRadiusY;
+        cBL_x = _config.lowerInnerRadiusX; cBL_y = _config.lowerInnerRadiusY;
+    }
+
+    // Eyelid kinematics
+    CGFloat topLidY = ClampF(_config.upperLidY, 0.0f, 1.0f) * H;
+    CGFloat bottomLidY = H - ClampF(_config.lowerLidY, 0.0f, 1.0f) * H;
+    if (bottomLidY < topLidY) bottomLidY = topLidY;
+
+    CGFloat angleSign = _isLeftEye ? 1.0f : -1.0f;
+    CGFloat topSlope = tanf(_config.upperLidAngle * (CGFloat)(M_PI / 180.0) * angleSign);
+    CGFloat bottomSlope = tanf(_config.lowerLidAngle * (CGFloat)(M_PI / 180.0) * angleSign);
+
+    CGFloat topBendOffset = _config.upperLidBend * (H * 0.35f);
+    CGFloat bottomBendOffset = _config.lowerLidBend * (H * 0.35f);
+
+    CGFloat effH = MAX(bottomLidY - topLidY, 2.0f);
+    CGFloat rTL_x = ClampF(cTL_x, 0.05f, 1.0f) * (W * 0.5f);
+    CGFloat rTR_x = ClampF(cTR_x, 0.05f, 1.0f) * (W * 0.5f);
+    CGFloat rBL_x = ClampF(cBL_x, 0.05f, 1.0f) * (W * 0.5f);
+    CGFloat rBR_x = ClampF(cBR_x, 0.05f, 1.0f) * (W * 0.5f);
+
+    CGFloat rTL_y = ClampF(cTL_y, 0.05f, 1.0f) * (effH * 0.5f);
+    CGFloat rTR_y = ClampF(cTR_y, 0.05f, 1.0f) * (effH * 0.5f);
+    CGFloat rBL_y = ClampF(cBL_y, 0.05f, 1.0f) * (effH * 0.5f);
+    CGFloat rBR_y = ClampF(cBR_y, 0.05f, 1.0f) * (effH * 0.5f);
+
+    CGFloat yTL = ClampF(topLidY - topSlope * (W * 0.5f - rTL_x), 0.0f, H);
+    CGFloat yTR = ClampF(topLidY + topSlope * (W * 0.5f - rTR_x), 0.0f, H);
+    CGFloat yTMid = ClampF(topLidY + topBendOffset, 0.0f, H);
+
+    CGFloat yBL = ClampF(bottomLidY - bottomSlope * (W * 0.5f - rBL_x), 0.0f, H);
+    CGFloat yBR = ClampF(bottomLidY + bottomSlope * (W * 0.5f - rBR_x), 0.0f, H);
+    CGFloat yBMid = ClampF(bottomLidY - bottomBendOffset, 0.0f, H);
+
+    const CGFloat kappa = 0.55228475f;
+    UIBezierPath *path = [UIBezierPath bezierPath];
+
+    [path moveToPoint:CGPointMake(rTL_x, yTL)];
+    [path addQuadCurveToPoint:CGPointMake(W - rTR_x, yTR) controlPoint:CGPointMake(W * 0.5f, yTMid)];
+    [path addCurveToPoint:CGPointMake(W, yTR + rTR_y)
+            controlPoint1:CGPointMake(W - rTR_x + rTR_x * kappa, yTR)
+            controlPoint2:CGPointMake(W, yTR + rTR_y - rTR_y * (1.0f - kappa))];
+    [path addLineToPoint:CGPointMake(W, yBR - rBR_y)];
+    [path addCurveToPoint:CGPointMake(W - rBR_x, yBR)
+            controlPoint1:CGPointMake(W, yBR - rBR_y + rBR_y * (1.0f - kappa))
+            controlPoint2:CGPointMake(W - rBR_x + rBR_x * kappa, yBR)];
+    [path addQuadCurveToPoint:CGPointMake(rBL_x, yBL) controlPoint:CGPointMake(W * 0.5f, yBMid)];
+    [path addCurveToPoint:CGPointMake(0.0f, yBL - rBL_y)
+            controlPoint1:CGPointMake(rBL_x - rBL_x * kappa, yBL)
+            controlPoint2:CGPointMake(0.0f, yBL - rBL_y + rBL_y * (1.0f - kappa))];
+    [path addLineToPoint:CGPointMake(0.0f, yTL + rTL_y)];
+    [path addCurveToPoint:CGPointMake(rTL_x, yTL)
+            controlPoint1:CGPointMake(0.0f, yTL + rTL_y - rTL_y * (1.0f - kappa))
+            controlPoint2:CGPointMake(rTL_x - rTL_x * kappa, yTL)];
+    [path closePath];
+
+    // Clip to eye shape
+    CGContextSaveGState(ctx);
+    [path addClip];
+
+    // 2. Base Linear Gradient (Cyan glow body)
+    if (_irisGradient) {
+        CGContextDrawLinearGradient(ctx, _irisGradient, CGPointMake(0, 0), CGPointMake(0, H), 0);
+    }
+
+    // 3. Luminous Radial HotSpot (OLED radiant white-hot core)
+    CGFloat pupilDx = ClampF(_config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.22f);
+    CGFloat pupilDy = ClampF(_config.hotSpotCenterY, -1.0f, 1.0f) * (effH * 0.22f);
+    CGFloat midY = (yTMid + yBMid) * 0.5f;
+    CGPoint hotSpotCenter = CGPointMake(W * 0.5f + pupilDx, midY + pupilDy);
+    CGFloat glowR = (W * 0.44f) * ClampF(_config.glowSize, 0.4f, 2.0f);
+
+    if (_hotSpotGradient) {
+        CGContextDrawRadialGradient(ctx, _hotSpotGradient, hotSpotCenter, 0.0f, hotSpotCenter, glowR, kCGGradientDrawsAfterEndLocation);
+    }
+
+    CGContextRestoreGState(ctx);
+
+    // Update shadowPath for hardware-accelerated bloom matching exact shape
+    self.layer.shadowPath = path.CGPath;
 }
 
 - (void)dealloc {
-    [_eyeBodyShapeLayer release];
-    [_irisGradientLayer release];
-    [_eyelidMaskLayer release];
-    [_eyeContentContainer release];
-    [_pupilCore release];
-    [_specularPrimary release];
-    [_specularSecondary release];
+    if (_irisGradient) {
+        CGGradientRelease(_irisGradient);
+        _irisGradient = NULL;
+    }
+    if (_hotSpotGradient) {
+        CGGradientRelease(_hotSpotGradient);
+        _hotSpotGradient = NULL;
+    }
+    if (_rgbColorSpace) {
+        CGColorSpaceRelease(_rgbColorSpace);
+        _rgbColorSpace = NULL;
+    }
     [super dealloc];
 }
 @end
 
 // ========================================================
-// 5. EMOTION PRESET GENERATOR
+// 5. EMOTION PRESET GENERATOR (Official Cozmo & Vector 21 Rig)
 // ========================================================
 static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, ProceduralEyeConfig *outRight, UIColor **outTop, UIColor **outBottom) {
     ProceduralEyeConfig left = ProceduralEyeConfigDefault();
     ProceduralEyeConfig right = ProceduralEyeConfigDefault();
 
-    // Semantic Accents
-    UIColor *cyanTop = [UIColor colorWithRed:0.22 green:0.75 blue:0.98 alpha:1.0];
-    UIColor *cyanBottom = [UIColor colorWithRed:0.01 green:0.48 blue:0.80 alpha:1.0];
+    // Semantic Accents (Electric Cyber Palette)
+    UIColor *cyanTop = [UIColor colorWithRed:0.02 green:0.88 blue:1.0 alpha:1.0];
+    UIColor *cyanBottom = [UIColor colorWithRed:0.0 green:0.65 blue:0.92 alpha:1.0];
 
-    UIColor *emeraldTop = [UIColor colorWithRed:0.20 green:0.92 blue:0.55 alpha:1.0];
-    UIColor *emeraldBottom = [UIColor colorWithRed:0.04 green:0.65 blue:0.35 alpha:1.0];
+    UIColor *emeraldTop = [UIColor colorWithRed:0.10 green:0.95 blue:0.65 alpha:1.0];
+    UIColor *emeraldBottom = [UIColor colorWithRed:0.02 green:0.75 blue:0.45 alpha:1.0];
 
     UIColor *amberTop = [UIColor colorWithRed:0.98 green:0.75 blue:0.18 alpha:1.0];
     UIColor *amberBottom = [UIColor colorWithRed:0.85 green:0.52 blue:0.02 alpha:1.0];
 
+    UIColor *crimsonAmberTop = [UIColor colorWithRed:0.98 green:0.48 blue:0.12 alpha:1.0];
+    UIColor *crimsonAmberBottom = [UIColor colorWithRed:0.80 green:0.28 blue:0.05 alpha:1.0];
+
+    UIColor *crimsonTop = [UIColor colorWithRed:0.98 green:0.25 blue:0.25 alpha:1.0];
+    UIColor *crimsonBottom = [UIColor colorWithRed:0.75 green:0.08 blue:0.08 alpha:1.0];
+
     UIColor *amethystTop = [UIColor colorWithRed:0.75 green:0.45 blue:0.98 alpha:1.0];
     UIColor *amethystBottom = [UIColor colorWithRed:0.48 green:0.18 blue:0.85 alpha:1.0];
 
-    UIColor *crimsonTop = [UIColor colorWithRed:0.98 green:0.32 blue:0.32 alpha:1.0];
-    UIColor *crimsonBottom = [UIColor colorWithRed:0.78 green:0.08 blue:0.08 alpha:1.0];
-
-    UIColor *crimsonAmberTop = [UIColor colorWithRed:0.98 green:0.55 blue:0.09 alpha:1.0];
-    UIColor *crimsonAmberBottom = [UIColor colorWithRed:0.77 green:0.35 blue:0.00 alpha:1.0];
-
-    UIColor *slateBlueTop = [UIColor colorWithRed:0.22 green:0.36 blue:0.48 alpha:0.85];
-    UIColor *slateBlueBottom = [UIColor colorWithRed:0.08 green:0.14 blue:0.20 alpha:0.85];
+    UIColor *slateBlueTop = [UIColor colorWithRed:0.22 green:0.42 blue:0.58 alpha:0.85];
+    UIColor *slateBlueBottom = [UIColor colorWithRed:0.08 green:0.18 blue:0.28 alpha:0.85];
 
     UIColor *topColor = cyanTop;
     UIColor *bottomColor = cyanBottom;
 
-    if ([name isEqualToString:@"happy"]) {
-        left.lowerLidY = 0.50f;
+    NSString *n = [name lowercaseString];
+
+    if ([n isEqualToString:@"happy"]) {
+        // Arched dome (⌒ ⌒): lower eyelid cuts upward with concave bend
+        left.lowerLidY = 0.52f;
         left.lowerLidBend = 0.50f;
-        left.upperOuterRadiusX = 0.60f;
-        left.upperInnerRadiusX = 0.60f;
-        left.angle = -3.0f;
-        left.hotSpotCenterY = -0.15f;
-
-        right.lowerLidY = 0.50f;
-        right.lowerLidBend = 0.50f;
-        right.upperOuterRadiusX = 0.60f;
-        right.upperInnerRadiusX = 0.60f;
-        right.angle = 3.0f;
-        right.hotSpotCenterY = -0.15f;
-
-        topColor = emeraldTop;
-        bottomColor = emeraldBottom;
-    } else if ([name isEqualToString:@"glee"]) {
-        left.scaleY = 0.55f;
-        left.scaleX = 1.05f;
-        left.lowerLidY = 0.75f;
-        left.lowerLidBend = 0.70f;
-        left.upperLidY = 0.15f;
         left.upperOuterRadiusX = 0.85f;
         left.upperInnerRadiusX = 0.85f;
+        left.angle = -3.0f;
+        left.hotSpotCenterY = -0.10f;
 
-        right.scaleY = 0.55f;
-        right.scaleX = 1.05f;
-        right.lowerLidY = 0.75f;
-        right.lowerLidBend = 0.70f;
-        right.upperLidY = 0.15f;
+        right.lowerLidY = 0.52f;
+        right.lowerLidBend = 0.50f;
         right.upperOuterRadiusX = 0.85f;
         right.upperInnerRadiusX = 0.85f;
-
-        topColor = emeraldTop;
-        bottomColor = emeraldBottom;
-    } else if ([name isEqualToString:@"curious"]) {
-        left.scaleX = 1.10f;
-        left.scaleY = 1.15f;
-        left.upperOuterRadiusY = 0.65f;
-        left.angle = -4.0f;
-        left.hotSpotCenterX = 0.35f;
-        left.hotSpotCenterY = -0.30f;
-
-        right.scaleX = 0.95f;
-        right.scaleY = 0.95f;
-        right.upperLidY = 0.15f;
-        right.angle = -2.0f;
-        right.hotSpotCenterX = 0.35f;
-        right.hotSpotCenterY = -0.30f;
-
-        topColor = amberTop;
-        bottomColor = amberBottom;
-    } else if ([name isEqualToString:@"skeptic"]) {
-        left.upperLidY = 0.10f;
-        left.angle = -2.0f;
-        left.hotSpotCenterX = 0.20f;
-        left.hotSpotCenterY = -0.20f;
-
-        right.upperLidY = 0.48f;
-        right.upperLidAngle = -10.0f;
-        right.upperLidBend = -0.35f;
-        right.scaleY = 0.82f;
-        right.hotSpotCenterX = 0.20f;
-        right.hotSpotCenterY = -0.20f;
-
-        topColor = amberTop;
-        bottomColor = amberBottom;
-    } else if ([name isEqualToString:@"surprised"]) {
-        left.scaleX = 1.15f;
-        left.scaleY = 1.30f;
-        left.glowSize = 1.45f;
-        left.upperOuterRadiusX = 0.80f;
-        left.upperInnerRadiusX = 0.80f;
-        left.lowerOuterRadiusX = 0.80f;
-        left.lowerInnerRadiusX = 0.80f;
-
-        right.scaleX = 1.15f;
-        right.scaleY = 1.30f;
-        right.glowSize = 1.45f;
-        right.upperOuterRadiusX = 0.80f;
-        right.upperInnerRadiusX = 0.80f;
-        right.lowerOuterRadiusX = 0.80f;
-        right.lowerInnerRadiusX = 0.80f;
-
-        topColor = amberTop;
-        bottomColor = amberBottom;
-    } else if ([name isEqualToString:@"thinking"]) {
-        left.scaleX = 0.90f;
-        left.scaleY = 0.90f;
-        left.upperLidY = 0.25f;
-        left.angle = 4.0f;
-        left.hotSpotCenterX = 0.30f;
-        left.hotSpotCenterY = -0.65f;
-
-        right.scaleX = 0.95f;
-        right.scaleY = 0.95f;
-        right.upperLidY = 0.15f;
-        right.angle = 4.0f;
-        right.hotSpotCenterX = 0.30f;
-        right.hotSpotCenterY = -0.65f;
-
-        topColor = amethystTop;
-        bottomColor = amethystBottom;
-    } else if ([name isEqualToString:@"focused"]) {
-        left.scaleY = 0.70f;
-        left.scaleX = 1.05f;
-        left.upperLidY = 0.32f;
-        left.upperLidAngle = 6.0f;
-        left.glowSize = 0.85f;
-        left.angle = 3.0f;
-
-        right.scaleY = 0.70f;
-        right.scaleX = 1.05f;
-        right.upperLidY = 0.32f;
-        right.upperLidAngle = -6.0f;
-        right.glowSize = 0.85f;
-        right.angle = -3.0f;
+        right.angle = 3.0f;
+        right.hotSpotCenterY = -0.10f;
 
         topColor = cyanTop;
         bottomColor = cyanBottom;
-    } else if ([name isEqualToString:@"annoyed"]) {
-        left.upperLidY = 0.45f;
-        left.upperLidBend = -0.30f;
-        left.scaleY = 0.85f;
-        left.upperLidAngle = 6.0f;
+    } else if ([n isEqualToString:@"glee"]) {
+        // Squeezed joy crescent (⌒ ⌒)
+        left.scaleY = 0.70f;
+        left.scaleX = 1.05f;
+        left.lowerLidY = 0.65f;
+        left.lowerLidBend = 0.60f;
+        left.upperLidY = 0.12f;
+        left.upperOuterRadiusX = 0.90f;
+        left.upperInnerRadiusX = 0.90f;
+        left.angle = -4.0f;
 
-        right.upperLidY = 0.45f;
-        right.upperLidBend = -0.30f;
-        right.scaleY = 0.85f;
-        right.upperLidAngle = -6.0f;
+        right.scaleY = 0.70f;
+        right.scaleX = 1.05f;
+        right.lowerLidY = 0.65f;
+        right.lowerLidBend = 0.60f;
+        right.upperLidY = 0.12f;
+        right.upperOuterRadiusX = 0.90f;
+        right.upperInnerRadiusX = 0.90f;
+        right.angle = 4.0f;
+
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    } else if ([n isEqualToString:@"blink_high"] || [n isEqualToString:@"blink-high"] || [n isEqualToString:@"blinkhigh"]) {
+        // Thin horizontal cyan slit high in socket
+        left.upperLidY = 0.22f;
+        left.lowerLidY = 0.72f;
+        left.upperLidBend = 0.0f;
+        left.lowerLidBend = 0.0f;
+
+        right.upperLidY = 0.22f;
+        right.lowerLidY = 0.72f;
+        right.upperLidBend = 0.0f;
+        right.lowerLidBend = 0.0f;
+    } else if ([n isEqualToString:@"blink_low"] || [n isEqualToString:@"blink-low"] || [n isEqualToString:@"blinklow"]) {
+        // Thin horizontal cyan slit low in socket
+        left.upperLidY = 0.72f;
+        left.lowerLidY = 0.22f;
+        left.upperLidBend = 0.0f;
+        left.lowerLidBend = 0.0f;
+
+        right.upperLidY = 0.72f;
+        right.lowerLidY = 0.22f;
+        right.upperLidBend = 0.0f;
+        right.lowerLidBend = 0.0f;
+    } else if ([n isEqualToString:@"sad_down"] || [n isEqualToString:@"sad_looking_down"]) {
+        // Drooping eyelids (/ \) with gaze shifted down
+        left.upperLidY = 0.38f;
+        left.upperLidAngle = -15.0f;
+        left.hotSpotCenterY = 0.35f;
+        left.centerY = 14.0f;
+
+        right.upperLidY = 0.38f;
+        right.upperLidAngle = 15.0f;
+        right.hotSpotCenterY = 0.35f;
+        right.centerY = 14.0f;
+    } else if ([n isEqualToString:@"sad_up"] || [n isEqualToString:@"sad_looking_up"] || [n isEqualToString:@"sad"]) {
+        // Drooping eyelids (/ \) with gaze shifted up pleadingly
+        left.upperLidY = 0.38f;
+        left.upperLidAngle = -15.0f;
+        left.hotSpotCenterY = -0.40f;
+        left.centerY = -12.0f;
+
+        right.upperLidY = 0.38f;
+        right.upperLidAngle = 15.0f;
+        right.hotSpotCenterY = -0.40f;
+        right.centerY = -12.0f;
+    } else if ([n isEqualToString:@"worried"]) {
+        // Upper lids slanted (/ \) inner corners high, outer drooped
+        left.upperLidY = 0.28f;
+        left.upperLidAngle = -14.0f;
+        left.lowerLidY = 0.16f;
+        left.scaleX = 0.96f;
+
+        right.upperLidY = 0.28f;
+        right.upperLidAngle = 14.0f;
+        right.lowerLidY = 0.16f;
+        right.scaleX = 0.96f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"focused"] || [n isEqualToString:@"determined"] || [n isEqualToString:@"focused_determined"]) {
+        // Sharp horizontal squircle bars (flat lids)
+        left.scaleY = 0.65f;
+        left.scaleX = 1.05f;
+        left.upperLidY = 0.36f;
+        left.lowerLidY = 0.36f;
+        left.upperLidBend = 0.0f;
+        left.lowerLidBend = 0.0f;
+
+        right.scaleY = 0.65f;
+        right.scaleX = 1.05f;
+        right.upperLidY = 0.36f;
+        right.lowerLidY = 0.36f;
+        right.upperLidBend = 0.0f;
+        right.lowerLidBend = 0.0f;
+    } else if ([n isEqualToString:@"annoyed"]) {
+        // Upper lids drooped flat halfway down
+        left.upperLidY = 0.50f;
+        left.scaleY = 0.90f;
+
+        right.upperLidY = 0.50f;
+        right.scaleY = 0.90f;
 
         topColor = crimsonAmberTop;
         bottomColor = crimsonAmberBottom;
-    } else if ([name isEqualToString:@"alert"]) {
-        left.scaleX = 1.05f;
-        left.scaleY = 1.15f;
-        left.upperLidY = 0.20f;
-        left.upperLidAngle = 14.0f;
-        left.glowSize = 0.65f;
-        left.angle = 5.0f;
+    } else if ([n isEqualToString:@"surprised"]) {
+        // Tall rounded squircles, wide open
+        left.scaleX = 0.95f;
+        left.scaleY = 1.25f;
+        left.glowSize = 1.35f;
+        left.upperOuterRadiusX = 0.85f;
+        left.upperInnerRadiusX = 0.85f;
+        left.lowerOuterRadiusX = 0.85f;
+        left.lowerInnerRadiusX = 0.85f;
 
-        right.scaleX = 1.05f;
-        right.scaleY = 1.15f;
-        right.upperLidY = 0.20f;
-        right.upperLidAngle = -14.0f;
-        right.glowSize = 0.65f;
-        right.angle = -5.0f;
-
-        topColor = crimsonTop;
-        bottomColor = crimsonBottom;
-    } else if ([name isEqualToString:@"sleep"] || [name isEqualToString:@"sleepy"]) {
-        left.upperLidY = 0.72f;
-        left.upperLidBend = 0.15f;
-        left.scaleY = 0.70f;
-        left.centerY = 14.0f;
-
-        right.upperLidY = 0.72f;
-        right.upperLidBend = 0.15f;
-        right.scaleY = 0.70f;
-        right.centerY = 14.0f;
-
-        topColor = slateBlueTop;
-        bottomColor = slateBlueBottom;
-    } else if ([name isEqualToString:@"asleep"]) {
-        left.upperLidY = 0.95f;
-        left.lowerLidY = 0.05f;
-        left.scaleY = 0.10f;
-        left.centerY = 26.0f;
-        left.glowLightness = 0.0f;
-
-        right.upperLidY = 0.95f;
-        right.lowerLidY = 0.05f;
-        right.scaleY = 0.10f;
-        right.centerY = 26.0f;
-        right.glowLightness = 0.0f;
-
-        topColor = slateBlueTop;
-        bottomColor = slateBlueBottom;
-    } else if ([name isEqualToString:@"confused"]) {
-        left.scaleX = 1.10f;
-        left.scaleY = 1.15f;
-        left.angle = -8.0f;
-        left.upperOuterRadiusY = 0.70f;
-
-        right.scaleX = 0.75f;
-        right.scaleY = 0.65f;
-        right.upperLidY = 0.40f;
-        right.angle = -6.0f;
+        right.scaleX = 0.95f;
+        right.scaleY = 1.25f;
+        right.glowSize = 1.35f;
+        right.upperOuterRadiusX = 0.85f;
+        right.upperInnerRadiusX = 0.85f;
+        right.lowerOuterRadiusX = 0.85f;
+        right.lowerInnerRadiusX = 0.85f;
 
         topColor = amberTop;
         bottomColor = amberBottom;
-    } else if ([name isEqualToString:@"frustrated"]) {
-        left.scaleY = 0.80f;
-        left.upperLidY = 0.50f;
-        left.upperLidAngle = 12.0f;
-        left.lowerLidY = 0.20f;
-        left.lowerLidBend = -0.30f;
-        left.angle = 6.0f;
+    } else if ([n isEqualToString:@"skeptic"]) {
+        // Asymmetric: left open, right squinted lowered brow
+        left.scaleY = 1.05f;
+        left.upperLidY = 0.0f;
+        left.angle = -2.0f;
+        left.hotSpotCenterX = 0.15f;
 
-        right.scaleY = 0.80f;
-        right.upperLidY = 0.50f;
+        right.scaleY = 0.82f;
+        right.upperLidY = 0.45f;
         right.upperLidAngle = -12.0f;
         right.lowerLidY = 0.20f;
-        right.lowerLidBend = -0.30f;
-        right.angle = -6.0f;
+        right.angle = 2.0f;
+        right.hotSpotCenterX = 0.15f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"frustrated"] || [n isEqualToString:@"bored"] || [n isEqualToString:@"frustrated_bored"]) {
+        // Half-closed flat eyelids
+        left.upperLidY = 0.45f;
+        left.lowerLidY = 0.20f;
+        left.scaleY = 0.88f;
+
+        right.upperLidY = 0.45f;
+        right.lowerLidY = 0.20f;
+        right.scaleY = 0.88f;
+
+        topColor = crimsonAmberTop;
+        bottomColor = crimsonAmberBottom;
+    } else if ([n isEqualToString:@"unimpressed"]) {
+        // Flat drooped deadpan upper lids
+        left.upperLidY = 0.55f;
+        left.scaleY = 0.85f;
+
+        right.upperLidY = 0.55f;
+        right.scaleY = 0.85f;
+    } else if ([n isEqualToString:@"sleepy"] || [n isEqualToString:@"sleepy_eyes"] || [n isEqualToString:@"sleep"]) {
+        // Tired drooped eyelids with outward slant
+        left.upperLidY = 0.65f;
+        left.upperLidAngle = -8.0f;
+        left.lowerLidY = 0.15f;
+        left.scaleY = 0.80f;
+
+        right.upperLidY = 0.65f;
+        right.upperLidAngle = 8.0f;
+        right.lowerLidY = 0.15f;
+        right.scaleY = 0.80f;
+
+        topColor = slateBlueTop;
+        bottomColor = slateBlueBottom;
+    } else if ([n isEqualToString:@"suspicious"]) {
+        // Narrow horizontal squint with slight inward slant
+        left.upperLidY = 0.48f;
+        left.upperLidAngle = 8.0f;
+        left.lowerLidY = 0.25f;
+        left.scaleY = 0.75f;
+
+        right.upperLidY = 0.48f;
+        right.upperLidAngle = -8.0f;
+        right.lowerLidY = 0.25f;
+        right.scaleY = 0.75f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"squint"]) {
+        // Tight horizontal slits
+        left.upperLidY = 0.46f;
+        left.lowerLidY = 0.46f;
+        left.scaleY = 0.60f;
+
+        right.upperLidY = 0.46f;
+        right.lowerLidY = 0.46f;
+        right.scaleY = 0.60f;
+    } else if ([n isEqualToString:@"angry"]) {
+        // Aggressive V-brow (\ /)
+        left.upperLidY = 0.36f;
+        left.upperLidAngle = 18.0f;
+        left.angle = 3.0f;
+
+        right.upperLidY = 0.36f;
+        right.upperLidAngle = -18.0f;
+        right.angle = -3.0f;
+
+        topColor = crimsonAmberTop;
+        bottomColor = crimsonAmberBottom;
+    } else if ([n isEqualToString:@"furious"]) {
+        // Deep angry V-brow (\ /) with fiery crimson
+        left.upperLidY = 0.46f;
+        left.upperLidAngle = 26.0f;
+        left.lowerLidY = 0.15f;
+        left.scaleY = 0.85f;
+        left.angle = 4.0f;
+
+        right.upperLidY = 0.46f;
+        right.upperLidAngle = -26.0f;
+        right.lowerLidY = 0.15f;
+        right.scaleY = 0.85f;
+        right.angle = -4.0f;
 
         topColor = crimsonTop;
         bottomColor = crimsonBottom;
-    } else if ([name isEqualToString:@"sad"]) {
-        left.upperLidY = 0.40f;
-        left.upperLidAngle = -14.0f;
-        left.upperLidBend = 0.25f;
-        left.scaleY = 0.85f;
-        left.angle = -5.0f;
+    } else if ([n isEqualToString:@"scared"]) {
+        // Wide tall eyes with bottom lid cut flat across
+        left.scaleX = 0.95f;
+        left.scaleY = 1.15f;
+        left.lowerLidY = 0.36f;
+        left.lowerLidBend = 0.0f;
+        left.upperOuterRadiusX = 0.85f;
+        left.upperInnerRadiusX = 0.85f;
 
-        right.upperLidY = 0.40f;
-        right.upperLidAngle = 14.0f;
-        right.upperLidBend = 0.25f;
-        right.scaleY = 0.85f;
-        right.angle = 5.0f;
+        right.scaleX = 0.95f;
+        right.scaleY = 1.15f;
+        right.lowerLidY = 0.36f;
+        right.lowerLidBend = 0.0f;
+        right.upperOuterRadiusX = 0.85f;
+        right.upperInnerRadiusX = 0.85f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"awe"]) {
+        // Huge rounded glowing eyes
+        left.scaleX = 1.15f;
+        left.scaleY = 1.20f;
+        left.glowSize = 1.50f;
+        left.upperOuterRadiusX = 0.85f;
+        left.upperInnerRadiusX = 0.85f;
+        left.lowerOuterRadiusX = 0.85f;
+        left.lowerInnerRadiusX = 0.85f;
+
+        right.scaleX = 1.15f;
+        right.scaleY = 1.20f;
+        right.glowSize = 1.50f;
+        right.upperOuterRadiusX = 0.85f;
+        right.upperInnerRadiusX = 0.85f;
+        right.lowerOuterRadiusX = 0.85f;
+        right.lowerInnerRadiusX = 0.85f;
 
         topColor = cyanTop;
         bottomColor = cyanBottom;
-    } else if ([name isEqualToString:@"glance_left"]) {
+    } else if ([n isEqualToString:@"curious"]) {
+        // Tilted inquiry
+        left.scaleX = 1.08f;
+        left.scaleY = 1.12f;
+        left.angle = -5.0f;
+        left.hotSpotCenterX = 0.30f;
+        left.hotSpotCenterY = -0.25f;
+
+        right.scaleX = 0.95f;
+        right.scaleY = 0.95f;
+        right.upperLidY = 0.15f;
+        right.angle = -3.0f;
+        right.hotSpotCenterX = 0.30f;
+        right.hotSpotCenterY = -0.25f;
+
+        topColor = cyanTop;
+        bottomColor = cyanBottom;
+    } else if ([n isEqualToString:@"thinking"]) {
+        left.scaleX = 0.92f;
+        left.scaleY = 0.92f;
+        left.upperLidY = 0.22f;
+        left.angle = 4.0f;
+        left.hotSpotCenterX = 0.35f;
+        left.hotSpotCenterY = -0.55f;
+
+        right.scaleX = 0.95f;
+        right.scaleY = 0.95f;
+        right.upperLidY = 0.12f;
+        right.angle = 4.0f;
+        right.hotSpotCenterX = 0.35f;
+        right.hotSpotCenterY = -0.55f;
+
+        topColor = amethystTop;
+        bottomColor = amethystBottom;
+    } else if ([n isEqualToString:@"alert"]) {
+        left.scaleX = 1.05f;
+        left.scaleY = 1.15f;
+        left.upperLidY = 0.18f;
+        left.upperLidAngle = 12.0f;
+        left.glowSize = 0.75f;
+        left.angle = 4.0f;
+
+        right.scaleX = 1.05f;
+        right.scaleY = 1.15f;
+        right.upperLidY = 0.18f;
+        right.upperLidAngle = -12.0f;
+        right.glowSize = 0.75f;
+        right.angle = -4.0f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"asleep"]) {
+        left.scaleY = 0.40f;
+        left.upperLidY = 0.85f;
+        left.lowerLidY = 0.15f;
+
+        right.scaleY = 0.40f;
+        right.upperLidY = 0.85f;
+        right.lowerLidY = 0.15f;
+
+        topColor = slateBlueTop;
+        bottomColor = slateBlueBottom;
+    } else if ([n isEqualToString:@"confused"]) {
+        left.scaleX = 1.05f;
+        left.scaleY = 1.10f;
+        left.angle = 6.0f;
+        left.upperLidY = 0.10f;
+
+        right.scaleX = 0.90f;
+        right.scaleY = 0.85f;
+        right.angle = -8.0f;
+        right.upperLidY = 0.35f;
+
+        topColor = amberTop;
+        bottomColor = amberBottom;
+    } else if ([n isEqualToString:@"glance_left"]) {
         left.hotSpotCenterX = -0.65f;
         left.centerX = -8.0f;
         right.hotSpotCenterX = -0.65f;
@@ -735,7 +861,7 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
 
         topColor = cyanTop;
         bottomColor = cyanBottom;
-    } else if ([name isEqualToString:@"glance_right"]) {
+    } else if ([n isEqualToString:@"glance_right"]) {
         left.hotSpotCenterX = 0.65f;
         left.centerX = 8.0f;
         right.hotSpotCenterX = 0.65f;
@@ -744,7 +870,7 @@ static void GetEmotionPreset(NSString *name, ProceduralEyeConfig *outLeft, Proce
         topColor = cyanTop;
         bottomColor = cyanBottom;
     } else {
-        // Default Neutral
+        // Default Neutral: pure electric cyan rounded squircles
         topColor = cyanTop;
         bottomColor = cyanBottom;
     }
@@ -900,27 +1026,28 @@ static DeskCompanionViewController *g_viewController = nil;
 
 - (void)loadView {
     [super loadView];
-    // Radial gradient obsidian depth background
-    _bgView = [[RadialGradientBackgroundView alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-    _bgView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.view = _bgView;
+    self.view = [[[UIView alloc] initWithFrame:[[UIScreen mainScreen] bounds]] autorelease];
+    self.view.backgroundColor = [UIColor blackColor];
+    self.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     g_viewController = self;
+    self.view.backgroundColor = [UIColor blackColor];
 
     CGFloat screenW = 320.0;
     CGFloat screenH = 480.0;
 
     // ========================================================
-    // 1. TOP STATUS BAR PILL (Frosted Hairline Card)
+    // 1. TOP STATUS BAR PILL (Frosted Hairline Card - Hidden in Zen)
     // ========================================================
     _statusBarPill = [[UIView alloc] initWithFrame:CGRectMake(16, 14, screenW - 32, 28)];
     _statusBarPill.backgroundColor = [UIColor colorWithRed:0.04 green:0.06 blue:0.09 alpha:0.88];
     _statusBarPill.layer.cornerRadius = 14.0;
     _statusBarPill.layer.borderWidth = 1.0;
     _statusBarPill.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.08].CGColor;
+    _statusBarPill.alpha = 0.0;
     [self.view addSubview:_statusBarPill];
 
     // Left Connection Badge
@@ -949,39 +1076,26 @@ static DeskCompanionViewController *g_viewController = nil;
     [_statusBarPill addSubview:_batteryLabel];
 
     // ========================================================
-    // 2. CENTRAL ENTITY: LIVING VECTOR EYES WITH ANATOMY
+    // 2. CENTRAL ENTITY: LIVING COZMO & VECTOR RETRO EYES
     // ========================================================
     _eyeContainer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, screenW, screenH)];
     _eyeContainer.backgroundColor = [UIColor clearColor];
     [self.view addSubview:_eyeContainer];
 
-    CGFloat eyeW = 50.0;
-    CGFloat eyeH = 76.0;
-    CGFloat eyeSpacing = 54.0;
-    CGFloat eyeY = 175.0; // Optical center on 320x480 Retina stage
+    // Chunky retro squircle proportions matching Cozmo visor stage
+    CGFloat eyeW = 110.0;
+    CGFloat eyeH = 96.0;
+    CGFloat eyeSpacing = 20.0;
+    CGFloat eyeY = 185.0; // Optical center on 320x480 Retina stage
 
-    CGRect leftFrame = CGRectMake(screenW/2.0 - eyeSpacing - eyeW/2.0, eyeY, eyeW, eyeH);
-    CGRect rightFrame = CGRectMake(screenW/2.0 + eyeSpacing - eyeW/2.0, eyeY, eyeW, eyeH);
+    CGFloat totalW = eyeW * 2.0 + eyeSpacing;
+    CGRect leftFrame = CGRectMake((screenW - totalW) / 2.0, eyeY, eyeW, eyeH);
+    CGRect rightFrame = CGRectMake(leftFrame.origin.x + eyeW + eyeSpacing, eyeY, eyeW, eyeH);
 
     _defaultEyeFrameLeft = leftFrame;
     _defaultEyeFrameRight = rightFrame;
 
-    // Recessed Eye Sockets (Believable Spatial Enclosure)
-    _leftSocket = [[UIView alloc] initWithFrame:CGRectMake(leftFrame.origin.x - 3.0, leftFrame.origin.y - 3.0, eyeW + 6.0, eyeH + 6.0)];
-    _leftSocket.backgroundColor = [UIColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.35];
-    _leftSocket.layer.cornerRadius = (eyeW + 6.0) / 2.0;
-    _leftSocket.layer.borderWidth = 1.0;
-    _leftSocket.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.04].CGColor;
-    [_eyeContainer addSubview:_leftSocket];
-
-    _rightSocket = [[UIView alloc] initWithFrame:CGRectMake(rightFrame.origin.x - 3.0, rightFrame.origin.y - 3.0, eyeW + 6.0, eyeH + 6.0)];
-    _rightSocket.backgroundColor = [UIColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.35];
-    _rightSocket.layer.cornerRadius = (eyeW + 6.0) / 2.0;
-    _rightSocket.layer.borderWidth = 1.0;
-    _rightSocket.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.04].CGColor;
-    [_eyeContainer addSubview:_rightSocket];
-
-    // --- Procedural Vector Eyes (Vector & Cozmo Architecture) ---
+    // Procedural Vector & Cozmo Eyes (OLED radiant core, Bézier squircles)
     _leftEye = [[ProceduralEyeView alloc] initWithFrame:leftFrame isLeft:YES];
     [_eyeContainer addSubview:_leftEye];
 
@@ -999,6 +1113,7 @@ static DeskCompanionViewController *g_viewController = nil;
     [self setupProceduralEngine];
 
     _reducedMotion = [[NSUserDefaults standardUserDefaults] boolForKey:@"PhysicalAgentReducedMotion"];
+    _zenMode = YES; // Default to pure face mode: 100% black canvas with glowing eyes
 
     // ========================================================
     // 3. SUB-PERCEPTUAL BREATHING CYCLE (PowerVR SGX GPU)
@@ -1026,7 +1141,7 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 
     // ========================================================
-    // 5. BOTTOM THOUGHT CARD (Refined Hairline Linear Card)
+    // 5. BOTTOM THOUGHT CARD (Refined Hairline Linear Card - Hidden in Zen)
     // ========================================================
     CGFloat cardW = screenW - 32.0;
     CGFloat cardH = 52.0;
@@ -1035,6 +1150,7 @@ static DeskCompanionViewController *g_viewController = nil;
     _thoughtCard.layer.cornerRadius = 14.0;
     _thoughtCard.layer.borderWidth = 1.0;
     _thoughtCard.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.07].CGColor;
+    _thoughtCard.alpha = 0.0;
     [self.view addSubview:_thoughtCard];
 
     // Glowing Status Dot
