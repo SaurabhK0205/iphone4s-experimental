@@ -441,32 +441,14 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 }
 
-// Asymmetrical Eyelid Kinematics (82% upper lid descent, 18% lower lid rise)
+// GPU-Accelerated Asymmetrical Eyelid Kinematics (Layer Transform Scale, 0% CPU Overhead)
 - (void)blink {
     _isBlinking = YES;
-    CGFloat origLeftH = _defaultEyeFrameLeft.size.height;
-    CGFloat origRightH = _defaultEyeFrameRight.size.height;
-    CGFloat origLeftY = _defaultEyeFrameLeft.origin.y;
-    CGFloat origRightY = _defaultEyeFrameRight.origin.y;
 
-    CGFloat closedH = 3.5;
-    CGFloat deltaLeft = origLeftH - closedH;
-    CGFloat deltaRight = origRightH - closedH;
-
-    CGFloat upperDescentLeft = deltaLeft * 0.82;
-    CGFloat upperDescentRight = deltaRight * 0.82;
-
-    // Fast organic close: 75ms ease-out
+    // Fast organic close: 75ms ease-out via GPU transform scale
     [UIView animateWithDuration:0.075 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        CGRect lFrame = self->_leftEye.frame;
-        lFrame.size.height = closedH;
-        lFrame.origin.y = origLeftY + upperDescentLeft;
-        self->_leftEye.frame = lFrame;
-
-        CGRect rFrame = self->_rightEye.frame;
-        rFrame.size.height = closedH;
-        rFrame.origin.y = origRightY + upperDescentRight;
-        self->_rightEye.frame = rFrame;
+        self->_leftEye.transform = CGAffineTransformMakeScale(1.0, 0.05);
+        self->_rightEye.transform = CGAffineTransformMakeScale(1.0, 0.05);
 
         self->_leftSpecularPrimary.alpha = 0.0;
         self->_leftSpecularSecondary.alpha = 0.0;
@@ -477,15 +459,8 @@ static DeskCompanionViewController *g_viewController = nil;
     } completion:^(BOOL finished) {
         // Organic bounce open: 110ms ease-in
         [UIView animateWithDuration:0.11 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
-            CGRect lFrame = self->_leftEye.frame;
-            lFrame.size.height = origLeftH;
-            lFrame.origin.y = origLeftY;
-            self->_leftEye.frame = lFrame;
-
-            CGRect rFrame = self->_rightEye.frame;
-            rFrame.size.height = origRightH;
-            rFrame.origin.y = origRightY;
-            self->_rightEye.frame = rFrame;
+            self->_leftEye.transform = CGAffineTransformIdentity;
+            self->_rightEye.transform = CGAffineTransformIdentity;
 
             self->_leftSpecularPrimary.alpha = 0.85;
             self->_leftSpecularSecondary.alpha = 0.40;
@@ -1022,9 +997,11 @@ static DeskCompanionViewController *g_viewController = nil;
     [self setSpeaking:YES];
     [self setStatusTitle:@"AGENT LISTENING //" subtitle:@"Recording audio via iPhone 4S mic"];
 
+    __block DeskCompanionViewController *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + 1.5) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (self->_isRecording && self->_audioRecorder) {
-            [self->_audioRecorder stop];
+        DeskCompanionViewController *strongSelf = weakSelf;
+        if (strongSelf && strongSelf->_isRecording && strongSelf->_audioRecorder) {
+            [strongSelf->_audioRecorder stop];
         }
     });
 }
@@ -1088,6 +1065,12 @@ static DeskCompanionViewController *g_viewController = nil;
     if ([interruptionType unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan) {
         if (_isRecording && _audioRecorder && [_audioRecorder isRecording]) {
             [_audioRecorder stop];
+        }
+    } else if ([interruptionType unsignedIntegerValue] == AVAudioSessionInterruptionTypeEnded) {
+        NSNumber *options = [notification.userInfo objectForKey:AVAudioSessionInterruptionOptionKey];
+        if ([options unsignedIntegerValue] & AVAudioSessionInterruptionOptionShouldResume) {
+            NSError *actErr = nil;
+            [[AVAudioSession sharedInstance] setActive:YES error:&actErr];
         }
     }
 }

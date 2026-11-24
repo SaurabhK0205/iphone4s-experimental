@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DeskCompanion - Python Host Bridge for PhysicalAgent (iPhone 4S on iOS 6.1.3)
+DeskCompanion: Python Host Bridge for PhysicalAgent (iPhone 4S on iOS 6.1.3)
 Communicates bi-directionally over 30-pin USB via usbmuxd / iproxy.
 """
 
@@ -10,6 +10,22 @@ import subprocess
 import time
 import os
 import sys
+import re
+
+# Strict repository standard: verify and enforce project virtual environment
+def _verify_venv():
+    is_venv = (sys.prefix != getattr(sys, "base_prefix", sys.prefix)) or ("VIRTUAL_ENV" in os.environ)
+    if not is_venv:
+        venv_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "bin", "python3")
+        if os.path.exists(venv_py) and sys.executable != venv_py:
+            os.execv(venv_py, [venv_py] + sys.argv)
+
+_verify_venv()
+
+SAFE_PATH_REGEX = re.compile(r"^/tmp/companion_[a-zA-Z0-9_\-\.]+$")
+
+def _is_safe_remote_path(path):
+    return bool(path and SAFE_PATH_REGEX.match(path))
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5555
@@ -57,6 +73,9 @@ class DeskCompanion:
 
     def _download_file(self, remote_path, local_path, timeout=15.0, retries=3):
         """Downloads remote file from iPhone 4S via SCP with retries and bounds."""
+        if not _is_safe_remote_path(remote_path):
+            return {"error": "untrusted_remote_path", "details": f"Remote path '{remote_path}' rejected by safety validation filter"}
+
         ssh_host = self._active_host if self._active_host else "127.0.0.1"
         ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
         key_path = os.path.expanduser("~/.ssh/id_rsa_iphone")
