@@ -226,9 +226,13 @@ async function getAvailableModels(apiKey) {
           .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
           .map((m) => m.name.replace(/^models\//, ''));
         if (supported.length > 0) {
-          const flashModels = supported.filter((m) => m.includes('flash'));
-          const otherModels = supported.filter((m) => !m.includes('flash'));
-          return [...flashModels, ...otherModels];
+          const nonTextKeywords = ['tts', 'embed', 'image', 'audio', 'realtime', 'live'];
+          const textOnly = supported.filter((m) => !nonTextKeywords.some((k) => m.toLowerCase().includes(k)));
+          const stableModels = textOnly.filter((m) => !m.toLowerCase().includes('preview'));
+          const previewModels = textOnly.filter((m) => m.toLowerCase().includes('preview'));
+          const flashStable = stableModels.filter((m) => m.includes('flash'));
+          const otherStable = stableModels.filter((m) => !m.includes('flash'));
+          return [...flashStable, ...otherStable, ...previewModels];
         }
       }
     }
@@ -239,15 +243,7 @@ async function getAvailableModels(apiKey) {
 }
 
 async function runReview() {
-  const preferredModels = [
-    'gemini-flash-lite-latest',
-    'gemini-2.0-flash',
-    'gemini-2.5-flash',
-    'gemini-1.5-flash',
-    'gemini-flash-latest'
-  ];
-  let candidateModels = [...preferredModels];
-
+  const candidateModels = await getAvailableModels(GEMINI_API_KEY);
   let reviewBody = null;
   let lastError = null;
 
@@ -259,7 +255,7 @@ async function runReview() {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(25000),
+        signal: AbortSignal.timeout(60000),
         body: JSON.stringify({
           contents: [
             {
@@ -271,7 +267,7 @@ async function runReview() {
           ],
           generationConfig: {
             temperature: 0.1,
-            maxOutputTokens: 4096
+            maxOutputTokens: 8192
           }
         })
       });
@@ -289,45 +285,6 @@ async function runReview() {
     } catch (err) {
       console.warn(`Gemini model ${modelName} failed:`, err.message || err);
       lastError = err.message || err;
-    }
-  }
-
-  // If preferred static models failed, try dynamic discovery as backup
-  if (!reviewBody) {
-    console.log('Preferred models failed, attempting dynamic model discovery...');
-    const discoveredModels = await getAvailableModels(GEMINI_API_KEY);
-    for (const modelName of discoveredModels) {
-      if (preferredModels.includes(modelName)) continue;
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
-      console.log(`Retrying with discovered model (${modelName})...`);
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(25000),
-          body: JSON.stringify({
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  { text: `${systemPrompt}\n\n--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${diff}` }
-                ]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: 4096
-            }
-          })
-        });
-        if (response.ok) {
-          const data = await response.json();
-          reviewBody = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (reviewBody) break;
-        }
-      } catch (err) {
-        console.warn(`Discovered model ${modelName} failed:`, err.message || err);
-      }
     }
   }
 

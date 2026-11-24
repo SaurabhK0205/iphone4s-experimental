@@ -268,6 +268,7 @@ async function runReview() {
         if (attempt > 1) {
           console.log(`Retrying Nemotron review on ${modelName} (attempt ${attempt}/2)...`);
         }
+        const maxTokens = (modelName.includes('8b') || modelName.includes('llama-3.1-8b')) ? 4096 : 8192;
         const response = await fetch(url, {
           method: 'POST',
           headers: {
@@ -282,7 +283,7 @@ async function runReview() {
               { role: 'user', content: `--- GIT DIFF FOR PULL REQUEST #${PR_NUMBER} ---\n\n${diff}` }
             ],
             temperature: 0.1,
-            max_tokens: 4096
+            max_tokens: maxTokens
           })
         });
 
