@@ -271,7 +271,10 @@ async function runReview() {
           ],
           generationConfig: {
             temperature: 0.1,
-            maxOutputTokens: 4096
+            maxOutputTokens: 8192,
+            thinkingConfig: {
+              thinkingBudget: 0
+            }
           }
         })
       });
@@ -316,7 +319,10 @@ async function runReview() {
             ],
             generationConfig: {
               temperature: 0.1,
-              maxOutputTokens: 4096
+              maxOutputTokens: 8192,
+              thinkingConfig: {
+                thinkingBudget: 0
+              }
             }
           })
         });
