@@ -20,6 +20,7 @@
 - (void)drawRect:(CGRect)rect {
     CGContextRef ctx = UIGraphicsGetCurrentContext();
     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    if (!colorSpace) return;
 
     // Optical center focal point behind eyes (160, 175)
     CGPoint focalCenter = CGPointMake(self.bounds.size.width / 2.0f, 175.0f);
@@ -33,9 +34,10 @@
     CGFloat locations[2] = { 0.0f, 1.0f };
 
     CGGradientRef grad = CGGradientCreateWithColorComponents(colorSpace, components, locations, 2);
-    CGContextDrawRadialGradient(ctx, grad, focalCenter, 0.0f, focalCenter, endRadius, kCGGradientDrawsAfterEndLocation);
-
-    CGGradientRelease(grad);
+    if (grad) {
+        CGContextDrawRadialGradient(ctx, grad, focalCenter, 0.0f, focalCenter, endRadius, kCGGradientDrawsAfterEndLocation);
+        CGGradientRelease(grad);
+    }
     CGColorSpaceRelease(colorSpace);
 }
 
@@ -47,7 +49,7 @@
 @class DeskCompanionViewController;
 static DeskCompanionViewController *g_viewController = nil;
 
-@interface DeskCompanionViewController : UIViewController <UIGestureRecognizerDelegate> {
+@interface DeskCompanionViewController : UIViewController <UIGestureRecognizerDelegate, AVAudioRecorderDelegate> {
     // Canvas Background
     RadialGradientBackgroundView *_bgView;
 
@@ -93,6 +95,7 @@ static DeskCompanionViewController *g_viewController = nil;
     NSTimer *_blinkTimer;
     NSTimer *_saccadeTimer;
     BOOL _isBlinking;
+    BOOL _isPanning;
     BOOL _zenMode;
     BOOL _reducedMotion;
     NSString *_currentExpression;
@@ -101,14 +104,10 @@ static DeskCompanionViewController *g_viewController = nil;
     CGRect _defaultEyeFrameLeft;
     CGRect _defaultEyeFrameRight;
 
-    // Camera Hardware
-    AVCaptureSession *_captureSession;
-    AVCaptureStillImageOutput *_stillImageOutput;
-    AVCaptureDevicePosition _currentCameraPos;
-    BOOL _isCameraRunning;
-
     // Audio Microphone Hardware
     AVAudioRecorder *_audioRecorder;
+    BOOL _isRecording;
+    void (^_audioRecordCompletion)(NSString *path, NSUInteger size, NSError *err);
 }
 
 - (void)setExpression:(NSString *)expression;
@@ -221,7 +220,7 @@ static DeskCompanionViewController *g_viewController = nil;
     _leftEye.clipsToBounds = YES;
     [_eyeContainer addSubview:_leftEye];
 
-    _leftIrisGradient = [[CAGradientLayer layer] retain];
+    _leftIrisGradient = [CAGradientLayer layer];
     _leftIrisGradient.frame = CGRectMake(0, 0, eyeW, eyeH);
     _leftIrisGradient.cornerRadius = eyeW / 2.0;
     _leftIrisGradient.colors = @[
@@ -258,7 +257,7 @@ static DeskCompanionViewController *g_viewController = nil;
     _rightEye.clipsToBounds = YES;
     [_eyeContainer addSubview:_rightEye];
 
-    _rightIrisGradient = [[CAGradientLayer layer] retain];
+    _rightIrisGradient = [CAGradientLayer layer];
     _rightIrisGradient.frame = CGRectMake(0, 0, eyeW, eyeH);
     _rightIrisGradient.cornerRadius = eyeW / 2.0;
     _rightIrisGradient.colors = @[
@@ -366,6 +365,12 @@ static DeskCompanionViewController *g_viewController = nil;
     [singleTap requireGestureRecognizerToFail:doubleTap];
 
     // Timers
+    _reducedMotion = [[NSUserDefaults standardUserDefaults] boolForKey:@"PhysicalAgentReducedMotion"];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAudioInterruption:)
+                                                 name:AVAudioSessionInterruptionNotification
+                                               object:nil];
+
     [self updateClock];
     _clockTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(updateClock) userInfo:nil repeats:YES];
     _blinkTimer = [NSTimer scheduledTimerWithTimeInterval:3.8 target:self selector:@selector(triggerRandomBlink) userInfo:nil repeats:YES];
@@ -400,6 +405,8 @@ static DeskCompanionViewController *g_viewController = nil;
 
 - (void)setReducedMotion:(BOOL)reduced {
     _reducedMotion = reduced;
+    [[NSUserDefaults standardUserDefaults] setBool:reduced forKey:@"PhysicalAgentReducedMotion"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
     if (_reducedMotion) {
         [_eyeContainer.layer removeAnimationForKey:@"breatheScale"];
         [_leftEye.layer removeAnimationForKey:@"breatheGlow"];
@@ -494,7 +501,7 @@ static DeskCompanionViewController *g_viewController = nil;
 
 // Organic Saccade Clusters with Parallax Cornea Catchlights
 - (void)triggerMicroSaccade {
-    if (_isBlinking || _isSpeaking || _reducedMotion || [_currentExpression isEqualToString:@"sleep"]) return;
+    if (_isBlinking || _isSpeaking || _isPanning || _reducedMotion || [_currentExpression isEqualToString:@"sleep"]) return;
 
     // Natural saccadic displacement: -4 to +4 pt horizontal, -2 to +2 pt vertical
     int rx = (int)arc4random_uniform(9) - 4;
@@ -513,6 +520,7 @@ static DeskCompanionViewController *g_viewController = nil;
     } completion:^(BOOL finished) {
         // Hold fixation for 1.8 seconds, then perform subtle micro-correction and return
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (self->_isPanning) return;
             [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
                 self->_leftEye.center = self->_defaultEyeCenterLeft;
                 self->_rightEye.center = self->_defaultEyeCenterRight;
@@ -551,6 +559,10 @@ static DeskCompanionViewController *g_viewController = nil;
     UIColor *dimBlueBottom = [UIColor colorWithRed:0.06 green:0.12 blue:0.20 alpha:0.6];
 
     [UIView animateWithDuration:0.26 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        // Reset eye transforms to identity before adjusting frames (UIKit invariant)
+        self->_leftEye.transform = CGAffineTransformIdentity;
+        self->_rightEye.transform = CGAffineTransformIdentity;
+
         if ([expression isEqualToString:@"happy"]) {
             self->_leftEye.frame = CGRectMake(screenW/2.0 - eyeSpacing - 25, eyeY - 6, 50, 56);
             self->_rightEye.frame = CGRectMake(screenW/2.0 + eyeSpacing - 25, eyeY - 6, 50, 56);
@@ -564,6 +576,10 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_rightEye.transform = CGAffineTransformMakeRotation(0.14);
             self->_leftPupilCore.transform = CGAffineTransformMakeScale(0.88, 0.88);
             self->_rightPupilCore.transform = CGAffineTransformMakeScale(0.88, 0.88);
+            self->_leftSpecularPrimary.alpha = 0.85;
+            self->_leftSpecularSecondary.alpha = 0.40;
+            self->_rightSpecularPrimary.alpha = 0.85;
+            self->_rightSpecularSecondary.alpha = 0.40;
             self->_statusDot.backgroundColor = greenTop;
             self->_statusDot.layer.shadowColor = greenTop.CGColor;
         } else if ([expression isEqualToString:@"surprised"]) {
@@ -580,6 +596,10 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_rightEye.transform = CGAffineTransformIdentity;
             self->_leftPupilCore.transform = CGAffineTransformMakeScale(1.35, 1.35);
             self->_rightPupilCore.transform = CGAffineTransformMakeScale(1.35, 1.35);
+            self->_leftSpecularPrimary.alpha = 0.85;
+            self->_leftSpecularSecondary.alpha = 0.40;
+            self->_rightSpecularPrimary.alpha = 0.85;
+            self->_rightSpecularSecondary.alpha = 0.40;
             self->_statusDot.backgroundColor = amberTop;
             self->_statusDot.layer.shadowColor = amberTop.CGColor;
         } else if ([expression isEqualToString:@"thinking"]) {
@@ -595,6 +615,10 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_rightEye.transform = CGAffineTransformMakeRotation(0.12);
             self->_leftPupilCore.transform = CGAffineTransformMakeScale(1.10, 1.10);
             self->_rightPupilCore.transform = CGAffineTransformMakeScale(1.10, 1.10);
+            self->_leftSpecularPrimary.alpha = 0.85;
+            self->_leftSpecularSecondary.alpha = 0.40;
+            self->_rightSpecularPrimary.alpha = 0.85;
+            self->_rightSpecularSecondary.alpha = 0.40;
             self->_statusDot.backgroundColor = purpleTop;
             self->_statusDot.layer.shadowColor = purpleTop.CGColor;
         } else if ([expression isEqualToString:@"alert"]) {
@@ -611,6 +635,10 @@ static DeskCompanionViewController *g_viewController = nil;
             self->_rightEye.transform = CGAffineTransformMakeRotation(-0.20);
             self->_leftPupilCore.transform = CGAffineTransformMakeScale(0.65, 0.65);
             self->_rightPupilCore.transform = CGAffineTransformMakeScale(0.65, 0.65);
+            self->_leftSpecularPrimary.alpha = 0.85;
+            self->_leftSpecularSecondary.alpha = 0.40;
+            self->_rightSpecularPrimary.alpha = 0.85;
+            self->_rightSpecularSecondary.alpha = 0.40;
             self->_statusDot.backgroundColor = redTop;
             self->_statusDot.layer.shadowColor = redTop.CGColor;
         } else if ([expression isEqualToString:@"sleep"]) {
@@ -770,7 +798,8 @@ static DeskCompanionViewController *g_viewController = nil;
     dx = fmaxf(-18.0, fminf(18.0, dx));
     dy = fmaxf(-14.0, fminf(14.0, dy));
 
-    if (gesture.state == UIGestureRecognizerStateChanged) {
+    if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged) {
+        _isPanning = YES;
         _leftEye.center = CGPointMake(_defaultEyeCenterLeft.x + dx, _defaultEyeCenterLeft.y + dy);
         _rightEye.center = CGPointMake(_defaultEyeCenterRight.x + dx, _defaultEyeCenterRight.y + dy);
 
@@ -778,6 +807,7 @@ static DeskCompanionViewController *g_viewController = nil;
         _leftSpecularPrimary.transform = CGAffineTransformMakeTranslation(dx * 0.22, dy * 0.22);
         _rightSpecularPrimary.transform = CGAffineTransformMakeTranslation(dx * 0.22, dy * 0.22);
     } else if (gesture.state == UIGestureRecognizerStateEnded || gesture.state == UIGestureRecognizerStateCancelled) {
+        _isPanning = NO;
         [UIView animateWithDuration:0.28 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
             self->_leftEye.center = self->_defaultEyeCenterLeft;
             self->_rightEye.center = self->_defaultEyeCenterRight;
@@ -831,13 +861,15 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)setTorch:(BOOL)enable {
     AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     if ([device hasTorch] && [device hasFlash]) {
-        [device lockForConfiguration:nil];
-        if (enable) {
-            [device setTorchMode:AVCaptureTorchModeOn];
-        } else {
-            [device setTorchMode:AVCaptureTorchModeOff];
+        NSError *lockErr = nil;
+        if ([device lockForConfiguration:&lockErr]) {
+            if (enable) {
+                [device setTorchMode:AVCaptureTorchModeOn];
+            } else {
+                [device setTorchMode:AVCaptureTorchModeOff];
+            }
+            [device unlockForConfiguration];
         }
-        [device unlockForConfiguration];
     }
 }
 
@@ -901,22 +933,38 @@ static DeskCompanionViewController *g_viewController = nil;
                 return;
             }
             NSData *jpeg = [AVCaptureStillImageOutput jpegStillImageNSDataRepresentation:sbuf];
-            NSString *savePath = @"/tmp/companion_snapshot.jpg";
-            [jpeg writeToFile:savePath atomically:YES];
+            NSString *snapId = [[NSProcessInfo processInfo] globallyUniqueString];
+            NSString *savePath = [NSString stringWithFormat:@"/tmp/companion_snapshot_%@.jpg", snapId];
+            BOOL written = [jpeg writeToFile:savePath atomically:YES];
             [self playSoundNamed:@"shutter"];
-            if (completion) completion(savePath, [jpeg length], nil);
+            if (written) {
+                if (completion) completion(savePath, [jpeg length], nil);
+            } else {
+                if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanion" code:-4 userInfo:nil]);
+            }
         }];
     });
 }
 
 // Microphone Perception: Record linear PCM 16kHz mono audio on iPhone 4S
 - (void)recordAudioDuration:(NSTimeInterval)duration completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
-    if (_audioRecorder) {
-        if ([_audioRecorder isRecording]) {
-            [_audioRecorder stop];
+    if (_isRecording) {
+        if (completion) {
+            NSError *busyErr = [NSError errorWithDomain:@"DeskCompanionAudio" code:-10 userInfo:@{NSLocalizedDescriptionKey: @"Audio recording already in progress"}];
+            completion(nil, 0, busyErr);
         }
+        return;
+    }
+
+    if (_audioRecorder) {
+        if ([_audioRecorder isRecording]) [_audioRecorder stop];
+        _audioRecorder.delegate = nil;
         [_audioRecorder release];
         _audioRecorder = nil;
+    }
+    if (_audioRecordCompletion) {
+        Block_release(_audioRecordCompletion);
+        _audioRecordCompletion = nil;
     }
 
     AVAudioSession *audioSession = [AVAudioSession sharedInstance];
@@ -931,10 +979,9 @@ static DeskCompanionViewController *g_viewController = nil;
         return;
     }
 
-    NSString *recordPath = @"/tmp/companion_audio.wav";
+    NSString *audioId = [[NSProcessInfo processInfo] globallyUniqueString];
+    NSString *recordPath = [NSString stringWithFormat:@"/tmp/companion_audio_%@.wav", audioId];
     NSURL *recordURL = [NSURL fileURLWithPath:recordPath];
-
-    [[NSFileManager defaultManager] removeItemAtPath:recordPath error:nil];
 
     NSDictionary *recordSettings = @{
         AVFormatIDKey: @(kAudioFormatLinearPCM),
@@ -953,9 +1000,19 @@ static DeskCompanionViewController *g_viewController = nil;
         return;
     }
 
+    _audioRecorder.delegate = self;
+    _audioRecordCompletion = Block_copy(completion);
+    _isRecording = YES;
+
     if (![_audioRecorder recordForDuration:duration]) {
+        _isRecording = NO;
+        _audioRecorder.delegate = nil;
         [_audioRecorder release];
         _audioRecorder = nil;
+        if (_audioRecordCompletion) {
+            Block_release(_audioRecordCompletion);
+            _audioRecordCompletion = nil;
+        }
         [audioSession setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
         if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanionAudio" code:-4 userInfo:nil]);
         return;
@@ -965,48 +1022,98 @@ static DeskCompanionViewController *g_viewController = nil;
     [self setSpeaking:YES];
     [self setStatusTitle:@"AGENT LISTENING //" subtitle:@"Recording audio via iPhone 4S mic"];
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + 0.15) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self setSpeaking:NO];
-        [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
-
-        if (self->_audioRecorder) {
-            if ([self->_audioRecorder isRecording]) {
-                [self->_audioRecorder stop];
-            }
-            [self->_audioRecorder release];
-            self->_audioRecorder = nil;
-        }
-
-        NSError *deactErr = nil;
-        [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:&deactErr];
-
-        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:recordPath error:nil];
-        NSUInteger fileSize = [attrs fileSize];
-        if (fileSize > 0) {
-            if (completion) completion(recordPath, fileSize, nil);
-        } else {
-            if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanionAudio" code:-5 userInfo:nil]);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + 1.5) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self->_isRecording && self->_audioRecorder) {
+            [self->_audioRecorder stop];
         }
     });
+}
+
+#pragma mark - AVAudioRecorderDelegate
+
+- (void)audioRecorderDidFinishRecording:(AVAudioRecorder *)recorder successfully:(BOOL)flag {
+    [self setSpeaking:NO];
+    [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
+
+    NSString *filePath = [recorder.url path];
+    _isRecording = NO;
+
+    if (_audioRecorder) {
+        _audioRecorder.delegate = nil;
+        [_audioRecorder release];
+        _audioRecorder = nil;
+    }
+
+    [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:filePath error:nil];
+    NSUInteger fileSize = [attrs fileSize];
+
+    if (_audioRecordCompletion) {
+        void (^comp)(NSString *, NSUInteger, NSError *) = _audioRecordCompletion;
+        _audioRecordCompletion = nil;
+        if (flag && fileSize > 0) {
+            comp(filePath, fileSize, nil);
+        } else {
+            NSError *err = [NSError errorWithDomain:@"DeskCompanionAudio" code:-5 userInfo:@{NSLocalizedDescriptionKey: @"Audio recording failed to write valid data"}];
+            comp(nil, 0, err);
+        }
+        Block_release(comp);
+    }
+}
+
+- (void)audioRecorderEncodeErrorDidOccur:(AVAudioRecorder *)recorder error:(NSError *)error {
+    [self setSpeaking:NO];
+    [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Awaiting multimodal input"];
+    _isRecording = NO;
+
+    if (_audioRecorder) {
+        _audioRecorder.delegate = nil;
+        [_audioRecorder release];
+        _audioRecorder = nil;
+    }
+
+    [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+
+    if (_audioRecordCompletion) {
+        void (^comp)(NSString *, NSUInteger, NSError *) = _audioRecordCompletion;
+        _audioRecordCompletion = nil;
+        comp(nil, 0, error ? error : [NSError errorWithDomain:@"DeskCompanionAudio" code:-6 userInfo:nil]);
+        Block_release(comp);
+    }
+}
+
+- (void)handleAudioInterruption:(NSNotification *)notification {
+    NSNumber *interruptionType = [notification.userInfo objectForKey:AVAudioSessionInterruptionTypeKey];
+    if ([interruptionType unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan) {
+        if (_isRecording && _audioRecorder && [_audioRecorder isRecording]) {
+            [_audioRecorder stop];
+        }
+    }
 }
 
 // Pixel-Exact Retina Screen Capture
 - (void)captureScreenToPath:(NSString *)path completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
         UIGraphicsBeginImageContextWithOptions(self.view.bounds.size, YES, 2.0);
         [self.view.layer renderInContext:UIGraphicsGetCurrentContext()];
         UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
 
         if (!img) {
+            [pool drain];
             if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanionScreen" code:-1 userInfo:nil]);
             return;
         }
 
         NSData *pngData = UIImagePNGRepresentation(img);
         BOOL written = [pngData writeToFile:path atomically:YES];
+        NSUInteger len = [pngData length];
+        [pool drain];
+
         if (written) {
-            if (completion) completion(path, [pngData length], nil);
+            if (completion) completion(path, len, nil);
         } else {
             if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanionScreen" code:-2 userInfo:nil]);
         }
@@ -1046,6 +1153,7 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [_bgView release];
     [_statusBarPill release];
     [_connectionLabel release];
@@ -1056,8 +1164,6 @@ static DeskCompanionViewController *g_viewController = nil;
     [_eyeContainer release];
     [_leftEye release];
     [_rightEye release];
-    [_leftIrisGradient release];
-    [_rightIrisGradient release];
     [_leftPupilCore release];
     [_rightPupilCore release];
     [_leftSpecularPrimary release];
@@ -1075,14 +1181,15 @@ static DeskCompanionViewController *g_viewController = nil;
     [_saccadeTimer invalidate];
     [_waveTimer invalidate];
     [_currentExpression release];
-    if (_captureSession) {
-        [_captureSession stopRunning];
-        [_captureSession release];
-    }
-    [_stillImageOutput release];
     if (_audioRecorder) {
-        [_audioRecorder stop];
+        if ([_audioRecorder isRecording]) [_audioRecorder stop];
+        _audioRecorder.delegate = nil;
         [_audioRecorder release];
+        _audioRecorder = nil;
+    }
+    if (_audioRecordCompletion) {
+        Block_release(_audioRecordCompletion);
+        _audioRecordCompletion = nil;
     }
     [super dealloc];
 }
@@ -1134,6 +1241,7 @@ static void *SocketServerThread(void *arg) {
 
                 if (cmdDict && [cmdDict isKindOfClass:[NSDictionary class]]) {
                     NSString *command = [cmdDict objectForKey:@"command"];
+                    BOOL handledAsynchronously = NO;
 
                     if ([command isEqualToString:@"ping"]) {
                         [response setObject:@"pong" forKey:@"status"];
@@ -1147,14 +1255,14 @@ static void *SocketServerThread(void *arg) {
                             if (g_viewController) [g_viewController playSoundNamed:soundName];
                         });
                         [response setObject:@"ok" forKey:@"status"];
-                        [response setObject:soundName forKey:@"sound"];
+                        [response setObject:(soundName ? soundName : @"") forKey:@"sound"];
                     } else if ([command isEqualToString:@"expression"]) {
                         NSString *exp = [cmdDict objectForKey:@"name"];
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) [g_viewController setExpression:exp];
                         });
                         [response setObject:@"ok" forKey:@"status"];
-                        [response setObject:exp forKey:@"expression"];
+                        [response setObject:(exp ? exp : @"") forKey:@"expression"];
                     } else if ([command isEqualToString:@"status"]) {
                         NSString *title = [cmdDict objectForKey:@"title"];
                         NSString *subtitle = [cmdDict objectForKey:@"subtitle"];
@@ -1166,7 +1274,8 @@ static void *SocketServerThread(void *arg) {
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"speaking"]) {
-                        BOOL isSpk = [[cmdDict objectForKey:@"enable"] boolValue];
+                        id en = [cmdDict objectForKey:@"enable"];
+                        BOOL isSpk = [en respondsToSelector:@selector(boolValue)] ? [en boolValue] : NO;
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) [g_viewController setSpeaking:isSpk];
                         });
@@ -1177,7 +1286,8 @@ static void *SocketServerThread(void *arg) {
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"reduced_motion"]) {
-                        BOOL red = [[cmdDict objectForKey:@"enable"] boolValue];
+                        id en = [cmdDict objectForKey:@"enable"];
+                        BOOL red = [en respondsToSelector:@selector(boolValue)] ? [en boolValue] : NO;
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) [g_viewController setReducedMotion:red];
                         });
@@ -1189,143 +1299,157 @@ static void *SocketServerThread(void *arg) {
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"torch"]) {
-                        BOOL torchOn = [[cmdDict objectForKey:@"enable"] boolValue];
+                        id en = [cmdDict objectForKey:@"enable"];
+                        BOOL torchOn = [en respondsToSelector:@selector(boolValue)] ? [en boolValue] : NO;
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) [g_viewController setTorch:torchOn];
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:@(torchOn) forKey:@"torch"];
                     } else if ([command isEqualToString:@"brightness"]) {
-                        float level = [[cmdDict objectForKey:@"level"] floatValue];
+                        id lvl = [cmdDict objectForKey:@"level"];
+                        float level = [lvl respondsToSelector:@selector(floatValue)] ? [lvl floatValue] : 0.5f;
                         dispatch_async(dispatch_get_main_queue(), ^{
                             [UIScreen mainScreen].brightness = level;
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:@(level) forKey:@"brightness"];
                     } else if ([command isEqualToString:@"snapshot"]) {
+                        handledAsynchronously = YES;
                         NSString *cam = [cmdDict objectForKey:@"camera"];
-                        if (!cam) cam = @"back";
-
-                        __block NSString *snapPath = nil;
-                        __block NSUInteger snapSize = 0;
-                        __block NSError *snapErr = nil;
-                        dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+                        if (!cam || ![cam isKindOfClass:[NSString class]]) cam = @"back";
 
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
                                 [g_viewController takeSnapshot:cam completion:^(NSString *path, NSUInteger size, NSError *err) {
-                                    snapPath = [path copy];
-                                    snapSize = size;
-                                    snapErr = [err retain];
-                                    dispatch_semaphore_signal(sema);
+                                    NSMutableDictionary *resp = [NSMutableDictionary dictionary];
+                                    if (path) {
+                                        [resp setObject:@"ok" forKey:@"status"];
+                                        [resp setObject:path forKey:@"path"];
+                                        [resp setObject:@(size) forKey:@"size"];
+                                        [resp setObject:cam forKey:@"camera"];
+                                    } else {
+                                        [resp setObject:@"failed" forKey:@"status"];
+                                        if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
+                                    }
+                                    NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+                                    if (data) {
+                                        write(client_fd, [data bytes], [data length]);
+                                        write(client_fd, "\n", 1);
+                                    }
+                                    close(client_fd);
                                 }];
                             } else {
-                                dispatch_semaphore_signal(sema);
+                                NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
+                                NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+                                if (data) {
+                                    write(client_fd, [data bytes], [data length]);
+                                    write(client_fd, "\n", 1);
+                                }
+                                close(client_fd);
                             }
                         });
-
-                        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
-                        dispatch_release(sema);
-
-                        if (snapPath) {
-                            [response setObject:@"ok" forKey:@"status"];
-                            [response setObject:snapPath forKey:@"path"];
-                            [response setObject:@(snapSize) forKey:@"size"];
-                            [response setObject:cam forKey:@"camera"];
-                            [snapPath release];
-                        } else {
-                            [response setObject:@"failed" forKey:@"status"];
-                            if (snapErr) [response setObject:[snapErr localizedDescription] forKey:@"error"];
-                        }
-                        if (snapErr) [snapErr release];
                     } else if ([command isEqualToString:@"record_audio"]) {
-                        NSTimeInterval duration = [[cmdDict objectForKey:@"duration"] doubleValue];
+                        handledAsynchronously = YES;
+                        NSTimeInterval duration = 3.0;
+                        id durObj = [cmdDict objectForKey:@"duration"];
+                        if (durObj && [durObj respondsToSelector:@selector(doubleValue)]) {
+                            duration = [durObj doubleValue];
+                        }
                         if (duration <= 0.1) duration = 3.0;
                         if (duration > 30.0) duration = 30.0;
-
-                        __block NSString *recPath = nil;
-                        __block NSUInteger recSize = 0;
-                        __block NSError *recErr = nil;
-                        dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
                                 [g_viewController recordAudioDuration:duration completion:^(NSString *path, NSUInteger size, NSError *err) {
-                                    recPath = [path copy];
-                                    recSize = size;
-                                    recErr = [err retain];
-                                    dispatch_semaphore_signal(sema);
+                                    NSMutableDictionary *resp = [NSMutableDictionary dictionary];
+                                    if (path) {
+                                        [resp setObject:@"ok" forKey:@"status"];
+                                        [resp setObject:path forKey:@"path"];
+                                        [resp setObject:@(size) forKey:@"size"];
+                                        [resp setObject:@(duration) forKey:@"duration"];
+                                    } else {
+                                        [resp setObject:@"failed" forKey:@"status"];
+                                        if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
+                                    }
+                                    NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+                                    if (data) {
+                                        write(client_fd, [data bytes], [data length]);
+                                        write(client_fd, "\n", 1);
+                                    }
+                                    close(client_fd);
                                 }];
                             } else {
-                                dispatch_semaphore_signal(sema);
+                                NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
+                                NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+                                if (data) {
+                                    write(client_fd, [data bytes], [data length]);
+                                    write(client_fd, "\n", 1);
+                                }
+                                close(client_fd);
                             }
                         });
-
-                        int64_t waitTimeout = (int64_t)((duration + 3.0) * NSEC_PER_SEC);
-                        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, waitTimeout));
-                        dispatch_release(sema);
-
-                        if (recPath) {
-                            [response setObject:@"ok" forKey:@"status"];
-                            [response setObject:recPath forKey:@"path"];
-                            [response setObject:@(recSize) forKey:@"size"];
-                            [response setObject:@(duration) forKey:@"duration"];
-                            [recPath release];
-                        } else {
-                            [response setObject:@"failed" forKey:@"status"];
-                            if (recErr) [response setObject:[recErr localizedDescription] forKey:@"error"];
-                        }
-                        if (recErr) [recErr release];
                     } else if ([command isEqualToString:@"screenshot"]) {
-                        NSString *savePath = @"/tmp/companion_screen.png";
-                        __block NSString *shotPath = nil;
-                        __block NSUInteger shotSize = 0;
-                        __block NSError *shotErr = nil;
-                        dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+                        handledAsynchronously = YES;
+                        NSString *shotId = [[NSProcessInfo processInfo] globallyUniqueString];
+                        NSString *savePath = [NSString stringWithFormat:@"/tmp/companion_screen_%@.png", shotId];
 
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
                                 [g_viewController captureScreenToPath:savePath completion:^(NSString *path, NSUInteger size, NSError *err) {
-                                    shotPath = [path copy];
-                                    shotSize = size;
-                                    shotErr = [err retain];
-                                    dispatch_semaphore_signal(sema);
+                                    NSMutableDictionary *resp = [NSMutableDictionary dictionary];
+                                    if (path) {
+                                        [resp setObject:@"ok" forKey:@"status"];
+                                        [resp setObject:path forKey:@"path"];
+                                        [resp setObject:@(size) forKey:@"size"];
+                                    } else {
+                                        [resp setObject:@"failed" forKey:@"status"];
+                                        if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
+                                    }
+                                    NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+                                    if (data) {
+                                        write(client_fd, [data bytes], [data length]);
+                                        write(client_fd, "\n", 1);
+                                    }
+                                    close(client_fd);
                                 }];
                             } else {
-                                dispatch_semaphore_signal(sema);
+                                NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
+                                NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+                                if (data) {
+                                    write(client_fd, [data bytes], [data length]);
+                                    write(client_fd, "\n", 1);
+                                }
+                                close(client_fd);
                             }
                         });
-
-                        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)));
-                        dispatch_release(sema);
-
-                        if (shotPath) {
-                            [response setObject:@"ok" forKey:@"status"];
-                            [response setObject:shotPath forKey:@"path"];
-                            [response setObject:@(shotSize) forKey:@"size"];
-                            [shotPath release];
-                        } else {
-                            [response setObject:@"failed" forKey:@"status"];
-                            if (shotErr) [response setObject:[shotErr localizedDescription] forKey:@"error"];
-                        }
-                        if (shotErr) [shotErr release];
                     } else if ([command isEqualToString:@"telemetry"]) {
                         [response setObject:@"ok" forKey:@"status"];
                         if (g_viewController) [response addEntriesFromDictionary:[g_viewController getTelemetry]];
                     } else {
                         [response setObject:@"unknown_command" forKey:@"error"];
                     }
+
+                    if (!handledAsynchronously) {
+                        NSData *respData = [NSJSONSerialization dataWithJSONObject:response options:0 error:nil];
+                        if (respData) {
+                            write(client_fd, [respData bytes], [respData length]);
+                            write(client_fd, "\n", 1);
+                        }
+                        close(client_fd);
+                    }
                 } else {
                     [response setObject:@"invalid_json" forKey:@"error"];
+                    NSData *respData = [NSJSONSerialization dataWithJSONObject:response options:0 error:nil];
+                    if (respData) {
+                        write(client_fd, [respData bytes], [respData length]);
+                        write(client_fd, "\n", 1);
+                    }
+                    close(client_fd);
                 }
-
-                NSData *respData = [NSJSONSerialization dataWithJSONObject:response options:0 error:nil];
-                if (respData) {
-                    write(client_fd, [respData bytes], [respData length]);
-                    write(client_fd, "\n", 1);
-                }
+            } else {
+                close(client_fd);
             }
-            close(client_fd);
         });
     }
     return NULL;

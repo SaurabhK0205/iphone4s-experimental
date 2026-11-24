@@ -240,10 +240,8 @@ async function getAvailableModels(apiKey) {
 
 async function runReview() {
   const preferredModels = [
-    'gemini-flash-lite-latest',
-    'gemini-2.0-flash',
-    'gemini-2.5-flash',
-    'gemini-1.5-flash',
+    'gemini-3-flash-preview',
+    'gemini-2.5-flash-lite',
     'gemini-flash-latest'
   ];
   let candidateModels = [...preferredModels];
@@ -271,10 +269,7 @@ async function runReview() {
           ],
           generationConfig: {
             temperature: 0.1,
-            maxOutputTokens: 8192,
-            thinkingConfig: {
-              thinkingBudget: 0
-            }
+            maxOutputTokens: 8192
           }
         })
       });

@@ -55,6 +55,40 @@ class DeskCompanion:
         self._active_host, self._active_port, self._active_ssh_port = WIFI_HOST, WIFI_PORT, WIFI_SSH_PORT
         return self._active_host, self._active_port, self._active_ssh_port
 
+    def _download_file(self, remote_path, local_path, timeout=15.0, retries=3):
+        """Downloads remote file from iPhone 4S via SCP with retries and bounds."""
+        ssh_host = self._active_host if self._active_host else "127.0.0.1"
+        ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
+        key_path = os.path.expanduser("~/.ssh/id_rsa_iphone")
+
+        scp_cmd = [
+            "scp",
+            "-i", key_path,
+            "-P", str(ssh_port),
+            "-o", "ConnectTimeout=5",
+            "-o", "ServerAliveInterval=3",
+            "-o", "ServerAliveCountMax=2",
+            "-o", "StrictHostKeyChecking=accept-new",
+            f"root@{ssh_host}:{remote_path}",
+            local_path
+        ]
+
+        last_err = ""
+        for attempt in range(1, retries + 1):
+            try:
+                ret = subprocess.run(scp_cmd, capture_output=True, timeout=timeout)
+                if ret.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    return {"status": "ok", "local_file": local_path}
+                last_err = ret.stderr.decode("utf-8", errors="replace")
+            except subprocess.TimeoutExpired:
+                last_err = f"SCP transfer timed out after {timeout} seconds"
+            except Exception as e:
+                last_err = str(e)
+            if attempt < retries:
+                time.sleep(0.4 * attempt)
+
+        return {"error": "scp_failed", "details": last_err}
+
     def _send_cmd(self, cmd_dict, timeout=8.0):
         target_host, target_port, target_ssh = self._get_connection_target()
         self._active_host = target_host
@@ -72,8 +106,14 @@ class DeskCompanion:
             if not data:
                 return {"error": "empty_response"}
             return json.loads(data.decode("utf-8"))
-        except ConnectionRefusedError:
-            return {"error": "connection_refused", "message": f"Companion server not reachable at {target_host}:{target_port}."}
+        except (ConnectionRefusedError, socket.timeout, OSError) as conn_err:
+            if self.host is None:
+                self._active_host = None
+                self._active_port = None
+                self._active_ssh_port = None
+            if isinstance(conn_err, ConnectionRefusedError):
+                return {"error": "connection_refused", "message": f"Companion server not reachable at {target_host}:{target_port}."}
+            return {"error": str(conn_err)}
         except Exception as e:
             return {"error": str(e)}
 
@@ -121,31 +161,17 @@ class DeskCompanion:
 
     def snapshot(self, camera="back", save_to=None):
         """Captures a photo via iPhone 4S camera ('back' or 'front') and retrieves it."""
-        res = self._send_cmd({"command": "snapshot", "camera": camera}, timeout=12.0)
+        res = self._send_cmd({"command": "snapshot", "camera": camera}, timeout=15.0)
         if res.get("status") == "ok" and "path" in res:
             remote_path = res["path"]
             if save_to is None:
                 save_to = f"snapshot_{camera}_{int(time.time())}.jpg"
             save_to = os.path.abspath(save_to)
-            
-            # Retrieve file via scp (over USB or Wi-Fi)
-            ssh_host = self._active_host if self._active_host else "127.0.0.1"
-            ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
-            scp_cmd = [
-                "scp",
-                "-i", os.path.expanduser("~/.ssh/id_rsa_iphone"),
-                "-P", str(ssh_port),
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                f"root@{ssh_host}:{remote_path}",
-                save_to
-            ]
-            ret = subprocess.run(scp_cmd, capture_output=True)
-            if ret.returncode == 0 and os.path.exists(save_to):
+            dl_res = self._download_file(remote_path, save_to, timeout=12.0)
+            if dl_res.get("status") == "ok":
                 res["local_file"] = save_to
                 return res
-            else:
-                return {"error": "scp_failed", "details": ret.stderr.decode()}
+            return dl_res
         return res
 
     def inspect_environment(self, save_dir="."):
@@ -174,52 +200,26 @@ class DeskCompanion:
             if save_to is None:
                 save_to = f"companion_audio_{int(time.time())}.wav"
             save_to = os.path.abspath(save_to)
-
-            ssh_host = self._active_host if self._active_host else "127.0.0.1"
-            ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
-            scp_cmd = [
-                "scp",
-                "-i", os.path.expanduser("~/.ssh/id_rsa_iphone"),
-                "-P", str(ssh_port),
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                f"root@{ssh_host}:{remote_path}",
-                save_to
-            ]
-            ret = subprocess.run(scp_cmd, capture_output=True)
-            if ret.returncode == 0 and os.path.exists(save_to):
+            dl_res = self._download_file(remote_path, save_to, timeout=float(duration) + 10.0)
+            if dl_res.get("status") == "ok":
                 res["local_file"] = save_to
                 return res
-            else:
-                return {"error": "scp_failed", "details": ret.stderr.decode()}
+            return dl_res
         return res
 
     def screenshot(self, save_to=None):
         """Captures pixel-exact 640x960 Retina screen of PhysicalAgent and retrieves PNG."""
-        res = self._send_cmd({"command": "screenshot"}, timeout=8.0)
+        res = self._send_cmd({"command": "screenshot"}, timeout=10.0)
         if res.get("status") == "ok" and "path" in res:
             remote_path = res["path"]
             if save_to is None:
                 save_to = f"companion_screen_{int(time.time())}.png"
             save_to = os.path.abspath(save_to)
-
-            ssh_host = self._active_host if self._active_host else "127.0.0.1"
-            ssh_port = self._active_ssh_port if self._active_ssh_port else 2222
-            scp_cmd = [
-                "scp",
-                "-i", os.path.expanduser("~/.ssh/id_rsa_iphone"),
-                "-P", str(ssh_port),
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                f"root@{ssh_host}:{remote_path}",
-                save_to
-            ]
-            ret = subprocess.run(scp_cmd, capture_output=True)
-            if ret.returncode == 0 and os.path.exists(save_to):
+            dl_res = self._download_file(remote_path, save_to, timeout=10.0)
+            if dl_res.get("status") == "ok":
                 res["local_file"] = save_to
                 return res
-            else:
-                return {"error": "scp_failed", "details": ret.stderr.decode()}
+            return dl_res
         return res
 
     def say(self, text, voice="Samantha"):
