@@ -208,9 +208,33 @@ class DeskCompanion:
     def telemetry(self):
         return self._send_cmd({"command": "telemetry"})
 
-    def set_expression(self, expression_name):
-        """happy, surprised, thinking, alert, sleep, glance_left, glance_right, neutral"""
-        return self._send_cmd({"command": "expression", "name": expression_name})
+    def set_expression(self, expression_name, duration=0.28):
+        """Sets procedural eye expression.
+        Supported presets: neutral, happy, glee, curious, skeptic, surprised,
+        thinking, focused, annoyed, alert, sleepy, asleep, confused, frustrated, sad,
+        glance_left, glance_right.
+        """
+        return self._send_cmd({"command": "expression", "name": expression_name, "duration": float(duration)})
+
+    def look_at(self, x=0.0, y=0.0, duration=0.22):
+        """Sets companion gaze direction using normalized coordinates [-1.0, 1.0]."""
+        x_clamped = max(-1.0, min(1.0, float(x)))
+        y_clamped = max(-1.0, min(1.0, float(y)))
+        return self._send_cmd({"command": "look_at", "x": x_clamped, "y": y_clamped, "duration": float(duration)})
+
+    def set_eye_params(self, left_params=None, right_params=None, duration=0.28):
+        """Sets the 25 procedural parameters for left and/or right eye."""
+        cmd = {"command": "procedural_eye_params", "duration": float(duration)}
+        if left_params is not None:
+            cmd["left"] = list(left_params)
+        if right_params is not None:
+            cmd["right"] = list(right_params)
+        return self._send_cmd(cmd)
+
+    def set_scanlines(self, opacity=0.12):
+        """Sets CRT scanline overlay opacity [0.0, 0.40]."""
+        opacity_clamped = max(0.0, min(0.40, float(opacity)))
+        return self._send_cmd({"command": "scanlines", "opacity": opacity_clamped})
 
     def set_status(self, title, subtitle=None):
         cmd = {"command": "status", "title": title}
@@ -387,7 +411,9 @@ def interactive_cli():
     print(" Target: Physical iPhone 4S (iOS 6.1.3) via 30-Pin USB")
     print("=" * 60)
     print("Commands:")
-    print("  express <name>      Set expression (happy, surprised, thinking, alert, sleep, neutral, glance_left, glance_right)")
+    print("  express <name>      Set procedural expression (neutral, happy, glee, curious, skeptic, surprised, thinking, focused, annoyed, alert, sleepy, asleep, confused, frustrated, sad)")
+    print("  look <x> <y>        Direct companion gaze using normalized floats (-1.0 to 1.0)")
+    print("  scanlines <opacity> Set retro CRT scanline contrast (0.0 to 0.40)")
     print("  status <text>       Set HUD status text")
     print("  say <text>          Speak aloud and animate companion")
     print("  vibrate             Trigger haptic vibration motor")
@@ -420,6 +446,16 @@ def interactive_cli():
                 break
             elif cmd == "express":
                 res = companion.set_expression(arg if arg else "neutral")
+                print("Result:", res)
+            elif cmd == "look":
+                coords = [float(c) for c in arg.split()] if arg else [0.0, 0.0]
+                lx = coords[0] if len(coords) > 0 else 0.0
+                ly = coords[1] if len(coords) > 1 else 0.0
+                res = companion.look_at(lx, ly)
+                print("Result:", res)
+            elif cmd == "scanlines":
+                op = float(arg) if arg else 0.12
+                res = companion.set_scanlines(op)
                 print("Result:", res)
             elif cmd == "status":
                 res = companion.set_status(arg)
