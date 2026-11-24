@@ -212,7 +212,7 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     if (self) {
         self.backgroundColor = [UIColor clearColor];
         self.userInteractionEnabled = NO;
-        _scanlineOpacity = 0.0f; // Pure sleek OLED black surface (scanlines disabled by default)
+        _scanlineOpacity = 0.20f; // Authentic retro CRT TV raster scanline depth
     }
     return self;
 }
@@ -283,11 +283,11 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
             _hotSpotGradient = CGGradientCreateWithColorComponents(_rgbColorSpace, hotComponents, hotLocs, 2);
         }
 
-        // Pitch black obsidian canvas: no outer layer shadow to eliminate backlight bleed
-        self.layer.shadowColor = [UIColor clearColor].CGColor;
+        // Outer phosphor glow blooming directly into the obsidian black bezel
+        self.layer.shadowColor = [UIColor colorWithRed:0.02 green:0.88 blue:1.0 alpha:1.0].CGColor;
         self.layer.shadowOffset = CGSizeZero;
-        self.layer.shadowRadius = 0.0f;
-        self.layer.shadowOpacity = 0.0f;
+        self.layer.shadowRadius = 22.0f;
+        self.layer.shadowOpacity = 0.95f;
 
         _config = ProceduralEyeConfigDefault();
         [self applyConfig:_config];
@@ -338,8 +338,9 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
 }
 
 - (void)setGlowColor:(UIColor *)color {
-    // Preserved for API compatibility; canvas maintains pure black pixels outside iris
-    (void)color;
+    if (color) {
+        self.layer.shadowColor = color.CGColor;
+    }
 }
 
 - (void)applyConfig:(ProceduralEyeConfig)config {
@@ -394,6 +395,7 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     [eyePath addLineToPoint:CGPointMake(0.0f, rTL)];
     [eyePath addArcWithCenter:CGPointMake(rTL, rTL) radius:rTL startAngle:(CGFloat)M_PI endAngle:(CGFloat)(1.5 * M_PI) clockwise:YES];
     [eyePath closePath];
+    self.layer.shadowPath = eyePath.CGPath;
 
     // Clip to the base squircle eye shape
     CGContextSaveGState(ctx);
