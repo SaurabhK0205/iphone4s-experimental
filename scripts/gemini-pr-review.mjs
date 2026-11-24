@@ -241,7 +241,9 @@ async function getAvailableModels(apiKey) {
 async function runReview() {
   const preferredModels = [
     'gemini-3-flash-preview',
-    'gemini-2.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-3.7-flash',
+    'gemini-3.5-flash',
     'gemini-flash-latest'
   ];
   let candidateModels = [...preferredModels];
@@ -257,7 +259,7 @@ async function runReview() {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(25000),
+        signal: AbortSignal.timeout(60000),
         body: JSON.stringify({
           contents: [
             {
@@ -302,7 +304,7 @@ async function runReview() {
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(25000),
+          signal: AbortSignal.timeout(60000),
           body: JSON.stringify({
             contents: [
               {
@@ -314,10 +316,7 @@ async function runReview() {
             ],
             generationConfig: {
               temperature: 0.1,
-              maxOutputTokens: 8192,
-              thinkingConfig: {
-                thinkingBudget: 0
-              }
+              maxOutputTokens: 8192
             }
           })
         });
