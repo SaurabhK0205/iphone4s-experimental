@@ -19,7 +19,7 @@ def is_in_venv():
     """Verify that Python execution is isolated within the project virtual environment."""
     return (sys.prefix != getattr(sys, "base_prefix", sys.prefix)) or ("VIRTUAL_ENV" in os.environ)
 
-SAFE_PATH_REGEX = re.compile(r"^/tmp/companion_[a-zA-Z0-9_.-]+$")
+SAFE_PATH_REGEX = re.compile(r"^/tmp/companion_[a-zA-Z0-9_-]+\.(jpg|wav|png)$")
 
 def _is_safe_remote_path(path):
     return bool(path and SAFE_PATH_REGEX.match(path))
@@ -152,10 +152,6 @@ class DeskCompanion:
                     return {"error": "empty_response"}
                 return json.loads(data.decode("utf-8"))
             except Exception as e:
-                if self.host is None:
-                    self._active_host = None
-                    self._active_port = None
-                    self._active_ssh_port = None
                 return {"error": str(e)}
 
     def ping(self):

@@ -15,35 +15,47 @@
 // ========================================================
 // 1. ATMOSPHERIC CANVAS DEPTH (Radial Gradient Background)
 // ========================================================
-@interface RadialGradientBackgroundView : UIView
+@interface RadialGradientBackgroundView : UIView {
+    CGGradientRef _gradient;
+    CGColorSpaceRef _colorSpace;
+}
 @end
 
 @implementation RadialGradientBackgroundView
-- (void)drawRect:(CGRect)rect {
-    CGContextRef ctx = UIGraphicsGetCurrentContext();
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    if (!colorSpace) return;
 
-    // Optical center focal point behind eyes (160, 175)
+- (id)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _colorSpace = CGColorSpaceCreateDeviceRGB();
+        if (_colorSpace) {
+            CGFloat components[8] = {
+                0.032f, 0.047f, 0.086f, 1.0f, // Optical center core
+                0.004f, 0.007f, 0.016f, 1.0f  // Obsidian canvas perimeter
+            };
+            CGFloat locations[2] = { 0.0f, 1.0f };
+            _gradient = CGGradientCreateWithColorComponents(_colorSpace, components, locations, 2);
+        }
+    }
+    return self;
+}
+
+- (void)drawRect:(CGRect)rect {
+    if (!_gradient) return;
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
     CGPoint focalCenter = CGPointMake(self.bounds.size.width / 2.0f, 175.0f);
     CGFloat endRadius = 320.0f;
-
-    // #080c18 deep focal core to #010204 obsidian boundary
-    CGFloat components[8] = {
-        0.032f, 0.047f, 0.086f, 1.0f, // Optical center core
-        0.004f, 0.007f, 0.016f, 1.0f  // Obsidian canvas perimeter
-    };
-    CGFloat locations[2] = { 0.0f, 1.0f };
-
-    CGGradientRef grad = CGGradientCreateWithColorComponents(colorSpace, components, locations, 2);
-    if (grad) {
-        CGContextDrawRadialGradient(ctx, grad, focalCenter, 0.0f, focalCenter, endRadius, kCGGradientDrawsAfterEndLocation);
-        CGGradientRelease(grad);
-    }
-    CGColorSpaceRelease(colorSpace);
+    CGContextDrawRadialGradient(ctx, _gradient, focalCenter, 0.0f, focalCenter, endRadius, kCGGradientDrawsAfterEndLocation);
 }
 
 - (void)dealloc {
+    if (_gradient) {
+        CGGradientRelease(_gradient);
+        _gradient = NULL;
+    }
+    if (_colorSpace) {
+        CGColorSpaceRelease(_colorSpace);
+        _colorSpace = NULL;
+    }
     [super dealloc];
 }
 @end
