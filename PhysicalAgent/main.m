@@ -1101,6 +1101,8 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)handleMotionData:(CMAcceleration)accel;
 - (void)setAppOrientation:(UIInterfaceOrientation)orientation;
 - (void)transitionToOrientation:(UIInterfaceOrientation)targetOrientation animated:(BOOL)animated duration:(NSTimeInterval)duration;
+- (void)handleAppDidEnterBackground:(NSNotification *)notification;
+- (void)handleAppWillEnterForeground:(NSNotification *)notification;
 - (void)updateAudioMeters:(NSTimer *)timer;
 - (void)setReducedMotion:(BOOL)reduced;
 - (void)takeSnapshot:(NSString *)cameraPosition completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion;
@@ -1337,6 +1339,14 @@ static DeskCompanionViewController *g_viewController = nil;
                                              selector:@selector(handleDeviceOrientationChange:)
                                                  name:UIDeviceOrientationDidChangeNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAppDidEnterBackground:)
+                                                 name:UIApplicationDidEnterBackgroundNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAppWillEnterForeground:)
+                                                 name:UIApplicationWillEnterForegroundNotification
+                                               object:nil];
 
     _motionManager = [[CMMotionManager alloc] init];
     if ([_motionManager isAccelerometerAvailable]) {
@@ -1360,6 +1370,22 @@ static DeskCompanionViewController *g_viewController = nil;
     if (target != _currentOrientation) {
         _lastOrientationChangeTime = CACurrentMediaTime();
         [self transitionToOrientation:target animated:YES duration:0.38];
+    }
+}
+
+- (void)handleAppDidEnterBackground:(NSNotification *)notification {
+    if (_motionManager && [_motionManager isAccelerometerActive]) {
+        [_motionManager stopAccelerometerUpdates];
+    }
+}
+
+- (void)handleAppWillEnterForeground:(NSNotification *)notification {
+    if (_motionManager && [_motionManager isAccelerometerAvailable] && ![_motionManager isAccelerometerActive]) {
+        __unsafe_unretained DeskCompanionViewController *weakSelf = self;
+        [_motionManager startAccelerometerUpdatesToQueue:[NSOperationQueue mainQueue] withHandler:^(CMAccelerometerData *data, NSError *err) {
+            if (!weakSelf || !data) return;
+            [weakSelf handleMotionData:data.acceleration];
+        }];
     }
 }
 
@@ -2695,6 +2721,7 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
             @"z": @(_lastAccel.z)
         },
         @"vc_interface_orientation": @((int)self.interfaceOrientation),
+        @"current_orientation": @((int)_currentOrientation),
         @"status_bar_orientation": @((int)[UIApplication sharedApplication].statusBarOrientation),
         @"device_orientation": @((int)[UIDevice currentDevice].orientation),
         @"view_bounds": NSStringFromCGRect(self.view.bounds),
