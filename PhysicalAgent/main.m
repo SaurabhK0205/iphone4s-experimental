@@ -1378,6 +1378,9 @@ static DeskCompanionViewController *g_viewController = nil;
     if (W <= 0.0f || H <= 0.0f) return;
 
     CGRect fullRect = CGRectMake(0, 0, W, H);
+    self.view.bounds = fullRect;
+    self.view.center = CGPointMake(W * 0.5f, H * 0.5f);
+
     _bgView.bounds = fullRect;
     _bgView.center = CGPointMake(W * 0.5f, H * 0.5f);
 
@@ -1757,6 +1760,9 @@ static DeskCompanionViewController *g_viewController = nil;
     [self toggleZenMode];
 }
 
+static const CGFloat kEyeLookSensitivityX = 10.0f;
+static const CGFloat kEyeLookSensitivityY = 8.0f;
+
 - (void)handleSingleTap:(UITapGestureRecognizer *)gesture {
     CGPoint pt = [gesture locationInView:self.view];
     CGFloat screenW = self.view.bounds.size.width;
@@ -1769,6 +1775,8 @@ static DeskCompanionViewController *g_viewController = nil;
         [_reactionTimer invalidate];
         _reactionTimer = nil;
     }
+    _isBlinking = NO;
+    _saccadeGeneration++;
 
     // Organic tactile squash via layer keyframe
     CAKeyframeAnimation *squash = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
@@ -1805,15 +1813,22 @@ static DeskCompanionViewController *g_viewController = nil;
     UIColor *topColor = nil, *bottomColor = nil;
     GetEmotionPreset(reactionExp, &targetLeft, &targetRight, &topColor, &bottomColor);
 
+    if (!topColor) {
+        topColor = [UIColor colorWithRed:0.22 green:0.75 blue:0.98 alpha:1.0];
+    }
+    if (!bottomColor) {
+        bottomColor = [UIColor colorWithRed:0.01 green:0.48 blue:0.80 alpha:1.0];
+    }
+
     targetLeft.hotSpotCenterX = normX;
     targetLeft.hotSpotCenterY = normY;
-    targetLeft.centerX = normX * 10.0f;
-    targetLeft.centerY = normY * 8.0f;
+    targetLeft.centerX = normX * kEyeLookSensitivityX;
+    targetLeft.centerY = normY * kEyeLookSensitivityY;
 
     targetRight.hotSpotCenterX = normX;
     targetRight.hotSpotCenterY = normY;
-    targetRight.centerX = normX * 10.0f;
-    targetRight.centerY = normY * 8.0f;
+    targetRight.centerX = normX * kEyeLookSensitivityX;
+    targetRight.centerY = normY * kEyeLookSensitivityY;
 
     _leftTargetExpressionConfig = targetLeft;
     _rightTargetExpressionConfig = targetRight;
@@ -2934,12 +2949,6 @@ static void *SocketServerThread(void *arg) {
                             else if ([orientStr isEqualToString:@"upside_down"]) targetOrient = UIInterfaceOrientationPortraitUpsideDown;
                             else targetOrient = UIInterfaceOrientationPortrait;
 
-                            typedef void (*SetOrientationFunc)(id, SEL, UIInterfaceOrientation);
-                            SEL sel = @selector(setOrientation:);
-                            if ([[UIDevice currentDevice] respondsToSelector:sel]) {
-                                SetOrientationFunc setOrient = (SetOrientationFunc)[[UIDevice currentDevice] methodForSelector:sel];
-                                if (setOrient) setOrient([UIDevice currentDevice], sel, targetOrient);
-                            }
                             if (g_viewController) {
                                 [g_viewController updateLayoutForOrientation:targetOrient];
                             }
