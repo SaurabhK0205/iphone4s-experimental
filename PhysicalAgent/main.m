@@ -1405,12 +1405,20 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)transitionToOrientation:(UIInterfaceOrientation)targetOrientation animated:(BOOL)animated duration:(NSTimeInterval)duration {
-    if (targetOrientation == _currentOrientation) return;
+    if (targetOrientation == 0) return;
+
     if (_isTransitioningOrientation) {
         _pendingOrientation = targetOrientation;
         return;
     }
+
+    if (targetOrientation == _currentOrientation) {
+        _pendingOrientation = 0;
+        return;
+    }
+
     _currentOrientation = targetOrientation;
+    _pendingOrientation = 0;
 
     if (animated) {
         _isTransitioningOrientation = YES;
@@ -1427,10 +1435,12 @@ static DeskCompanionViewController *g_viewController = nil;
             [self->_leftEye setNeedsDisplay];
             [self->_rightEye setNeedsDisplay];
             [self->_scanlineOverlay setNeedsDisplay];
-            if (self->_pendingOrientation != 0 && self->_pendingOrientation != self->_currentOrientation) {
+            if (self->_pendingOrientation != 0) {
                 UIInterfaceOrientation next = self->_pendingOrientation;
                 self->_pendingOrientation = 0;
-                [self transitionToOrientation:next animated:YES duration:0.38];
+                if (next != self->_currentOrientation) {
+                    [self transitionToOrientation:next animated:YES duration:0.38];
+                }
             }
         }];
     } else {
@@ -2475,7 +2485,7 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     _lastAccel = accel;
 
     // Physical orientation tracking from hardware accelerometer (functions autonomously even if SpringBoard is locked)
-    UIInterfaceOrientation detectedOrient = _currentOrientation;
+    UIInterfaceOrientation detectedOrient = 0;
     float ax = (float)accel.x;
     float ay = (float)accel.y;
     float az = (float)accel.z;
@@ -2492,10 +2502,12 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         }
     }
     NSTimeInterval now = CACurrentMediaTime();
-    if (detectedOrient != _currentOrientation && (now - _lastOrientationChangeTime > 0.40)) {
-        _lastOrientationChangeTime = now;
+    if (detectedOrient != 0) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self transitionToOrientation:detectedOrient animated:YES duration:0.38];
+            if (detectedOrient != self->_currentOrientation && (now - self->_lastOrientationChangeTime > 0.40)) {
+                self->_lastOrientationChangeTime = now;
+                [self transitionToOrientation:detectedOrient animated:YES duration:0.38];
+            }
         });
     }
 
