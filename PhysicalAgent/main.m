@@ -38,6 +38,10 @@
     CGGradientRelease(grad);
     CGColorSpaceRelease(colorSpace);
 }
+
+- (void)dealloc {
+    [super dealloc];
+}
 @end
 
 @class DeskCompanionViewController;
@@ -217,7 +221,7 @@ static DeskCompanionViewController *g_viewController = nil;
     _leftEye.clipsToBounds = YES;
     [_eyeContainer addSubview:_leftEye];
 
-    _leftIrisGradient = [CAGradientLayer layer];
+    _leftIrisGradient = [[CAGradientLayer layer] retain];
     _leftIrisGradient.frame = CGRectMake(0, 0, eyeW, eyeH);
     _leftIrisGradient.cornerRadius = eyeW / 2.0;
     _leftIrisGradient.colors = @[
@@ -254,7 +258,7 @@ static DeskCompanionViewController *g_viewController = nil;
     _rightEye.clipsToBounds = YES;
     [_eyeContainer addSubview:_rightEye];
 
-    _rightIrisGradient = [CAGradientLayer layer];
+    _rightIrisGradient = [[CAGradientLayer layer] retain];
     _rightIrisGradient.frame = CGRectMake(0, 0, eyeW, eyeH);
     _rightIrisGradient.cornerRadius = eyeW / 2.0;
     _rightIrisGradient.colors = @[
@@ -916,9 +920,16 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 
     AVAudioSession *audioSession = [AVAudioSession sharedInstance];
-    NSError *sessionErr = nil;
-    [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord error:&sessionErr];
-    [audioSession setActive:YES error:&sessionErr];
+    NSError *categoryErr = nil;
+    if (![audioSession setCategory:AVAudioSessionCategoryPlayAndRecord error:&categoryErr]) {
+        if (completion) completion(nil, 0, categoryErr ? categoryErr : [NSError errorWithDomain:@"DeskCompanionAudio" code:-1 userInfo:nil]);
+        return;
+    }
+    NSError *activeErr = nil;
+    if (![audioSession setActive:YES error:&activeErr]) {
+        if (completion) completion(nil, 0, activeErr ? activeErr : [NSError errorWithDomain:@"DeskCompanionAudio" code:-2 userInfo:nil]);
+        return;
+    }
 
     NSString *recordPath = @"/tmp/companion_audio.wav";
     NSURL *recordURL = [NSURL fileURLWithPath:recordPath];
@@ -937,11 +948,18 @@ static DeskCompanionViewController *g_viewController = nil;
     NSError *recorderErr = nil;
     _audioRecorder = [[AVAudioRecorder alloc] initWithURL:recordURL settings:recordSettings error:&recorderErr];
     if (recorderErr || !_audioRecorder) {
-        if (completion) completion(nil, 0, recorderErr ? recorderErr : [NSError errorWithDomain:@"DeskCompanionAudio" code:-1 userInfo:nil]);
+        [audioSession setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+        if (completion) completion(nil, 0, recorderErr ? recorderErr : [NSError errorWithDomain:@"DeskCompanionAudio" code:-3 userInfo:nil]);
         return;
     }
 
-    [_audioRecorder recordForDuration:duration];
+    if (![_audioRecorder recordForDuration:duration]) {
+        [_audioRecorder release];
+        _audioRecorder = nil;
+        [audioSession setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+        if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanionAudio" code:-4 userInfo:nil]);
+        return;
+    }
 
     // Animate audio waveform to reflect active listening
     [self setSpeaking:YES];
@@ -967,7 +985,7 @@ static DeskCompanionViewController *g_viewController = nil;
         if (fileSize > 0) {
             if (completion) completion(recordPath, fileSize, nil);
         } else {
-            if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanionAudio" code:-2 userInfo:nil]);
+            if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanionAudio" code:-5 userInfo:nil]);
         }
     });
 }
@@ -1038,6 +1056,8 @@ static DeskCompanionViewController *g_viewController = nil;
     [_eyeContainer release];
     [_leftEye release];
     [_rightEye release];
+    [_leftIrisGradient release];
+    [_rightIrisGradient release];
     [_leftPupilCore release];
     [_rightPupilCore release];
     [_leftSpecularPrimary release];
