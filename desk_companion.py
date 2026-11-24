@@ -11,6 +11,7 @@ import time
 import os
 import sys
 import re
+import uuid
 
 # Strict repository standard: verify virtual environment isolation
 def is_in_venv():
@@ -92,6 +93,9 @@ class DeskCompanion:
             try:
                 ret = subprocess.run(scp_cmd, capture_output=True, timeout=timeout)
                 if ret.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    # Clean up remote capture file after successful retrieval
+                    del_cmd = ["ssh", "-i", key_path, "-p", str(ssh_port), "-o", "ConnectTimeout=5", f"root@{ssh_host}", f"rm -f {remote_path}"]
+                    subprocess.run(del_cmd, capture_output=True, timeout=5.0)
                     return {"status": "ok", "local_file": local_path}
                 last_err = ret.stderr.decode("utf-8", errors="replace")
             except subprocess.TimeoutExpired:
@@ -109,20 +113,13 @@ class DeskCompanion:
         self._active_port = target_port
         self._active_ssh_port = target_ssh
 
-        def _execute_socket(host, port):
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(timeout)
-                s.connect((host, port))
-                payload = json.dumps(cmd_dict).encode("utf-8")
-                s.sendall(payload)
-                data = s.recv(8192)
-                if not data:
-                    return {"error": "empty_response"}
-                return json.loads(data.decode("utf-8"))
-
+        # Phase 1: Connect to target (retry on alternate transport only if connect fails before sending)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
         try:
-            return _execute_socket(target_host, target_port)
+            s.connect((target_host, target_port))
         except (ConnectionRefusedError, socket.timeout, OSError) as conn_err:
+            s.close()
             if self.host is None:
                 self._active_host = None
                 self._active_port = None
@@ -130,19 +127,33 @@ class DeskCompanion:
                 alt_host = WIFI_HOST if target_host == DEFAULT_HOST else DEFAULT_HOST
                 alt_port = WIFI_PORT if target_port == DEFAULT_PORT else DEFAULT_PORT
                 alt_ssh = WIFI_SSH_PORT if target_ssh == SSH_PORT else SSH_PORT
+                s_alt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s_alt.settimeout(timeout)
                 try:
-                    res = _execute_socket(alt_host, alt_port)
+                    s_alt.connect((alt_host, alt_port))
                     self._active_host, self._active_port, self._active_ssh_port = alt_host, alt_port, alt_ssh
-                    return res
+                    s = s_alt
                 except Exception:
+                    s_alt.close()
                     return {"error": "connection_refused", "message": f"Companion server unreachable on {target_host}:{target_port} and {alt_host}:{alt_port}."}
-            return {"error": str(conn_err)}
-        except Exception as e:
-            if self.host is None:
-                self._active_host = None
-                self._active_port = None
-                self._active_ssh_port = None
-            return {"error": str(e)}
+            else:
+                return {"error": str(conn_err)}
+
+        # Phase 2: Transmission and reception (never repeated on alternate transport to prevent duplicate actions)
+        with s:
+            try:
+                payload = json.dumps(cmd_dict).encode("utf-8")
+                s.sendall(payload)
+                data = s.recv(8192)
+                if not data:
+                    return {"error": "empty_response"}
+                return json.loads(data.decode("utf-8"))
+            except Exception as e:
+                if self.host is None:
+                    self._active_host = None
+                    self._active_port = None
+                    self._active_ssh_port = None
+                return {"error": str(e)}
 
     def ping(self):
         return self._send_cmd({"command": "ping"})
@@ -192,7 +203,7 @@ class DeskCompanion:
         if res.get("status") == "ok" and "path" in res:
             remote_path = res["path"]
             if save_to is None:
-                save_to = f"snapshot_{camera}_{int(time.time())}.jpg"
+                save_to = f"snapshot_{camera}_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             save_to = os.path.abspath(save_to)
             dl_res = self._download_file(remote_path, save_to, timeout=12.0)
             if dl_res.get("status") == "ok":
@@ -205,8 +216,9 @@ class DeskCompanion:
         """Captures both front (desk/user) and rear (workspace macro) angles with hardware settle delay."""
         os.makedirs(save_dir, exist_ok=True)
         ts = int(time.time())
-        front_path = os.path.join(save_dir, f"inspect_front_{ts}.jpg")
-        back_path = os.path.join(save_dir, f"inspect_back_{ts}.jpg")
+        req_id = uuid.uuid4().hex[:6]
+        front_path = os.path.join(save_dir, f"inspect_front_{ts}_{req_id}.jpg")
+        back_path = os.path.join(save_dir, f"inspect_back_{ts}_{req_id}.jpg")
 
         front_res = self.snapshot("front", save_to=front_path)
         # Settle delay between camera switches to allow iOS 6 mediaserverd camera ISP hardware release
@@ -235,7 +247,7 @@ class DeskCompanion:
         if res.get("status") == "ok" and "path" in res:
             remote_path = res["path"]
             if save_to is None:
-                save_to = f"companion_audio_{int(time.time())}.wav"
+                save_to = f"companion_audio_{int(time.time())}_{uuid.uuid4().hex[:6]}.wav"
             save_to = os.path.abspath(save_to)
             dl_res = self._download_file(remote_path, save_to, timeout=dur + 10.0)
             if dl_res.get("status") == "ok":
@@ -250,7 +262,7 @@ class DeskCompanion:
         if res.get("status") == "ok" and "path" in res:
             remote_path = res["path"]
             if save_to is None:
-                save_to = f"companion_screen_{int(time.time())}.png"
+                save_to = f"companion_screen_{int(time.time())}_{uuid.uuid4().hex[:6]}.png"
             save_to = os.path.abspath(save_to)
             dl_res = self._download_file(remote_path, save_to, timeout=10.0)
             if dl_res.get("status") == "ok":

@@ -123,6 +123,7 @@ static DeskCompanionViewController *g_viewController = nil;
     NSTimer *_clockTimer;
     NSTimer *_blinkTimer;
     NSTimer *_saccadeTimer;
+    NSTimer *_pruneTimer;
     BOOL _isBlinking;
     BOOL _isPanning;
     BOOL _zenMode;
@@ -404,9 +405,14 @@ static DeskCompanionViewController *g_viewController = nil;
     _clockTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(updateClock) userInfo:nil repeats:YES];
     _blinkTimer = [NSTimer scheduledTimerWithTimeInterval:3.8 target:self selector:@selector(triggerRandomBlink) userInfo:nil repeats:YES];
     _saccadeTimer = [NSTimer scheduledTimerWithTimeInterval:5.5 target:self selector:@selector(triggerMicroSaccade) userInfo:nil repeats:YES];
+    _pruneTimer = [NSTimer scheduledTimerWithTimeInterval:300.0 target:self selector:@selector(periodicPrune:) userInfo:nil repeats:YES];
 
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
+}
+
+- (void)periodicPrune:(NSTimer *)timer {
+    PruneOldTmpArtifacts();
 }
 
 - (void)startBreathingCycle {
@@ -1252,6 +1258,7 @@ static DeskCompanionViewController *g_viewController = nil;
     [_blinkTimer invalidate];
     [_saccadeTimer invalidate];
     [_waveTimer invalidate];
+    [_pruneTimer invalidate];
     [_currentExpression release];
     if (_leftIrisGradient) {
         [_leftIrisGradient removeFromSuperlayer];
@@ -1377,11 +1384,16 @@ static void *SocketServerThread(void *arg) {
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"speaking"]) {
                         id en = [cmdDict objectForKey:@"enable"];
-                        BOOL isSpk = [en respondsToSelector:@selector(boolValue)] ? [en boolValue] : NO;
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setSpeaking:isSpk];
-                        });
-                        [response setObject:@"ok" forKey:@"status"];
+                        if (!en || ![en isKindOfClass:[NSNumber class]] || CFGetTypeID((CFTypeRef)en) != CFBooleanGetTypeID()) {
+                            [response setObject:@"invalid_parameter" forKey:@"error"];
+                            [response setObject:@"'enable' parameter must be a JSON boolean (true or false)" forKey:@"details"];
+                        } else {
+                            BOOL isSpk = [en boolValue];
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                if (g_viewController) [g_viewController setSpeaking:isSpk];
+                            });
+                            [response setObject:@"ok" forKey:@"status"];
+                        }
                     } else if ([command isEqualToString:@"zen"]) {
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) [g_viewController toggleZenMode];
@@ -1389,12 +1401,17 @@ static void *SocketServerThread(void *arg) {
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"reduced_motion"]) {
                         id en = [cmdDict objectForKey:@"enable"];
-                        BOOL red = [en respondsToSelector:@selector(boolValue)] ? [en boolValue] : NO;
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setReducedMotion:red];
-                        });
-                        [response setObject:@"ok" forKey:@"status"];
-                        [response setObject:@(red) forKey:@"reduced_motion"];
+                        if (!en || ![en isKindOfClass:[NSNumber class]] || CFGetTypeID((CFTypeRef)en) != CFBooleanGetTypeID()) {
+                            [response setObject:@"invalid_parameter" forKey:@"error"];
+                            [response setObject:@"'enable' parameter must be a JSON boolean (true or false)" forKey:@"details"];
+                        } else {
+                            BOOL red = [en boolValue];
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                if (g_viewController) [g_viewController setReducedMotion:red];
+                            });
+                            [response setObject:@"ok" forKey:@"status"];
+                            [response setObject:@(red) forKey:@"reduced_motion"];
+                        }
                     } else if ([command isEqualToString:@"blink"]) {
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) [g_viewController blink];
@@ -1402,12 +1419,17 @@ static void *SocketServerThread(void *arg) {
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"torch"]) {
                         id en = [cmdDict objectForKey:@"enable"];
-                        BOOL torchOn = [en respondsToSelector:@selector(boolValue)] ? [en boolValue] : NO;
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setTorch:torchOn];
-                        });
-                        [response setObject:@"ok" forKey:@"status"];
-                        [response setObject:@(torchOn) forKey:@"torch"];
+                        if (!en || ![en isKindOfClass:[NSNumber class]] || CFGetTypeID((CFTypeRef)en) != CFBooleanGetTypeID()) {
+                            [response setObject:@"invalid_parameter" forKey:@"error"];
+                            [response setObject:@"'enable' parameter must be a JSON boolean (true or false)" forKey:@"details"];
+                        } else {
+                            BOOL torchOn = [en boolValue];
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                if (g_viewController) [g_viewController setTorch:torchOn];
+                            });
+                            [response setObject:@"ok" forKey:@"status"];
+                            [response setObject:@(torchOn) forKey:@"torch"];
+                        }
                     } else if ([command isEqualToString:@"brightness"]) {
                         id lvl = [cmdDict objectForKey:@"level"];
                         float level = [lvl respondsToSelector:@selector(floatValue)] ? [lvl floatValue] : 0.5f;
@@ -1420,6 +1442,11 @@ static void *SocketServerThread(void *arg) {
                         handledAsynchronously = YES;
                         NSString *cam = [cmdDict objectForKey:@"camera"];
                         if (!cam || ![cam isKindOfClass:[NSString class]]) cam = @"back";
+
+                        // Operation deadline to guarantee client_fd closure if capture hangs
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                            SafeSendAndClose(client_fd, nil);
+                        });
 
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
@@ -1435,12 +1462,16 @@ static void *SocketServerThread(void *arg) {
                                         if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
                                     }
                                     NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                    SafeSendAndClose(client_fd, data);
+                                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                        SafeSendAndClose(client_fd, data);
+                                    });
                                 }];
                             } else {
                                 NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
                                 NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                SafeSendAndClose(client_fd, data);
+                                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                    SafeSendAndClose(client_fd, data);
+                                });
                             }
                         });
                     } else if ([command isEqualToString:@"record_audio"]) {
@@ -1452,6 +1483,11 @@ static void *SocketServerThread(void *arg) {
                         }
                         if (duration <= 0.1) duration = 3.0;
                         if (duration > 30.0) duration = 30.0;
+
+                        // Operation deadline to guarantee client_fd closure if recording hangs
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + 10.0) * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                            SafeSendAndClose(client_fd, nil);
+                        });
 
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
@@ -1467,18 +1503,27 @@ static void *SocketServerThread(void *arg) {
                                         if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
                                     }
                                     NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                    SafeSendAndClose(client_fd, data);
+                                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                        SafeSendAndClose(client_fd, data);
+                                    });
                                 }];
                             } else {
                                 NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
                                 NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                SafeSendAndClose(client_fd, data);
+                                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                    SafeSendAndClose(client_fd, data);
+                                });
                             }
                         });
                     } else if ([command isEqualToString:@"screenshot"]) {
                         handledAsynchronously = YES;
                         NSString *shotId = [[NSProcessInfo processInfo] globallyUniqueString];
                         NSString *savePath = [NSString stringWithFormat:@"/tmp/companion_screen_%@.png", shotId];
+
+                        // Operation deadline to guarantee client_fd closure if screenshot hangs
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                            SafeSendAndClose(client_fd, nil);
+                        });
 
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
@@ -1493,12 +1538,16 @@ static void *SocketServerThread(void *arg) {
                                         if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
                                     }
                                     NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                    SafeSendAndClose(client_fd, data);
+                                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                        SafeSendAndClose(client_fd, data);
+                                    });
                                 }];
                             } else {
                                 NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
                                 NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-                                SafeSendAndClose(client_fd, data);
+                                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                    SafeSendAndClose(client_fd, data);
+                                });
                             }
                         });
                     } else if ([command isEqualToString:@"telemetry"]) {
