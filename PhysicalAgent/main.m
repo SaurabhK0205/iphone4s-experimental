@@ -1162,6 +1162,7 @@ static void EnsurePassiveProximityMode(int mode, float brightness) {
     NSString *_lastWakeReason;
     BOOL _lastProximityNear;
     int _proximityNotifyToken;
+    int _blankNotifyToken;
     int _proximityMode;
     float _filteredAx;
     float _filteredAy;
@@ -2603,6 +2604,13 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         [proxSelf processProximityNear:isNear];
     });
 
+    notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &_blankNotifyToken, dispatch_get_main_queue(), ^(int token) {
+        if (!proxSelf) return;
+        if (proxSelf->_lastProximityNear && proxSelf->_powerState == MonolithPowerStateActive) {
+            ForceUnblankDisplay(proxSelf->_activeBrightness);
+        }
+    });
+
     dispatch_queue_t bgQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
     _proximityPollTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, bgQueue);
     if (_proximityPollTimer) {
@@ -2632,6 +2640,10 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     if (_proximityNotifyToken != 0) {
         notify_cancel(_proximityNotifyToken);
         _proximityNotifyToken = 0;
+    }
+    if (_blankNotifyToken != 0) {
+        notify_cancel(_blankNotifyToken);
+        _blankNotifyToken = 0;
     }
 }
 
@@ -2668,9 +2680,9 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
             [_antiBlankTimer invalidate];
             _antiBlankTimer = nil;
         }
-        _antiBlankTimer = [NSTimer scheduledTimerWithTimeInterval:0.12 target:self selector:@selector(enforceUnblankTick:) userInfo:nil repeats:YES];
+        _antiBlankTimer = [NSTimer scheduledTimerWithTimeInterval:0.03 target:self selector:@selector(enforceUnblankTick:) userInfo:nil repeats:YES];
 
-        // Hand hover detected above iPhone 4S top bezel: surprise reaction and glance upward
+        // Hand hover detected above physical earpiece bezel: look directly toward the sensor edge in any orientation
         if (_reactionTimer) {
             [_reactionTimer invalidate];
             _reactionTimer = nil;
@@ -2678,8 +2690,20 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
         [self playSoundNamed:@"chirp"];
         [self setExpression:@"surprised" duration:0.18];
-        [self lookAtX:0.0f y:-0.75f duration:0.16];
-        [self setStatusTitle:@"PROXIMITY ALERT //" subtitle:@"Object detected near top bezel"];
+        CGFloat lookX = 0.0f;
+        CGFloat lookY = -0.75f;
+        if (_currentOrientation == UIInterfaceOrientationLandscapeRight) {
+            lookX = -0.75f;
+            lookY = 0.0f;
+        } else if (_currentOrientation == UIInterfaceOrientationLandscapeLeft) {
+            lookX = 0.75f;
+            lookY = 0.0f;
+        } else if (_currentOrientation == UIInterfaceOrientationPortraitUpsideDown) {
+            lookX = 0.0f;
+            lookY = 0.75f;
+        }
+        [self lookAtX:lookX y:lookY duration:0.16];
+        [self setStatusTitle:@"PROXIMITY ALERT //" subtitle:@"Object detected near bezel sensor"];
     } else {
         if (_antiBlankTimer) {
             [_antiBlankTimer invalidate];
@@ -2841,7 +2865,9 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 
     if (absZ < 0.85f) {
         if (absX > absY + 0.26f && absX > 0.44f) {
-            detectedOrient = (_filteredAx > 0.0f) ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationLandscapeLeft;
+            // Counter-clockwise turn (Home on right = LandscapeRight): gravity pulls toward -X hardware axis
+            // Clockwise turn (Home on left = LandscapeLeft): gravity pulls toward +X hardware axis
+            detectedOrient = (_filteredAx < 0.0f) ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationLandscapeLeft;
         } else if (absY > absX + 0.26f && absY > 0.44f) {
             detectedOrient = (_filteredAy < 0.0f) ? UIInterfaceOrientationPortrait : UIInterfaceOrientationPortraitUpsideDown;
         }
