@@ -272,6 +272,21 @@ class DeskCompanion:
     def set_reduced_motion(self, enable=True):
         return self._send_cmd({"command": "reduced_motion", "enable": bool(enable)})
 
+    def wake(self, reason="remote_wake"):
+        return self._send_cmd({"command": "wake", "reason": str(reason)})
+
+    def sleep(self, mode="obsidian"):
+        """Transitions companion into 'obsidian' (pitch-black) or 'ambient' standby."""
+        return self._send_cmd({"command": "sleep", "mode": str(mode)})
+
+    def set_standby_config(self, idle_timeout=60.0, standby_timeout=180.0):
+        """Configures inactivity timeouts in seconds."""
+        return self._send_cmd({
+            "command": "standby_config",
+            "idle_timeout": float(idle_timeout),
+            "standby_timeout": float(standby_timeout),
+        })
+
     def snapshot(self, camera="back", save_to=None):
         """Captures a photo via iPhone 4S camera ('back' or 'front') and retrieves it."""
         res = self._send_cmd({"command": "snapshot", "camera": camera}, timeout=15.0)
