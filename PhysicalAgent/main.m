@@ -3098,7 +3098,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
         }
         if (!err && meanLuminance >= 0.0f) {
             if (meanLuminance < 0.12f) {
-                [blockSelf setStatusTitle:@"REAR MACRO // TORCH" subtitle:[NSString stringWithFormat:@"Low light (%.0f%%) - pulsing LED", meanLuminance * 100.0f]];
+                [blockSelf setStatusTitle:@"REAR MACRO // TORCH" subtitle:[NSString stringWithFormat:@"Low light (%.0f%%): pulsing LED", meanLuminance * 100.0f]];
                 [blockSelf setTorch:YES];
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     if (blockSelf) {
