@@ -1428,8 +1428,9 @@ static void EnsurePassiveProximityMode(int mode, float brightness) {
 
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
-    _activeBrightness = 0.70f;
-    [UIScreen mainScreen].brightness = _activeBrightness; // Mitigate IPS LCD backlight bleed on pitch black canvas
+    float sysBright = [UIScreen mainScreen].brightness;
+    _activeBrightness = (sysBright >= 0.30f && sysBright <= 1.0f) ? sysBright : 0.85f;
+    [UIScreen mainScreen].brightness = _activeBrightness;
 
     // ========================================================
     // 7. HARDWARE SENSORS: PROXIMITY, STANDBY & COREMOTION ACCELEROMETER
@@ -2680,7 +2681,7 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
             [_antiBlankTimer invalidate];
             _antiBlankTimer = nil;
         }
-        _antiBlankTimer = [NSTimer scheduledTimerWithTimeInterval:0.03 target:self selector:@selector(enforceUnblankTick:) userInfo:nil repeats:YES];
+        _antiBlankTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(enforceUnblankTick:) userInfo:nil repeats:YES];
 
         // Hand hover detected above physical earpiece bezel: look directly toward the sensor edge in any orientation
         if (_reactionTimer) {
