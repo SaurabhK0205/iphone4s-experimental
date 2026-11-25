@@ -1034,13 +1034,19 @@ static void ForceUnblankDisplay(float brightness) {
     }
 }
 
-static void EnsurePassiveProximityMode(int mode, float brightness) {
-    ForceUnblankDisplay(brightness);
+static void EnsureProximityModeOnly(int mode) {
     BKSProximityBridge bridge = GetBKSProximityBridge();
     if (bridge.requestProximityMode) {
         bridge.requestProximityMode(mode);
     }
 }
+
+static void EnsurePassiveProximityMode(int mode, float brightness) {
+    ForceUnblankDisplay(brightness);
+    EnsureProximityModeOnly(mode);
+}
+
+static NSUInteger s_activeProximityGen = 0;
 
 @interface DeskCompanionViewController : UIViewController <UIGestureRecognizerDelegate, AVAudioRecorderDelegate, AVAudioPlayerDelegate> {
     // Canvas Background
@@ -1135,9 +1141,11 @@ static void EnsurePassiveProximityMode(int mode, float brightness) {
     float _activeBrightness;
     NSTimer *_standbyWatchdogTimer;
     NSTimer *_antiBlankTimer;
-    dispatch_source_t _proximityPollTimer;
+    NSTimer *_proximityPollTimer;
     NSString *_lastWakeReason;
     BOOL _lastProximityNear;
+    BOOL _pollHasSampled;
+    BOOL _didPlayTouchDownFeedback;
     int _proximityNotifyToken;
     int _blankNotifyToken;
     int _proximityMode;
@@ -1166,6 +1174,8 @@ static void EnsurePassiveProximityMode(int mode, float brightness) {
 - (void)processProximityNear:(BOOL)isNear;
 - (void)startProximityMonitor;
 - (void)stopProximityMonitor;
+- (void)pollProximitySensor:(NSTimer *)timer;
+- (void)triggerAmbientBlink;
 - (void)registerUserActivityWithReason:(NSString *)reason;
 - (void)transitionToPowerState:(MonolithPowerState)newState reason:(NSString *)reason;
 - (void)checkStandbyWatchdog:(NSTimer *)timer;
@@ -1553,7 +1563,7 @@ static void EnsurePassiveProximityMode(int mode, float brightness) {
         } completion:^(BOOL finished) {
             if (!blockSelf) return;
             blockSelf->_isTransitioningOrientation = NO;
-            EnsurePassiveProximityMode(blockSelf->_proximityMode, blockSelf->_activeBrightness);
+            EnsureProximityModeOnly(blockSelf->_proximityMode);
             [blockSelf->_leftEye setNeedsDisplay];
             [blockSelf->_rightEye setNeedsDisplay];
             [blockSelf->_scanlineOverlay setNeedsDisplay];
@@ -1581,6 +1591,7 @@ static void EnsurePassiveProximityMode(int mode, float brightness) {
     [super viewDidLayoutSubviews];
 }
 
+// System autorotation is disabled so DeskCompanionViewController manages all 4 orientations via self.view.transform
 - (BOOL)shouldAutorotate {
     return NO;
 }
@@ -1891,6 +1902,12 @@ static void EnsurePassiveProximityMode(int mode, float brightness) {
     }
 }
 
+- (void)triggerAmbientBlink {
+    if (_powerState == MonolithPowerStateAmbientIdle && !_isBlinking && !_isSpeaking && !_isPanning) {
+        [self blink];
+    }
+}
+
 // Authentic PyCozmo blink: organic vertical squircle squash into razor-thin glowing slit
 - (void)blink {
     if (_isPanning || _isBlinking) return;
@@ -1992,7 +2009,16 @@ static void EnsurePassiveProximityMode(int mode, float brightness) {
 // ========================================================
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
     [super touchesBegan:touches withEvent:event];
+    BOOL wasStandby = (_powerState == MonolithPowerStateObsidianStandby);
     [self registerUserActivityWithReason:@"screen_touch"];
+    if (!wasStandby) {
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        [self playSoundNamed:@"tock"];
+        _didPlayTouchDownFeedback = YES;
+    } else {
+        // Obsidian wake transition already plays wake vibration and tock
+        _didPlayTouchDownFeedback = YES;
+    }
 }
 
 - (void)revertToNeutral {
@@ -2003,6 +2029,7 @@ static void EnsurePassiveProximityMode(int mode, float brightness) {
 }
 
 - (void)handleTwoFingerTap:(UITapGestureRecognizer *)gesture {
+    _didPlayTouchDownFeedback = NO;
     [self registerUserActivityWithReason:@"screen_touch"];
     [self toggleZenMode];
 }
@@ -2016,8 +2043,11 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     CGFloat screenW = self.view.bounds.size.width;
     CGFloat screenH = self.view.bounds.size.height;
 
-    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
-    [self playSoundNamed:@"tock"];
+    if (!_didPlayTouchDownFeedback) {
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        [self playSoundNamed:@"tock"];
+    }
+    _didPlayTouchDownFeedback = NO;
 
     if (_reactionTimer) {
         [_reactionTimer invalidate];
@@ -2569,9 +2599,12 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 - (void)startProximityMonitor {
     [self stopProximityMonitor];
 
-    __block DeskCompanionViewController *proxSelf = self;
+    s_activeProximityGen++;
+    NSUInteger gen = s_activeProximityGen;
+    _pollHasSampled = NO;
+
     notify_register_dispatch("com.apple.backboard.proximity.changed", &_proximityNotifyToken, dispatch_get_main_queue(), ^(int token) {
-        if (!proxSelf) return;
+        if (!g_viewController || s_activeProximityGen != gen) return;
         uint64_t state = 0;
         notify_get_state(token, &state);
         BKSProximityBridge bridge = GetBKSProximityBridge();
@@ -2579,41 +2612,36 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         if (bridge.getObjectWithinProximity) {
             isNear = isNear || bridge.getObjectWithinProximity();
         }
-        [proxSelf processProximityNear:isNear];
+        [g_viewController processProximityNear:isNear];
     });
 
     notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &_blankNotifyToken, dispatch_get_main_queue(), ^(int token) {
-        if (!proxSelf) return;
-        if (proxSelf->_lastProximityNear && proxSelf->_powerState == MonolithPowerStateActive) {
-            ForceUnblankDisplay(proxSelf->_activeBrightness);
+        if (!g_viewController || s_activeProximityGen != gen) return;
+        if (g_viewController->_lastProximityNear && g_viewController->_powerState == MonolithPowerStateActive) {
+            ForceUnblankDisplay(g_viewController->_activeBrightness);
         }
     });
 
-    dispatch_queue_t bgQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
-    _proximityPollTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, bgQueue);
-    if (_proximityPollTimer) {
-        dispatch_source_set_timer(_proximityPollTimer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), (uint64_t)(0.35 * NSEC_PER_SEC), (uint64_t)(0.10 * NSEC_PER_SEC));
-        __block BOOL lastBgNear = NO;
-        dispatch_source_set_event_handler(_proximityPollTimer, ^{
-            BKSProximityBridge bridge = GetBKSProximityBridge();
-            if (!bridge.getObjectWithinProximity) return;
-            BOOL isNear = bridge.getObjectWithinProximity();
-            if (isNear != lastBgNear) {
-                lastBgNear = isNear;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (proxSelf) [proxSelf processProximityNear:isNear];
-                });
-            }
-        });
-        dispatch_resume(_proximityPollTimer);
+    // Main-thread 4 Hz (0.25s) fallback poll: private BackBoardServices calls remain strictly on main thread
+    _proximityPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(pollProximitySensor:) userInfo:nil repeats:YES];
+    [self pollProximitySensor:nil];
+}
+
+- (void)pollProximitySensor:(NSTimer *)timer {
+    BKSProximityBridge bridge = GetBKSProximityBridge();
+    if (!bridge.getObjectWithinProximity) return;
+    BOOL isNear = bridge.getObjectWithinProximity();
+    if (!_pollHasSampled || isNear != _lastProximityNear) {
+        _pollHasSampled = YES;
+        [self processProximityNear:isNear];
     }
 }
 
 - (void)stopProximityMonitor {
+    s_activeProximityGen++;
     if (_proximityPollTimer) {
-        dispatch_source_cancel(_proximityPollTimer);
-        dispatch_release(_proximityPollTimer);
-        _proximityPollTimer = NULL;
+        [_proximityPollTimer invalidate];
+        _proximityPollTimer = nil;
     }
     if (_proximityNotifyToken != 0) {
         notify_cancel(_proximityNotifyToken);
@@ -2629,7 +2657,7 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     if (mode < 0 || mode > 3) mode = 3;
     _proximityMode = mode;
     [UIDevice currentDevice].proximityMonitoringEnabled = NO;
-    EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
+    EnsureProximityModeOnly(_proximityMode);
 }
 
 - (void)enforceUnblankTick:(NSTimer *)timer {
@@ -2645,15 +2673,25 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 
 - (void)processProximityNear:(BOOL)isNear {
     if (isNear == _lastProximityNear) {
-        if (isNear) ForceUnblankDisplay(_activeBrightness);
+        if (isNear && _powerState == MonolithPowerStateActive) {
+            ForceUnblankDisplay(_activeBrightness);
+        }
         return;
     }
     _lastProximityNear = isNear;
-    EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
+
+    if (!isNear && _powerState != MonolithPowerStateActive) {
+        // Departing hand while asleep should sync state quietly without lighting or animating standby
+        if (_antiBlankTimer) {
+            [_antiBlankTimer invalidate];
+            _antiBlankTimer = nil;
+        }
+        return;
+    }
 
     if (isNear) {
         [self registerUserActivityWithReason:@"proximity_hover"];
-        ForceUnblankDisplay(_activeBrightness);
+        EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
         if (_antiBlankTimer) {
             [_antiBlankTimer invalidate];
             _antiBlankTimer = nil;
@@ -2779,6 +2817,9 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         [self setStatusTitle:@"TARS // ONLINE" subtitle:[NSString stringWithFormat:@"Wake: %@", reasonStr]];
     } else if (newState == MonolithPowerStateAmbientIdle) {
         [UIScreen mainScreen].brightness = 0.15f;
+        if (_proceduralDisplayLink) {
+            _proceduralDisplayLink.paused = NO;
+        }
         if (_saccadeTimer) {
             [_saccadeTimer invalidate];
             _saccadeTimer = nil;
@@ -2787,7 +2828,18 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
             [_blinkTimer invalidate];
             _blinkTimer = nil;
         }
-        _blinkTimer = [NSTimer scheduledTimerWithTimeInterval:12.0 target:self selector:@selector(triggerRandomBlink) userInfo:nil repeats:YES];
+        _blinkTimer = [NSTimer scheduledTimerWithTimeInterval:12.0 target:self selector:@selector(triggerAmbientBlink) userInfo:nil repeats:YES];
+
+        __block DeskCompanionViewController *blockSelf = self;
+        [UIView animateWithDuration:0.25 delay:0.0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+            if (!blockSelf) return;
+            blockSelf->_eyeContainer.alpha = 1.0f;
+            blockSelf->_scanlineOverlay.alpha = 1.0f;
+            CGFloat hudAlpha = blockSelf->_zenMode ? 0.0f : 1.0f;
+            blockSelf->_statusBarPill.alpha = hudAlpha;
+            blockSelf->_thoughtCard.alpha = hudAlpha;
+        } completion:nil];
+
         [self setExpression:@"sleepy" duration:0.45];
         [self lookAtX:0.0f y:0.0f duration:0.35];
         [self setStatusTitle:@"STANDBY // AMBIENT IDLE" subtitle:@"Awaiting desk activity"];
@@ -3187,6 +3239,9 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 }
 
 - (void)dealloc {
+    if (g_viewController == self) {
+        g_viewController = nil;
+    }
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     _observersAdded = NO;
     [self stopProximityMonitor];
@@ -3436,25 +3491,22 @@ static void *SocketServerThread(void *arg) {
                     NSString *command = [cmdDict objectForKey:@"command"];
                     BOOL handledAsynchronously = NO;
 
-                    if (command && ![command isEqualToString:@"ping"] && ![command isEqualToString:@"telemetry"] &&
-                        ![command isEqualToString:@"sleep"] && ![command isEqualToString:@"standby_config"] &&
-                        ![command isEqualToString:@"wake"] && ![command isEqualToString:@"brightness"] &&
-                        ![command isEqualToString:@"screenshot"]) {
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController registerUserActivityWithReason:@"remote_command"];
-                        });
-                    }
-
                     if ([command isEqualToString:@"ping"]) {
                         [response setObject:@"pong" forKey:@"status"];
                         if (g_viewController) [response addEntriesFromDictionary:[g_viewController getTelemetry]];
                     } else if ([command isEqualToString:@"vibrate"]) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (g_viewController) [g_viewController registerUserActivityWithReason:@"remote_command"];
+                        });
                         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
                         [response setObject:@"vibrated" forKey:@"status"];
                     } else if ([command isEqualToString:@"sound"]) {
                         NSString *soundName = [cmdDict objectForKey:@"name"];
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController playSoundNamed:soundName];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController playSoundNamed:soundName];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:(soundName ? soundName : @"") forKey:@"sound"];
@@ -3463,14 +3515,20 @@ static void *SocketServerThread(void *arg) {
                         NSString *soundName = [cmdDict objectForKey:@"name"];
                         if (soundName && !audioPath) {
                             dispatch_async(dispatch_get_main_queue(), ^{
-                                if (g_viewController) [g_viewController playSoundNamed:soundName];
+                                if (g_viewController) {
+                                    [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                    [g_viewController playSoundNamed:soundName];
+                                }
                             });
                             [response setObject:@"ok" forKey:@"status"];
                             [response setObject:soundName forKey:@"sound"];
                         } else if (audioPath) {
                             __block BOOL started = NO;
                             dispatch_sync(dispatch_get_main_queue(), ^{
-                                if (g_viewController) started = [g_viewController playAudioFilePath:audioPath];
+                                if (g_viewController) {
+                                    started = [g_viewController playAudioFilePath:audioPath];
+                                    if (started) [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                }
                             });
                             if (started) {
                                 [response setObject:@"ok" forKey:@"status"];
@@ -3488,7 +3546,10 @@ static void *SocketServerThread(void *arg) {
                         id durObj = [cmdDict objectForKey:@"duration"];
                         NSTimeInterval dur = (durObj && [durObj respondsToSelector:@selector(doubleValue)]) ? [durObj doubleValue] : 0.28;
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setExpression:exp duration:dur];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController setExpression:exp duration:dur];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:(exp ? exp : @"") forKey:@"expression"];
@@ -3506,7 +3567,10 @@ static void *SocketServerThread(void *arg) {
                         if (isnan(dur) || isinf(dur) || dur < 0.0) dur = 0.22;
                         dur = fmin(dur, 60.0);
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController lookAtX:x y:y duration:dur];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController lookAtX:x y:y duration:dur];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:@(x) forKey:@"x"];
@@ -3519,7 +3583,10 @@ static void *SocketServerThread(void *arg) {
                         if (isnan(dur) || isinf(dur) || dur < 0.0) dur = 0.28;
                         dur = fmin(dur, 60.0);
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setProceduralParamsLeft:leftArr right:rightArr duration:dur];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController setProceduralParamsLeft:leftArr right:rightArr duration:dur];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"scanlines"]) {
@@ -3528,7 +3595,10 @@ static void *SocketServerThread(void *arg) {
                         if (isnan(op) || isinf(op)) op = 0.12f;
                         op = ClampF(op, 0.0f, 0.40f);
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setScanlineOpacity:op];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController setScanlineOpacity:op];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:@(op) forKey:@"scanlines"];
@@ -3539,7 +3609,10 @@ static void *SocketServerThread(void *arg) {
                             title = [cmdDict objectForKey:@"text"];
                         }
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setStatusTitle:title subtitle:subtitle];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController setStatusTitle:title subtitle:subtitle];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"speaking"]) {
@@ -3550,13 +3623,19 @@ static void *SocketServerThread(void *arg) {
                         } else {
                             BOOL isSpk = [en boolValue];
                             dispatch_async(dispatch_get_main_queue(), ^{
-                                if (g_viewController) [g_viewController setSpeaking:isSpk];
+                                if (g_viewController) {
+                                    [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                    [g_viewController setSpeaking:isSpk];
+                                }
                             });
                             [response setObject:@"ok" forKey:@"status"];
                         }
                     } else if ([command isEqualToString:@"zen"]) {
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController toggleZenMode];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController toggleZenMode];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"orientation"]) {
@@ -3569,6 +3648,7 @@ static void *SocketServerThread(void *arg) {
                             else targetOrient = UIInterfaceOrientationPortrait;
 
                             if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
                                 [g_viewController setAppOrientation:targetOrient];
                             }
                         });
@@ -3582,14 +3662,20 @@ static void *SocketServerThread(void *arg) {
                         } else {
                             BOOL red = [en boolValue];
                             dispatch_async(dispatch_get_main_queue(), ^{
-                                if (g_viewController) [g_viewController setReducedMotion:red];
+                                if (g_viewController) {
+                                    [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                    [g_viewController setReducedMotion:red];
+                                }
                             });
                             [response setObject:@"ok" forKey:@"status"];
                             [response setObject:@(red) forKey:@"reduced_motion"];
                         }
                     } else if ([command isEqualToString:@"blink"]) {
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController blink];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController blink];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"torch"]) {
@@ -3601,7 +3687,10 @@ static void *SocketServerThread(void *arg) {
                             BOOL torchOn = [en boolValue];
                             __block BOOL ok = NO;
                             dispatch_sync(dispatch_get_main_queue(), ^{
-                                if (g_viewController) ok = [g_viewController setTorch:torchOn];
+                                if (g_viewController) {
+                                    [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                    ok = [g_viewController setTorch:torchOn];
+                                }
                             });
                             if (ok) {
                                 [response setObject:@"ok" forKey:@"status"];
@@ -3626,21 +3715,39 @@ static void *SocketServerThread(void *arg) {
                     } else if ([command isEqualToString:@"wake"]) {
                         NSString *reason = [cmdDict objectForKey:@"reason"];
                         if (!reason || ![reason isKindOfClass:[NSString class]]) reason = @"remote_wake";
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController registerUserActivityWithReason:reason];
+                        __block BOOL applied = NO;
+                        dispatch_sync(dispatch_get_main_queue(), ^{
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:reason];
+                                applied = YES;
+                            }
                         });
-                        [response setObject:@"ok" forKey:@"status"];
-                        [response setObject:@"active" forKey:@"power_state"];
+                        if (applied) {
+                            [response setObject:@"ok" forKey:@"status"];
+                            [response setObject:@"active" forKey:@"power_state"];
+                        } else {
+                            [response setObject:@"failed" forKey:@"status"];
+                            [response setObject:@"controller_unavailable" forKey:@"error"];
+                        }
                     } else if ([command isEqualToString:@"sleep"]) {
                         NSString *mode = [cmdDict objectForKey:@"mode"];
                         MonolithPowerState targetState = ([mode isKindOfClass:[NSString class]] && [mode isEqualToString:@"ambient"])
                             ? MonolithPowerStateAmbientIdle
                             : MonolithPowerStateObsidianStandby;
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController transitionToPowerState:targetState reason:@"remote_sleep"];
+                        __block BOOL applied = NO;
+                        dispatch_sync(dispatch_get_main_queue(), ^{
+                            if (g_viewController) {
+                                [g_viewController transitionToPowerState:targetState reason:@"remote_sleep"];
+                                applied = YES;
+                            }
                         });
-                        [response setObject:@"ok" forKey:@"status"];
-                        [response setObject:(targetState == MonolithPowerStateAmbientIdle ? @"ambient_idle" : @"obsidian_standby") forKey:@"power_state"];
+                        if (applied) {
+                            [response setObject:@"ok" forKey:@"status"];
+                            [response setObject:(targetState == MonolithPowerStateAmbientIdle ? @"ambient_idle" : @"obsidian_standby") forKey:@"power_state"];
+                        } else {
+                            [response setObject:@"failed" forKey:@"status"];
+                            [response setObject:@"controller_unavailable" forKey:@"error"];
+                        }
                     } else if ([command isEqualToString:@"standby_config"]) {
                         id idleObj = [cmdDict objectForKey:@"idle_timeout"];
                         id standbyObj = [cmdDict objectForKey:@"standby_timeout"];
@@ -3652,7 +3759,8 @@ static void *SocketServerThread(void *arg) {
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"set_proximity_mode"]) {
                         id modeObj = [cmdDict objectForKey:@"mode"];
-                        int mode = (modeObj && [modeObj respondsToSelector:@selector(intValue)]) ? [modeObj intValue] : 1;
+                        int mode = (modeObj && [modeObj respondsToSelector:@selector(intValue)]) ? [modeObj intValue] : 3;
+                        if (mode < 0 || mode > 3) mode = 3;
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) [g_viewController setProximityMode:mode];
                         });
@@ -3666,6 +3774,7 @@ static void *SocketServerThread(void *arg) {
                         [ctx retain];
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
                                 [g_viewController takeSnapshot:cam completion:^(NSString *path, NSUInteger size, NSError *err) {
                                     NSMutableDictionary *resp = [NSMutableDictionary dictionary];
                                     if (path) {
@@ -3706,6 +3815,7 @@ static void *SocketServerThread(void *arg) {
                         [ctx retain];
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
                                 [g_viewController recordAudioDuration:duration completion:^(NSString *path, NSUInteger size, NSError *err) {
                                     NSMutableDictionary *resp = [NSMutableDictionary dictionary];
                                     if (path) {

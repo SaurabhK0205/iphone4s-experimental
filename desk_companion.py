@@ -11,6 +11,7 @@ import time
 import os
 import sys
 import re
+import math
 import uuid
 import shlex
 
@@ -281,10 +282,17 @@ class DeskCompanion:
 
     def set_standby_config(self, idle_timeout=60.0, standby_timeout=180.0):
         """Configures inactivity timeouts in seconds."""
+        try:
+            idle_val = float(idle_timeout)
+            standby_val = float(standby_timeout)
+        except (ValueError, TypeError):
+            return {"error": "invalid_parameter", "details": "Timeouts must be numeric"}
+        if not (math.isfinite(idle_val) and math.isfinite(standby_val)):
+            return {"error": "invalid_parameter", "details": "Timeouts must be finite numbers"}
         return self._send_cmd({
             "command": "standby_config",
-            "idle_timeout": float(idle_timeout),
-            "standby_timeout": float(standby_timeout),
+            "idle_timeout": idle_val,
+            "standby_timeout": standby_val,
         })
 
     def snapshot(self, camera="back", save_to=None):
