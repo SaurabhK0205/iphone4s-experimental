@@ -1018,6 +1018,28 @@ static BKSProximityBridge GetBKSProximityBridge(void) {
     return s_bridge;
 }
 
+static float s_activeBrightnessFallback = 0.85f;
+
+static void ApplyDisplayBacklightFactor(float factor, float duration) {
+    BKSProximityBridge bridge = GetBKSProximityBridge();
+    float clamped = ClampF(factor, 0.01f, 1.0f);
+    if (bridge.setBacklightFactorWithFade) {
+        bridge.setBacklightFactorWithFade(clamped, MAX(0.0f, duration));
+    } else {
+        [UIScreen mainScreen].brightness = ClampF(s_activeBrightnessFallback * clamped, 0.01f, 1.0f);
+    }
+}
+
+static void SuppressSpringBoardProximityBlank(int notifyToken) {
+    if (notifyToken == 0) return;
+    uint64_t state = 0;
+    if (notify_get_state(notifyToken, &state) == 0 && state != 0) {
+        // Clear notify state and repost immediately so SpringBoard cancels its 0.5s setBacklightFactorToZeroAfterDelay
+        notify_set_state(notifyToken, 0);
+        notify_post("com.apple.backboard.proximity.changed");
+    }
+}
+
 static void ForceUnblankDisplay(float brightness) {
     BKSProximityBridge bridge = GetBKSProximityBridge();
     if (bridge.willUnblank) {
@@ -1139,6 +1161,7 @@ static NSUInteger s_activeProximityGen = 0;
     NSTimeInterval _idleTimeoutSeconds;
     NSTimeInterval _standbyTimeoutSeconds;
     float _activeBrightness;
+    float _currentBacklightFactor;
     NSTimer *_standbyWatchdogTimer;
     NSTimer *_antiBlankTimer;
     NSTimer *_proximityPollTimer;
@@ -1154,6 +1177,8 @@ static NSUInteger s_activeProximityGen = 0;
     float _filteredAz;
     UIInterfaceOrientation _candidateOrient;
     int _candidateOrientCount;
+    BOOL _isForegroundActive;
+    NSUInteger _lifecycleGen;
 }
 
 - (void)setupProceduralEngine;
@@ -1416,8 +1441,12 @@ static NSUInteger s_activeProximityGen = 0;
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
     float sysBright = [UIScreen mainScreen].brightness;
-    _activeBrightness = (sysBright >= 0.30f && sysBright <= 1.0f) ? sysBright : 0.85f;
+    _activeBrightness = (sysBright >= 0.45f && sysBright <= 1.0f) ? sysBright : 0.85f;
+    s_activeBrightnessFallback = _activeBrightness;
+    _currentBacklightFactor = 1.0f;
     [UIScreen mainScreen].brightness = _activeBrightness;
+    _isForegroundActive = YES;
+    _lifecycleGen = 1;
 
     // ========================================================
     // 7. HARDWARE SENSORS: PROXIMITY, STANDBY & COREMOTION ACCELEROMETER
@@ -1432,8 +1461,8 @@ static NSUInteger s_activeProximityGen = 0;
     _lastShakeTime = 0.0;
     _powerState = MonolithPowerStateActive;
     _lastActivityTime = CACurrentMediaTime();
-    _idleTimeoutSeconds = 60.0;
-    _standbyTimeoutSeconds = 180.0;
+    _idleTimeoutSeconds = 180.0;
+    _standbyTimeoutSeconds = 360.0;
     if (_lastWakeReason) {
         [_lastWakeReason release];
         _lastWakeReason = nil;
@@ -1496,6 +1525,10 @@ static NSUInteger s_activeProximityGen = 0;
         [_antiBlankTimer invalidate];
         _antiBlankTimer = nil;
     }
+    _isForegroundActive = NO;
+    _lifecycleGen++;
+    EnsureProximityModeOnly(0);
+    ApplyDisplayBacklightFactor(1.0f, 0.0f);
     _isTransitioningOrientation = NO;
     _pendingOrientation = 0;
     [self.view.layer removeAllAnimations];
@@ -1503,6 +1536,8 @@ static NSUInteger s_activeProximityGen = 0;
 }
 
 - (void)handleAppWillEnterForeground:(NSNotification *)notification {
+    _isForegroundActive = YES;
+    _lifecycleGen++;
     EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
     [self registerUserActivityWithReason:@"foreground"];
     [self startProximityMonitor];
@@ -2608,28 +2643,35 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         uint64_t state = 0;
         notify_get_state(token, &state);
         BKSProximityBridge bridge = GetBKSProximityBridge();
-        BOOL isNear = (state != 0);
         if (bridge.getObjectWithinProximity) {
-            isNear = isNear || bridge.getObjectWithinProximity();
+            if (state != 0) {
+                SuppressSpringBoardProximityBlank(token);
+            }
+            BOOL isNear = bridge.getObjectWithinProximity();
+            [g_viewController processProximityNear:isNear];
+        } else {
+            BOOL isNear = (state != 0);
+            [g_viewController processProximityNear:isNear];
         }
-        [g_viewController processProximityNear:isNear];
     });
 
     notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &_blankNotifyToken, dispatch_get_main_queue(), ^(int token) {
         if (!g_viewController || s_activeProximityGen != gen) return;
         if (g_viewController->_lastProximityNear && g_viewController->_powerState == MonolithPowerStateActive) {
+            SuppressSpringBoardProximityBlank(g_viewController->_proximityNotifyToken);
             ForceUnblankDisplay(g_viewController->_activeBrightness);
         }
     });
 
-    // Main-thread 4 Hz (0.25s) fallback poll: private BackBoardServices calls remain strictly on main thread
-    _proximityPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(pollProximitySensor:) userInfo:nil repeats:YES];
+    // Main-thread ~6.7 Hz (0.15s) fallback poll: private BackBoardServices calls remain strictly on main thread
+    _proximityPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.15 target:self selector:@selector(pollProximitySensor:) userInfo:nil repeats:YES];
     [self pollProximitySensor:nil];
 }
 
 - (void)pollProximitySensor:(NSTimer *)timer {
     BKSProximityBridge bridge = GetBKSProximityBridge();
     if (!bridge.getObjectWithinProximity) return;
+    SuppressSpringBoardProximityBlank(_proximityNotifyToken);
     BOOL isNear = bridge.getObjectWithinProximity();
     if (!_pollHasSampled || isNear != _lastProximityNear) {
         _pollHasSampled = YES;
@@ -2668,6 +2710,7 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         }
         return;
     }
+    SuppressSpringBoardProximityBlank(_proximityNotifyToken);
     ForceUnblankDisplay(_activeBrightness);
 }
 
@@ -2690,6 +2733,7 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     }
 
     if (isNear) {
+        SuppressSpringBoardProximityBlank(_proximityNotifyToken);
         [self registerUserActivityWithReason:@"proximity_hover"];
         EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
         if (_antiBlankTimer) {
@@ -2755,11 +2799,14 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 }
 
 - (void)setActiveBrightness:(float)level {
-    if (isnan(level) || isinf(level)) level = 0.70f;
+    if (isnan(level) || isinf(level)) level = 0.85f;
     level = ClampF(level, 0.0f, 1.0f);
     _activeBrightness = level;
+    s_activeBrightnessFallback = level;
+    _currentBacklightFactor = 1.0f;
     [self registerUserActivityWithReason:@"remote_brightness"];
     [UIScreen mainScreen].brightness = level;
+    ApplyDisplayBacklightFactor(1.0f, 0.0f);
 }
 
 - (void)checkStandbyWatchdog:(NSTimer *)timer {
@@ -2786,7 +2833,8 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         _lastWakeReason = [reasonStr copy];
         _lastActivityTime = CACurrentMediaTime();
 
-        [UIScreen mainScreen].brightness = _activeBrightness;
+        _currentBacklightFactor = 1.0f;
+        ForceUnblankDisplay(_activeBrightness);
         if (_proceduralDisplayLink) {
             _proceduralDisplayLink.paused = NO;
         }
@@ -2816,7 +2864,8 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         [self lookAtX:0.0f y:0.0f duration:0.20];
         [self setStatusTitle:@"TARS // ONLINE" subtitle:[NSString stringWithFormat:@"Wake: %@", reasonStr]];
     } else if (newState == MonolithPowerStateAmbientIdle) {
-        [UIScreen mainScreen].brightness = 0.15f;
+        _currentBacklightFactor = ClampF(0.15f / MAX(0.30f, _activeBrightness), 0.12f, 0.35f);
+        ApplyDisplayBacklightFactor(_currentBacklightFactor, 0.35f);
         if (_proceduralDisplayLink) {
             _proceduralDisplayLink.paused = NO;
         }
@@ -2857,6 +2906,7 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
             _reactionTimer = nil;
         }
         [self setStatusTitle:@"STANDBY // OBSIDIAN" subtitle:@"Pitch-black monolith sleep"];
+        NSUInteger currentGen = _lifecycleGen;
         __block DeskCompanionViewController *blockSelf = self;
         [UIView animateWithDuration:0.45 delay:0.0 options:UIViewAnimationOptionCurveEaseIn animations:^{
             if (!blockSelf) return;
@@ -2867,8 +2917,9 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
             blockSelf->_statusBarPill.alpha = 0.0f;
         } completion:^(BOOL finished) {
             if (!blockSelf) return;
-            if (blockSelf->_powerState == MonolithPowerStateObsidianStandby) {
-                [UIScreen mainScreen].brightness = 0.01f;
+            if (blockSelf->_lifecycleGen == currentGen && blockSelf->_isForegroundActive && blockSelf->_powerState == MonolithPowerStateObsidianStandby) {
+                blockSelf->_currentBacklightFactor = 0.01f;
+                ApplyDisplayBacklightFactor(0.01f, 0.25f);
                 if (blockSelf->_proceduralDisplayLink) {
                     blockSelf->_proceduralDisplayLink.paused = YES;
                 }
@@ -3180,7 +3231,9 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         @"os": @"iOS 6.1.3 (10B329)",
         @"battery_percent": @((int)batt),
         @"battery_state": stateStr,
-        @"screen_brightness": @([UIScreen mainScreen].brightness),
+        @"screen_brightness": @(_powerState == MonolithPowerStateActive ? [UIScreen mainScreen].brightness : (_activeBrightness * _currentBacklightFactor)),
+        @"active_brightness": @(_activeBrightness),
+        @"backlight_factor": @(_currentBacklightFactor),
         @"power_state": powerStr,
         @"idle_seconds": @((int)idleElapsed),
         @"idle_timeout": @(_idleTimeoutSeconds),
@@ -3239,7 +3292,8 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 }
 
 - (void)dealloc {
-    if (g_viewController == self) {
+    BOOL wasActiveController = (g_viewController == self);
+    if (wasActiveController) {
         g_viewController = nil;
     }
     [[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -3309,6 +3363,10 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         _antiBlankTimer = nil;
     }
     [self stopProximityMonitor];
+    if (wasActiveController || !g_viewController) {
+        EnsureProximityModeOnly(0);
+        ApplyDisplayBacklightFactor(1.0f, 0.0f);
+    }
     [_lastWakeReason release];
     _lastWakeReason = nil;
     if (_audioTimeoutTimer) {
