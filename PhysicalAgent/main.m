@@ -375,6 +375,46 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     }
 }
 
+static BOOL ApplyEyelidEOClip(CGContextRef ctx, CGFloat W, CGFloat H, CGFloat lidNorm, CGFloat angleDeg, CGFloat bend, BOOL isUpper, BOOL isLeftEye) {
+    if (!ctx || W <= 0.0f || H <= 0.0f) return NO;
+    CGFloat clampedLid = ClampF(lidNorm, 0.0f, 1.0f);
+    if (clampedLid <= 0.001f) return YES;
+
+    CGMutablePathRef eoPath = CGPathCreateMutable();
+    if (!eoPath) return NO;
+
+    CGFloat cx = W * 0.5f;
+    CGFloat cy = H * 0.5f;
+    CGFloat rotSign = isLeftEye ? 1.0f : -1.0f;
+    CGFloat rotRad = angleDeg * rotSign * (CGFloat)(M_PI / 180.0);
+
+    CGFloat lidY = isUpper ? (clampedLid * H) : (H - clampedLid * H);
+    CGFloat bendH = H * (1.0f - clampedLid) * bend;
+    CGFloat edgeY = isUpper ? -H : (H * 2.0f);
+    CGFloat ctrlY = isUpper ? (lidY + bendH) : (lidY - bendH);
+
+    CGAffineTransform xf = CGAffineTransformMakeTranslation(cx, cy);
+    xf = CGAffineTransformRotate(xf, rotRad);
+    xf = CGAffineTransformTranslate(xf, -cx, -cy);
+
+    // Outer universe rect + rotated lid polygon in even-odd rule excludes only the eyelid area
+    CGPathAddRect(eoPath, NULL, CGRectMake(-W * 2.0f, -H * 2.0f, W * 5.0f, H * 5.0f));
+    CGPathMoveToPoint(eoPath, &xf, -W, edgeY);
+    CGPathAddLineToPoint(eoPath, &xf, W * 2.0f, edgeY);
+    CGPathAddLineToPoint(eoPath, &xf, W * 2.0f, lidY);
+    if (fabsf(bend) > 0.01f) {
+        CGPathAddQuadCurveToPoint(eoPath, &xf, cx, ctrlY, -W, lidY);
+    } else {
+        CGPathAddLineToPoint(eoPath, &xf, -W, lidY);
+    }
+    CGPathCloseSubpath(eoPath);
+
+    CGContextAddPath(ctx, eoPath);
+    CGContextEOClip(ctx);
+    CGPathRelease(eoPath);
+    return YES;
+}
+
 - (void)drawRect:(CGRect)rect {
     CGContextRef ctx = UIGraphicsGetCurrentContext();
     if (!ctx) return;
@@ -416,92 +456,29 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     [eyePath addArcWithCenter:CGPointMake(rTL, rTL) radius:rTL startAngle:(CGFloat)M_PI endAngle:(CGFloat)(1.5 * M_PI) clockwise:YES];
     [eyePath closePath];
 
-    // Clip to the base squircle eye shape
+    // Clip to the base squircle eye shape; outer SaveGState restores all clips and CTM at end of drawRect
     CGContextSaveGState(ctx);
     [eyePath addClip];
 
-    // 2. Pre-Draw Even-Odd Eyelid Clips (zero gradient pixels painted under eyelids, zero 1px ghost outlines)
-    if (_config.upperLidY > 0.001f) {
-        CGFloat cx = W * 0.5f;
-        CGFloat cy = H * 0.5f;
-        CGFloat rotSign = _isLeftEye ? 1.0f : -1.0f;
-        CGFloat rotRad = _config.upperLidAngle * rotSign * (CGFloat)(M_PI / 180.0);
+    // 2. Pre-Draw Even-Odd Eyelid Clips (fail closed if path creation fails so partial frames never leak)
+    BOOL clippedOK = ApplyEyelidEOClip(ctx, W, H, _config.upperLidY, _config.upperLidAngle, _config.upperLidBend, YES, _isLeftEye) &&
+                     ApplyEyelidEOClip(ctx, W, H, _config.lowerLidY, _config.lowerLidAngle, _config.lowerLidBend, NO, _isLeftEye);
 
-        CGFloat lidY = ClampF(_config.upperLidY, 0.0f, 1.0f) * H;
-        CGFloat bendH = H * (1.0f - ClampF(_config.upperLidY, 0.0f, 1.0f)) * _config.upperLidBend;
-
-        UIBezierPath *upperLid = [UIBezierPath bezierPath];
-        [upperLid moveToPoint:CGPointMake(-W, -H)];
-        [upperLid addLineToPoint:CGPointMake(W * 2.0f, -H)];
-        [upperLid addLineToPoint:CGPointMake(W * 2.0f, lidY)];
-        if (fabsf(_config.upperLidBend) > 0.01f) {
-            [upperLid addQuadCurveToPoint:CGPointMake(-W, lidY) controlPoint:CGPointMake(cx, lidY + bendH)];
-        } else {
-            [upperLid addLineToPoint:CGPointMake(-W, lidY)];
+    if (clippedOK) {
+        // 3. Base Linear Gradient (Electric Cyber Cyan Body)
+        if (_irisGradient) {
+            CGContextDrawLinearGradient(ctx, _irisGradient, CGPointMake(0, 0), CGPointMake(0, H), 0);
         }
-        [upperLid closePath];
 
-        CGAffineTransform xf = CGAffineTransformMakeTranslation(cx, cy);
-        xf = CGAffineTransformRotate(xf, rotRad);
-        xf = CGAffineTransformTranslate(xf, -cx, -cy);
+        // 4. Luminous Radial HotSpot (Radiant glowing white-cyan core)
+        CGFloat pupilDx = ClampF(_config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.25f);
+        CGFloat pupilDy = ClampF(_config.hotSpotCenterY, -1.0f, 1.0f) * (H * 0.25f);
+        CGPoint hotSpotCenter = CGPointMake(W * 0.5f + pupilDx, H * 0.5f + pupilDy);
+        CGFloat glowR = (W * 0.55f) * ClampF(_config.glowSize, 0.4f, 2.5f);
 
-        CGMutablePathRef eoUpper = CGPathCreateMutable();
-        if (eoUpper) {
-            CGPathAddRect(eoUpper, NULL, CGRectMake(-W * 2.0f, -H * 2.0f, W * 5.0f, H * 5.0f));
-            CGPathAddPath(eoUpper, &xf, upperLid.CGPath);
-            CGContextAddPath(ctx, eoUpper);
-            CGContextEOClip(ctx);
-            CGPathRelease(eoUpper);
+        if (_hotSpotGradient) {
+            CGContextDrawRadialGradient(ctx, _hotSpotGradient, hotSpotCenter, 0.0f, hotSpotCenter, glowR, kCGGradientDrawsAfterEndLocation);
         }
-    }
-
-    if (_config.lowerLidY > 0.001f) {
-        CGFloat cx = W * 0.5f;
-        CGFloat cy = H * 0.5f;
-        CGFloat rotSign = _isLeftEye ? 1.0f : -1.0f;
-        CGFloat rotRad = _config.lowerLidAngle * rotSign * (CGFloat)(M_PI / 180.0);
-
-        CGFloat lidY = H - ClampF(_config.lowerLidY, 0.0f, 1.0f) * H;
-        CGFloat bendH = H * (1.0f - ClampF(_config.lowerLidY, 0.0f, 1.0f)) * _config.lowerLidBend;
-
-        UIBezierPath *lowerLid = [UIBezierPath bezierPath];
-        [lowerLid moveToPoint:CGPointMake(-W, H * 2.0f)];
-        [lowerLid addLineToPoint:CGPointMake(W * 2.0f, H * 2.0f)];
-        [lowerLid addLineToPoint:CGPointMake(W * 2.0f, lidY)];
-        if (fabsf(_config.lowerLidBend) > 0.01f) {
-            [lowerLid addQuadCurveToPoint:CGPointMake(-W, lidY) controlPoint:CGPointMake(cx, lidY - bendH)];
-        } else {
-            [lowerLid addLineToPoint:CGPointMake(-W, lidY)];
-        }
-        [lowerLid closePath];
-
-        CGAffineTransform xf = CGAffineTransformMakeTranslation(cx, cy);
-        xf = CGAffineTransformRotate(xf, rotRad);
-        xf = CGAffineTransformTranslate(xf, -cx, -cy);
-
-        CGMutablePathRef eoLower = CGPathCreateMutable();
-        if (eoLower) {
-            CGPathAddRect(eoLower, NULL, CGRectMake(-W * 2.0f, -H * 2.0f, W * 5.0f, H * 5.0f));
-            CGPathAddPath(eoLower, &xf, lowerLid.CGPath);
-            CGContextAddPath(ctx, eoLower);
-            CGContextEOClip(ctx);
-            CGPathRelease(eoLower);
-        }
-    }
-
-    // 3. Base Linear Gradient (Electric Cyber Cyan Body)
-    if (_irisGradient) {
-        CGContextDrawLinearGradient(ctx, _irisGradient, CGPointMake(0, 0), CGPointMake(0, H), 0);
-    }
-
-    // 4. Luminous Radial HotSpot (Radiant glowing white-cyan core)
-    CGFloat pupilDx = ClampF(_config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.25f);
-    CGFloat pupilDy = ClampF(_config.hotSpotCenterY, -1.0f, 1.0f) * (H * 0.25f);
-    CGPoint hotSpotCenter = CGPointMake(W * 0.5f + pupilDx, H * 0.5f + pupilDy);
-    CGFloat glowR = (W * 0.55f) * ClampF(_config.glowSize, 0.4f, 2.5f);
-
-    if (_hotSpotGradient) {
-        CGContextDrawRadialGradient(ctx, _hotSpotGradient, hotSpotCenter, 0.0f, hotSpotCenter, glowR, kCGGradientDrawsAfterEndLocation);
     }
 
     CGContextRestoreGState(ctx);
