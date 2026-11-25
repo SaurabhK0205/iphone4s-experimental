@@ -13,6 +13,7 @@
 #include <signal.h>
 #include <libkern/OSAtomic.h>
 #include <dlfcn.h>
+#include <notify.h>
 
 // ========================================================
 // 1. ATMOSPHERIC CANVAS DEPTH (Pure Obsidian Black Canvas)
@@ -1009,11 +1010,12 @@ typedef struct {
     void (*setScreenBlanked)(BOOL);
     void (*requestProximityMode)(int);
     BOOL (*getObjectWithinProximity)(void);
+    BOOL (*isDetectionActive)(void);
     BOOL loaded;
 } BKSProximityBridge;
 
 static BKSProximityBridge GetBKSProximityBridge(void) {
-    static BKSProximityBridge s_bridge = {NULL, NULL, NULL, NO};
+    static BKSProximityBridge s_bridge = {NULL, NULL, NULL, NULL, NO};
     static dispatch_once_t s_once;
     dispatch_once(&s_once, ^{
         void *handle = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_NOW);
@@ -1024,20 +1026,24 @@ static BKSProximityBridge GetBKSProximityBridge(void) {
             if (!s_bridge.getObjectWithinProximity) {
                 s_bridge.getObjectWithinProximity = (BOOL (*)(void))dlsym(handle, "_BKSHIDGetObjectWithinProximity");
             }
+            s_bridge.isDetectionActive = (BOOL (*)(void))dlsym(handle, "BKSHIDServicesProximityDetectionActive");
+            if (!s_bridge.isDetectionActive) {
+                s_bridge.isDetectionActive = (BOOL (*)(void))dlsym(handle, "_BKSHIDGetProximityDetectionActive");
+            }
             s_bridge.loaded = YES;
         }
     });
     return s_bridge;
 }
 
-static void EnsurePassiveProximityMode(void) {
+static void EnsurePassiveProximityMode(int mode) {
     BKSProximityBridge bridge = GetBKSProximityBridge();
     if (bridge.setScreenBlanked) {
         bridge.setScreenBlanked(NO);
     }
     if (bridge.requestProximityMode) {
-        // Mode 1 = passive non-screen-blanking proximity detection across orientations
-        bridge.requestProximityMode(1);
+        // Request passive / non-SpringBoard proximity mode directly from backboardd
+        bridge.requestProximityMode(mode);
     }
 }
 
@@ -1133,9 +1139,11 @@ static void EnsurePassiveProximityMode(void) {
     NSTimeInterval _standbyTimeoutSeconds;
     float _activeBrightness;
     NSTimer *_standbyWatchdogTimer;
-    NSTimer *_proximityPollTimer;
+    dispatch_source_t _proximityPollTimer;
     NSString *_lastWakeReason;
     BOOL _lastProximityNear;
+    int _proximityNotifyToken;
+    int _proximityMode;
 }
 
 - (void)setupProceduralEngine;
@@ -1154,12 +1162,14 @@ static void EnsurePassiveProximityMode(void) {
 - (BOOL)playAudioFilePath:(NSString *)path;
 - (void)handleProximityChange:(NSNotification *)notification;
 - (void)processProximityNear:(BOOL)isNear;
-- (void)pollProximitySensor:(NSTimer *)timer;
+- (void)startProximityMonitor;
+- (void)stopProximityMonitor;
 - (void)registerUserActivityWithReason:(NSString *)reason;
 - (void)transitionToPowerState:(MonolithPowerState)newState reason:(NSString *)reason;
 - (void)checkStandbyWatchdog:(NSTimer *)timer;
 - (void)configureStandbyIdleTimeout:(NSTimeInterval)idleSec standbyTimeout:(NSTimeInterval)standbySec;
 - (void)setActiveBrightness:(float)level;
+- (void)setProximityMode:(int)mode;
 - (void)handleDeviceOrientationChange:(NSNotification *)notification;
 - (void)handleMotionData:(CMAcceleration)accel;
 - (void)setAppOrientation:(UIInterfaceOrientation)orientation;
@@ -1363,12 +1373,25 @@ static void EnsurePassiveProximityMode(void) {
     longPress.minimumPressDuration = 0.5;
     [self.view addGestureRecognizer:longPress];
 
-    // Timers & Observers
+    // Timers & Observers (invalidate any prior instances if viewDidLoad is re-entered)
+    if (_observersAdded) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self];
+        _observersAdded = NO;
+    }
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleAudioInterruption:)
                                                  name:AVAudioSessionInterruptionNotification
                                                object:nil];
     _observersAdded = YES;
+
+    if (_clockTimer) { [_clockTimer invalidate]; _clockTimer = nil; }
+    if (_blinkTimer) { [_blinkTimer invalidate]; _blinkTimer = nil; }
+    if (_saccadeTimer) { [_saccadeTimer invalidate]; _saccadeTimer = nil; }
+    if (_pruneTimer) { [_pruneTimer invalidate]; _pruneTimer = nil; }
+    [self stopProximityMonitor];
+    if (_standbyWatchdogTimer) { [_standbyWatchdogTimer invalidate]; _standbyWatchdogTimer = nil; }
+    if (_reactionTimer) { [_reactionTimer invalidate]; _reactionTimer = nil; }
+    if (_waveTimer) { [_waveTimer invalidate]; _waveTimer = nil; }
 
     [self updateClock];
     _clockTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(updateClock) userInfo:nil repeats:YES];
@@ -1391,17 +1414,19 @@ static void EnsurePassiveProximityMode(void) {
     _lastActivityTime = CACurrentMediaTime();
     _idleTimeoutSeconds = 60.0;
     _standbyTimeoutSeconds = 180.0;
+    if (_lastWakeReason) {
+        [_lastWakeReason release];
+        _lastWakeReason = nil;
+    }
     _lastWakeReason = [@"boot" copy];
     _lastProximityNear = NO;
+    _proximityMode = 3; // Mode 3 activates IR proximity hardware while UIDevice monitoring stays OFF (no SpringBoard blanking)
 
-    // Enable hardware proximity monitoring for hand hover reactions (passive non-blanking mode)
-    [UIDevice currentDevice].proximityMonitoringEnabled = YES;
-    EnsurePassiveProximityMode();
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleProximityChange:)
-                                                 name:UIDeviceProximityStateDidChangeNotification
-                                               object:nil];
-    _proximityPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(pollProximitySensor:) userInfo:nil repeats:YES];
+    // Keep UIDevice telephony proximity OFF so SpringBoard never blanks the screen or suppresses landscape
+    [UIDevice currentDevice].proximityMonitoringEnabled = NO;
+    EnsurePassiveProximityMode(_proximityMode);
+    [self startProximityMonitor];
+
     _standbyWatchdogTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(checkStandbyWatchdog:) userInfo:nil repeats:YES];
 
     // Enable hardware orientation change notifications from UIDevice
@@ -1456,10 +1481,7 @@ static void EnsurePassiveProximityMode(void) {
     if (_motionManager && [_motionManager isAccelerometerActive]) {
         [_motionManager stopAccelerometerUpdates];
     }
-    if (_proximityPollTimer) {
-        [_proximityPollTimer invalidate];
-        _proximityPollTimer = nil;
-    }
+    [self stopProximityMonitor];
     if (_standbyWatchdogTimer) {
         [_standbyWatchdogTimer invalidate];
         _standbyWatchdogTimer = nil;
@@ -1471,11 +1493,9 @@ static void EnsurePassiveProximityMode(void) {
 }
 
 - (void)handleAppWillEnterForeground:(NSNotification *)notification {
-    EnsurePassiveProximityMode();
+    EnsurePassiveProximityMode(_proximityMode);
     [self registerUserActivityWithReason:@"foreground"];
-    if (!_proximityPollTimer) {
-        _proximityPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(pollProximitySensor:) userInfo:nil repeats:YES];
-    }
+    [self startProximityMonitor];
     if (!_standbyWatchdogTimer) {
         _standbyWatchdogTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(checkStandbyWatchdog:) userInfo:nil repeats:YES];
     }
@@ -1533,7 +1553,7 @@ static void EnsurePassiveProximityMode(void) {
         } completion:^(BOOL finished) {
             if (!blockSelf) return;
             blockSelf->_isTransitioningOrientation = NO;
-            EnsurePassiveProximityMode();
+            EnsurePassiveProximityMode(blockSelf->_proximityMode);
             [blockSelf->_leftEye setNeedsDisplay];
             [blockSelf->_rightEye setNeedsDisplay];
             [blockSelf->_scanlineOverlay setNeedsDisplay];
@@ -2556,29 +2576,74 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     [self processProximityNear:isNear];
 }
 
-- (void)pollProximitySensor:(NSTimer *)timer {
-    BOOL isNear = [UIDevice currentDevice].proximityState;
-    BKSProximityBridge bridge = GetBKSProximityBridge();
-    if (bridge.getObjectWithinProximity) {
-        isNear = isNear || bridge.getObjectWithinProximity();
+- (void)startProximityMonitor {
+    [self stopProximityMonitor];
+
+    __block DeskCompanionViewController *proxSelf = self;
+    notify_register_dispatch("com.apple.backboard.proximity.changed", &_proximityNotifyToken, dispatch_get_main_queue(), ^(int token) {
+        if (!proxSelf) return;
+        uint64_t state = 0;
+        notify_get_state(token, &state);
+        BKSProximityBridge bridge = GetBKSProximityBridge();
+        BOOL isNear = (state != 0);
+        if (bridge.getObjectWithinProximity) {
+            isNear = isNear || bridge.getObjectWithinProximity();
+        }
+        [proxSelf processProximityNear:isNear];
+    });
+
+    dispatch_queue_t bgQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
+    _proximityPollTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, bgQueue);
+    if (_proximityPollTimer) {
+        dispatch_source_set_timer(_proximityPollTimer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), (uint64_t)(0.35 * NSEC_PER_SEC), (uint64_t)(0.10 * NSEC_PER_SEC));
+        __block BOOL lastBgNear = NO;
+        dispatch_source_set_event_handler(_proximityPollTimer, ^{
+            BKSProximityBridge bridge = GetBKSProximityBridge();
+            if (!bridge.getObjectWithinProximity) return;
+            BOOL isNear = bridge.getObjectWithinProximity();
+            if (isNear != lastBgNear) {
+                lastBgNear = isNear;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (proxSelf) [proxSelf processProximityNear:isNear];
+                });
+            }
+        });
+        dispatch_resume(_proximityPollTimer);
     }
-    if (isNear != _lastProximityNear) {
-        [self processProximityNear:isNear];
+}
+
+- (void)stopProximityMonitor {
+    if (_proximityPollTimer) {
+        dispatch_source_cancel(_proximityPollTimer);
+        dispatch_release(_proximityPollTimer);
+        _proximityPollTimer = NULL;
     }
+    if (_proximityNotifyToken != 0) {
+        notify_cancel(_proximityNotifyToken);
+        _proximityNotifyToken = 0;
+    }
+}
+
+- (void)setProximityMode:(int)mode {
+    if (mode < 0 || mode > 3) mode = 1;
+    _proximityMode = mode;
+    [UIDevice currentDevice].proximityMonitoringEnabled = NO;
+    EnsurePassiveProximityMode(_proximityMode);
 }
 
 - (void)processProximityNear:(BOOL)isNear {
     if (isNear == _lastProximityNear) {
-        if (isNear) EnsurePassiveProximityMode();
+        if (isNear) EnsurePassiveProximityMode(_proximityMode);
         return;
     }
     _lastProximityNear = isNear;
-    EnsurePassiveProximityMode();
+    EnsurePassiveProximityMode(_proximityMode);
 
     if (isNear) {
         [self registerUserActivityWithReason:@"proximity_hover"];
+        int modeSnap = _proximityMode;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            EnsurePassiveProximityMode();
+            EnsurePassiveProximityMode(modeSnap);
         });
 
         // Hand hover detected above iPhone 4S top bezel: surprise reaction and glance upward
@@ -3025,6 +3090,10 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         @"standby_timeout": @(_standbyTimeoutSeconds),
         @"last_wake_reason": (_lastWakeReason ? _lastWakeReason : @"boot"),
         @"passive_proximity_supported": @(bksBridge.requestProximityMode != NULL),
+        @"bks_detection_active": @(bksBridge.isDetectionActive ? bksBridge.isDetectionActive() : NO),
+        @"bks_prox_read_supported": @(bksBridge.getObjectWithinProximity != NULL),
+        @"bks_prox_near": @(_lastProximityNear),
+        @"bks_prox_mode": @(_proximityMode),
         @"free_memory_mb": @(freeMemMB),
         @"expression": (_currentExpression ? _currentExpression : @"neutral"),
         @"zen_mode": @(_zenMode),
@@ -3059,10 +3128,23 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     };
 }
 
+- (void)viewDidUnload {
+    if (_clockTimer) { [_clockTimer invalidate]; _clockTimer = nil; }
+    if (_blinkTimer) { [_blinkTimer invalidate]; _blinkTimer = nil; }
+    if (_saccadeTimer) { [_saccadeTimer invalidate]; _saccadeTimer = nil; }
+    if (_waveTimer) { [_waveTimer invalidate]; _waveTimer = nil; }
+    if (_pruneTimer) { [_pruneTimer invalidate]; _pruneTimer = nil; }
+    if (_reactionTimer) { [_reactionTimer invalidate]; _reactionTimer = nil; }
+    if (_standbyWatchdogTimer) { [_standbyWatchdogTimer invalidate]; _standbyWatchdogTimer = nil; }
+    [self stopProximityMonitor];
+    [super viewDidUnload];
+}
+
 - (void)dealloc {
     [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     _observersAdded = NO;
+    [self stopProximityMonitor];
 
     if (_micMeterTimer) {
         [_micMeterTimer invalidate];
@@ -3122,10 +3204,7 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         [_standbyWatchdogTimer invalidate];
         _standbyWatchdogTimer = nil;
     }
-    if (_proximityPollTimer) {
-        [_proximityPollTimer invalidate];
-        _proximityPollTimer = nil;
-    }
+    [self stopProximityMonitor];
     [_lastWakeReason release];
     _lastWakeReason = nil;
     if (_audioTimeoutTimer) {
@@ -3522,6 +3601,14 @@ static void *SocketServerThread(void *arg) {
                             if (g_viewController) [g_viewController configureStandbyIdleTimeout:idleSec standbyTimeout:standbySec];
                         });
                         [response setObject:@"ok" forKey:@"status"];
+                    } else if ([command isEqualToString:@"set_proximity_mode"]) {
+                        id modeObj = [cmdDict objectForKey:@"mode"];
+                        int mode = (modeObj && [modeObj respondsToSelector:@selector(intValue)]) ? [modeObj intValue] : 1;
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (g_viewController) [g_viewController setProximityMode:mode];
+                        });
+                        [response setObject:@"ok" forKey:@"status"];
+                        [response setObject:@(mode) forKey:@"mode"];
                     } else if ([command isEqualToString:@"snapshot"]) {
                         handledAsynchronously = YES;
                         NSString *cam = [cmdDict objectForKey:@"camera"];
