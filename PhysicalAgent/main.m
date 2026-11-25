@@ -420,32 +420,12 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     CGContextSaveGState(ctx);
     [eyePath addClip];
 
-    // 2. Base Linear Gradient (Electric Cyber Cyan Body)
-    if (_irisGradient) {
-        CGContextDrawLinearGradient(ctx, _irisGradient, CGPointMake(0, 0), CGPointMake(0, H), 0);
-    }
-
-    // 3. Luminous Radial HotSpot (Radiant glowing white-cyan core)
-    CGFloat pupilDx = ClampF(_config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.25f);
-    CGFloat pupilDy = ClampF(_config.hotSpotCenterY, -1.0f, 1.0f) * (H * 0.25f);
-    CGPoint hotSpotCenter = CGPointMake(W * 0.5f + pupilDx, H * 0.5f + pupilDy);
-    CGFloat glowR = (W * 0.55f) * ClampF(_config.glowSize, 0.4f, 2.5f);
-
-    if (_hotSpotGradient) {
-        CGContextDrawRadialGradient(ctx, _hotSpotGradient, hotSpotCenter, 0.0f, hotSpotCenter, glowR, kCGGradientDrawsAfterEndLocation);
-    }
-
-    // 4. Upper Eyelid Mask (Black Cutout with Rotation and Parabolic Bend)
+    // 2. Pre-Draw Even-Odd Eyelid Clips (zero gradient pixels painted under eyelids, zero 1px ghost outlines)
     if (_config.upperLidY > 0.001f) {
-        CGContextSaveGState(ctx);
         CGFloat cx = W * 0.5f;
         CGFloat cy = H * 0.5f;
         CGFloat rotSign = _isLeftEye ? 1.0f : -1.0f;
         CGFloat rotRad = _config.upperLidAngle * rotSign * (CGFloat)(M_PI / 180.0);
-
-        CGContextTranslateCTM(ctx, cx, cy);
-        CGContextRotateCTM(ctx, rotRad);
-        CGContextTranslateCTM(ctx, -cx, -cy);
 
         CGFloat lidY = ClampF(_config.upperLidY, 0.0f, 1.0f) * H;
         CGFloat bendH = H * (1.0f - ClampF(_config.upperLidY, 0.0f, 1.0f)) * _config.upperLidBend;
@@ -454,7 +434,6 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
         [upperLid moveToPoint:CGPointMake(-W, -H)];
         [upperLid addLineToPoint:CGPointMake(W * 2.0f, -H)];
         [upperLid addLineToPoint:CGPointMake(W * 2.0f, lidY)];
-
         if (fabsf(_config.upperLidBend) > 0.01f) {
             [upperLid addQuadCurveToPoint:CGPointMake(-W, lidY) controlPoint:CGPointMake(cx, lidY + bendH)];
         } else {
@@ -462,24 +441,25 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
         }
         [upperLid closePath];
 
-        CGContextSetBlendMode(ctx, kCGBlendModeClear);
-        [upperLid fill];
-        CGContextSetBlendMode(ctx, kCGBlendModeNormal);
+        CGAffineTransform xf = CGAffineTransformMakeTranslation(cx, cy);
+        xf = CGAffineTransformRotate(xf, rotRad);
+        xf = CGAffineTransformTranslate(xf, -cx, -cy);
 
-        CGContextRestoreGState(ctx);
+        CGMutablePathRef eoUpper = CGPathCreateMutable();
+        if (eoUpper) {
+            CGPathAddRect(eoUpper, NULL, CGRectMake(-W * 2.0f, -H * 2.0f, W * 5.0f, H * 5.0f));
+            CGPathAddPath(eoUpper, &xf, upperLid.CGPath);
+            CGContextAddPath(ctx, eoUpper);
+            CGContextEOClip(ctx);
+            CGPathRelease(eoUpper);
+        }
     }
 
-    // 5. Lower Eyelid Mask (Black Cutout with Rotation and Parabolic Bend)
     if (_config.lowerLidY > 0.001f) {
-        CGContextSaveGState(ctx);
         CGFloat cx = W * 0.5f;
         CGFloat cy = H * 0.5f;
         CGFloat rotSign = _isLeftEye ? 1.0f : -1.0f;
         CGFloat rotRad = _config.lowerLidAngle * rotSign * (CGFloat)(M_PI / 180.0);
-
-        CGContextTranslateCTM(ctx, cx, cy);
-        CGContextRotateCTM(ctx, rotRad);
-        CGContextTranslateCTM(ctx, -cx, -cy);
 
         CGFloat lidY = H - ClampF(_config.lowerLidY, 0.0f, 1.0f) * H;
         CGFloat bendH = H * (1.0f - ClampF(_config.lowerLidY, 0.0f, 1.0f)) * _config.lowerLidBend;
@@ -488,7 +468,6 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
         [lowerLid moveToPoint:CGPointMake(-W, H * 2.0f)];
         [lowerLid addLineToPoint:CGPointMake(W * 2.0f, H * 2.0f)];
         [lowerLid addLineToPoint:CGPointMake(W * 2.0f, lidY)];
-
         if (fabsf(_config.lowerLidBend) > 0.01f) {
             [lowerLid addQuadCurveToPoint:CGPointMake(-W, lidY) controlPoint:CGPointMake(cx, lidY - bendH)];
         } else {
@@ -496,11 +475,33 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
         }
         [lowerLid closePath];
 
-        CGContextSetBlendMode(ctx, kCGBlendModeClear);
-        [lowerLid fill];
-        CGContextSetBlendMode(ctx, kCGBlendModeNormal);
+        CGAffineTransform xf = CGAffineTransformMakeTranslation(cx, cy);
+        xf = CGAffineTransformRotate(xf, rotRad);
+        xf = CGAffineTransformTranslate(xf, -cx, -cy);
 
-        CGContextRestoreGState(ctx);
+        CGMutablePathRef eoLower = CGPathCreateMutable();
+        if (eoLower) {
+            CGPathAddRect(eoLower, NULL, CGRectMake(-W * 2.0f, -H * 2.0f, W * 5.0f, H * 5.0f));
+            CGPathAddPath(eoLower, &xf, lowerLid.CGPath);
+            CGContextAddPath(ctx, eoLower);
+            CGContextEOClip(ctx);
+            CGPathRelease(eoLower);
+        }
+    }
+
+    // 3. Base Linear Gradient (Electric Cyber Cyan Body)
+    if (_irisGradient) {
+        CGContextDrawLinearGradient(ctx, _irisGradient, CGPointMake(0, 0), CGPointMake(0, H), 0);
+    }
+
+    // 4. Luminous Radial HotSpot (Radiant glowing white-cyan core)
+    CGFloat pupilDx = ClampF(_config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.25f);
+    CGFloat pupilDy = ClampF(_config.hotSpotCenterY, -1.0f, 1.0f) * (H * 0.25f);
+    CGPoint hotSpotCenter = CGPointMake(W * 0.5f + pupilDx, H * 0.5f + pupilDy);
+    CGFloat glowR = (W * 0.55f) * ClampF(_config.glowSize, 0.4f, 2.5f);
+
+    if (_hotSpotGradient) {
+        CGContextDrawRadialGradient(ctx, _hotSpotGradient, hotSpotCenter, 0.0f, hotSpotCenter, glowR, kCGGradientDrawsAfterEndLocation);
     }
 
     CGContextRestoreGState(ctx);
@@ -1008,6 +1009,8 @@ typedef NS_ENUM(NSInteger, MonolithPowerState) {
 
 typedef struct {
     void (*setScreenBlanked)(BOOL);
+    void (*willUnblank)(void);
+    void (*setBacklightFactorWithFade)(float, float);
     void (*requestProximityMode)(int);
     BOOL (*getObjectWithinProximity)(void);
     BOOL (*isDetectionActive)(void);
@@ -1015,12 +1018,14 @@ typedef struct {
 } BKSProximityBridge;
 
 static BKSProximityBridge GetBKSProximityBridge(void) {
-    static BKSProximityBridge s_bridge = {NULL, NULL, NULL, NULL, NO};
+    static BKSProximityBridge s_bridge = {NULL, NULL, NULL, NULL, NULL, NULL, NO};
     static dispatch_once_t s_once;
     dispatch_once(&s_once, ^{
         void *handle = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_NOW);
         if (handle) {
             s_bridge.setScreenBlanked = (void (*)(BOOL))dlsym(handle, "BKSDisplayServicesSetScreenBlanked");
+            s_bridge.willUnblank = (void (*)(void))dlsym(handle, "BKSDisplayServicesWillUnblank");
+            s_bridge.setBacklightFactorWithFade = (void (*)(float, float))dlsym(handle, "BKSHIDServicesSetBacklightFactorWithFadeDuration");
             s_bridge.requestProximityMode = (void (*)(int))dlsym(handle, "BKSHIDServicesRequestProximityDetectionMode");
             s_bridge.getObjectWithinProximity = (BOOL (*)(void))dlsym(handle, "BKSHIDServicesGetObjectWithinProximity");
             if (!s_bridge.getObjectWithinProximity) {
@@ -1036,13 +1041,26 @@ static BKSProximityBridge GetBKSProximityBridge(void) {
     return s_bridge;
 }
 
-static void EnsurePassiveProximityMode(int mode) {
+static void ForceUnblankDisplay(float brightness) {
     BKSProximityBridge bridge = GetBKSProximityBridge();
+    if (bridge.willUnblank) {
+        bridge.willUnblank();
+    }
     if (bridge.setScreenBlanked) {
         bridge.setScreenBlanked(NO);
     }
+    if (bridge.setBacklightFactorWithFade) {
+        bridge.setBacklightFactorWithFade(1.0f, 0.0f);
+    }
+    if (brightness > 0.05f && [UIScreen mainScreen].brightness < brightness - 0.05f) {
+        [UIScreen mainScreen].brightness = brightness;
+    }
+}
+
+static void EnsurePassiveProximityMode(int mode, float brightness) {
+    ForceUnblankDisplay(brightness);
+    BKSProximityBridge bridge = GetBKSProximityBridge();
     if (bridge.requestProximityMode) {
-        // Request passive / non-SpringBoard proximity mode directly from backboardd
         bridge.requestProximityMode(mode);
     }
 }
@@ -1139,11 +1157,17 @@ static void EnsurePassiveProximityMode(int mode) {
     NSTimeInterval _standbyTimeoutSeconds;
     float _activeBrightness;
     NSTimer *_standbyWatchdogTimer;
+    NSTimer *_antiBlankTimer;
     dispatch_source_t _proximityPollTimer;
     NSString *_lastWakeReason;
     BOOL _lastProximityNear;
     int _proximityNotifyToken;
     int _proximityMode;
+    float _filteredAx;
+    float _filteredAy;
+    float _filteredAz;
+    UIInterfaceOrientation _candidateOrient;
+    int _candidateOrientCount;
 }
 
 - (void)setupProceduralEngine;
@@ -1170,6 +1194,7 @@ static void EnsurePassiveProximityMode(int mode) {
 - (void)configureStandbyIdleTimeout:(NSTimeInterval)idleSec standbyTimeout:(NSTimeInterval)standbySec;
 - (void)setActiveBrightness:(float)level;
 - (void)setProximityMode:(int)mode;
+- (void)enforceUnblankTick:(NSTimer *)timer;
 - (void)handleDeviceOrientationChange:(NSNotification *)notification;
 - (void)handleMotionData:(CMAcceleration)accel;
 - (void)setAppOrientation:(UIInterfaceOrientation)orientation;
@@ -1390,6 +1415,7 @@ static void EnsurePassiveProximityMode(int mode) {
     if (_pruneTimer) { [_pruneTimer invalidate]; _pruneTimer = nil; }
     [self stopProximityMonitor];
     if (_standbyWatchdogTimer) { [_standbyWatchdogTimer invalidate]; _standbyWatchdogTimer = nil; }
+    if (_antiBlankTimer) { [_antiBlankTimer invalidate]; _antiBlankTimer = nil; }
     if (_reactionTimer) { [_reactionTimer invalidate]; _reactionTimer = nil; }
     if (_waveTimer) { [_waveTimer invalidate]; _waveTimer = nil; }
 
@@ -1408,6 +1434,11 @@ static void EnsurePassiveProximityMode(int mode) {
     // 7. HARDWARE SENSORS: PROXIMITY, STANDBY & COREMOTION ACCELEROMETER
     // ========================================================
     _lastAccel = (CMAcceleration){0.0, 0.0, -1.0};
+    _filteredAx = 0.0f;
+    _filteredAy = -1.0f;
+    _filteredAz = 0.0f;
+    _candidateOrient = UIInterfaceOrientationPortrait;
+    _candidateOrientCount = 0;
     _prevAccelMag = 1.0;
     _lastShakeTime = 0.0;
     _powerState = MonolithPowerStateActive;
@@ -1420,24 +1451,19 @@ static void EnsurePassiveProximityMode(int mode) {
     }
     _lastWakeReason = [@"boot" copy];
     _lastProximityNear = NO;
-    _proximityMode = 3; // Mode 3 activates IR proximity hardware while UIDevice monitoring stays OFF (no SpringBoard blanking)
+    _proximityMode = 3; // Mode 3 activates IR proximity hardware while UIDevice monitoring stays OFF
 
-    // Keep UIDevice telephony proximity OFF so SpringBoard never blanks the screen or suppresses landscape
+    // Keep UIDevice telephony proximity OFF so SpringBoard never runs call-blanking or landscape suppression
     [UIDevice currentDevice].proximityMonitoringEnabled = NO;
-    EnsurePassiveProximityMode(_proximityMode);
+    EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
     [self startProximityMonitor];
 
     _standbyWatchdogTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(checkStandbyWatchdog:) userInfo:nil repeats:YES];
 
-    // Enable hardware orientation change notifications from UIDevice
+    // Single authoritative orientation tracking via filtered CoreMotion accelerometer (no UIKit rotation conflict)
     _currentOrientation = UIInterfaceOrientationPortrait;
     _isTransitioningOrientation = NO;
     _lastOrientationChangeTime = 0.0;
-    [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleDeviceOrientationChange:)
-                                                 name:UIDeviceOrientationDidChangeNotification
-                                               object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleAppDidEnterBackground:)
                                                  name:UIApplicationDidEnterBackgroundNotification
@@ -1465,16 +1491,7 @@ static void EnsurePassiveProximityMode(int mode) {
 }
 
 - (void)handleDeviceOrientationChange:(NSNotification *)notification {
-    UIDeviceOrientation devOrient = [UIDevice currentDevice].orientation;
-    UIInterfaceOrientation target = _currentOrientation;
-    if (devOrient == UIDeviceOrientationPortrait) target = UIInterfaceOrientationPortrait;
-    else if (devOrient == UIDeviceOrientationPortraitUpsideDown) target = UIInterfaceOrientationPortraitUpsideDown;
-    else if (devOrient == UIDeviceOrientationLandscapeLeft) target = UIInterfaceOrientationLandscapeRight;
-    else if (devOrient == UIDeviceOrientationLandscapeRight) target = UIInterfaceOrientationLandscapeLeft;
-
-    if (target != _currentOrientation) {
-        [self transitionToOrientation:target animated:YES duration:0.38];
-    }
+    // Handled authoritatively by filtered CoreMotion accelerometer
 }
 
 - (void)handleAppDidEnterBackground:(NSNotification *)notification {
@@ -1486,6 +1503,10 @@ static void EnsurePassiveProximityMode(int mode) {
         [_standbyWatchdogTimer invalidate];
         _standbyWatchdogTimer = nil;
     }
+    if (_antiBlankTimer) {
+        [_antiBlankTimer invalidate];
+        _antiBlankTimer = nil;
+    }
     _isTransitioningOrientation = NO;
     _pendingOrientation = 0;
     [self.view.layer removeAllAnimations];
@@ -1493,7 +1514,7 @@ static void EnsurePassiveProximityMode(int mode) {
 }
 
 - (void)handleAppWillEnterForeground:(NSNotification *)notification {
-    EnsurePassiveProximityMode(_proximityMode);
+    EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
     [self registerUserActivityWithReason:@"foreground"];
     [self startProximityMonitor];
     if (!_standbyWatchdogTimer) {
@@ -1553,7 +1574,7 @@ static void EnsurePassiveProximityMode(int mode) {
         } completion:^(BOOL finished) {
             if (!blockSelf) return;
             blockSelf->_isTransitioningOrientation = NO;
-            EnsurePassiveProximityMode(blockSelf->_proximityMode);
+            EnsurePassiveProximityMode(blockSelf->_proximityMode, blockSelf->_activeBrightness);
             [blockSelf->_leftEye setNeedsDisplay];
             [blockSelf->_rightEye setNeedsDisplay];
             [blockSelf->_scanlineOverlay setNeedsDisplay];
@@ -1582,25 +1603,15 @@ static void EnsurePassiveProximityMode(int mode) {
 }
 
 - (BOOL)shouldAutorotate {
-    return YES;
+    return NO;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskAll;
+    return UIInterfaceOrientationMaskPortrait;
 }
 
 - (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)interfaceOrientation {
-    return YES;
-}
-
-- (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
-    _currentOrientation = toInterfaceOrientation;
-    [self updateLayoutForOrientation:_currentOrientation];
-}
-
-- (void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)fromInterfaceOrientation {
-    _currentOrientation = self.interfaceOrientation;
-    [self updateLayoutForOrientation:_currentOrientation];
+    return (interfaceOrientation == UIInterfaceOrientationPortrait);
 }
 
 - (void)updateLayout {
@@ -2625,26 +2636,39 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 }
 
 - (void)setProximityMode:(int)mode {
-    if (mode < 0 || mode > 3) mode = 1;
+    if (mode < 0 || mode > 3) mode = 3;
     _proximityMode = mode;
     [UIDevice currentDevice].proximityMonitoringEnabled = NO;
-    EnsurePassiveProximityMode(_proximityMode);
+    EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
+}
+
+- (void)enforceUnblankTick:(NSTimer *)timer {
+    if (!_lastProximityNear || _powerState != MonolithPowerStateActive) {
+        if (_antiBlankTimer) {
+            [_antiBlankTimer invalidate];
+            _antiBlankTimer = nil;
+        }
+        return;
+    }
+    ForceUnblankDisplay(_activeBrightness);
 }
 
 - (void)processProximityNear:(BOOL)isNear {
     if (isNear == _lastProximityNear) {
-        if (isNear) EnsurePassiveProximityMode(_proximityMode);
+        if (isNear) ForceUnblankDisplay(_activeBrightness);
         return;
     }
     _lastProximityNear = isNear;
-    EnsurePassiveProximityMode(_proximityMode);
+    EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
 
     if (isNear) {
         [self registerUserActivityWithReason:@"proximity_hover"];
-        int modeSnap = _proximityMode;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            EnsurePassiveProximityMode(modeSnap);
-        });
+        ForceUnblankDisplay(_activeBrightness);
+        if (_antiBlankTimer) {
+            [_antiBlankTimer invalidate];
+            _antiBlankTimer = nil;
+        }
+        _antiBlankTimer = [NSTimer scheduledTimerWithTimeInterval:0.12 target:self selector:@selector(enforceUnblankTick:) userInfo:nil repeats:YES];
 
         // Hand hover detected above iPhone 4S top bezel: surprise reaction and glance upward
         if (_reactionTimer) {
@@ -2657,11 +2681,15 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         [self lookAtX:0.0f y:-0.75f duration:0.16];
         [self setStatusTitle:@"PROXIMITY ALERT //" subtitle:@"Object detected near top bezel"];
     } else {
-        // Hand removed: grateful cheerful wink and return to neutral
+        if (_antiBlankTimer) {
+            [_antiBlankTimer invalidate];
+            _antiBlankTimer = nil;
+        }
+        ForceUnblankDisplay(_activeBrightness);
+        // Hand removed: grateful happy expression and smooth return to neutral
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
         [self playSoundNamed:@"tock"];
         [self setExpression:@"happy" duration:0.20];
-        [self blink];
         [self setStatusTitle:@"TARS // ONLINE" subtitle:@"Desk companion active"];
         if (_reactionTimer) {
             [_reactionTimer invalidate];
@@ -2799,29 +2827,42 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     _lastAccel = accel;
     NSTimeInterval now = CACurrentMediaTime();
 
-    // Physical orientation tracking from hardware accelerometer (functions autonomously even if SpringBoard is locked)
-    UIInterfaceOrientation detectedOrient = 0;
-    float ax = (float)accel.x;
-    float ay = (float)accel.y;
-    float az = (float)accel.z;
-    float absX = fabsf(ax);
-    float absY = fabsf(ay);
-    float absZ = fabsf(az);
+    // Low-pass filter accelerometer on _motionQueue (alpha=0.28) to suppress rotational jerk spikes
+    const float alpha = 0.28f;
+    _filteredAx = _filteredAx + alpha * ((float)accel.x - _filteredAx);
+    _filteredAy = _filteredAy + alpha * ((float)accel.y - _filteredAy);
+    _filteredAz = _filteredAz + alpha * ((float)accel.z - _filteredAz);
 
-    // Only update orientation when device is tilted up from desk (absZ < 0.90) and dominant axis is clear
-    if (absZ < 0.90f) {
-        if (absX > absY + 0.20f && absX > 0.35f) {
-            detectedOrient = (ax > 0.0f) ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationLandscapeLeft;
-        } else if (absY > absX + 0.20f && absY > 0.35f) {
-            detectedOrient = (ay < 0.0f) ? UIInterfaceOrientationPortrait : UIInterfaceOrientationPortraitUpsideDown;
+    // Physical orientation tracking from filtered accelerometer with 3-sample hysteresis confirmation
+    UIInterfaceOrientation detectedOrient = 0;
+    float absX = fabsf(_filteredAx);
+    float absY = fabsf(_filteredAy);
+    float absZ = fabsf(_filteredAz);
+
+    if (absZ < 0.85f) {
+        if (absX > absY + 0.26f && absX > 0.44f) {
+            detectedOrient = (_filteredAx > 0.0f) ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationLandscapeLeft;
+        } else if (absY > absX + 0.26f && absY > 0.44f) {
+            detectedOrient = (_filteredAy < 0.0f) ? UIInterfaceOrientationPortrait : UIInterfaceOrientationPortraitUpsideDown;
         }
     }
     if (detectedOrient != 0) {
-        __block DeskCompanionViewController *blockSelf = self;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (!blockSelf) return;
-            [blockSelf transitionToOrientation:detectedOrient animated:YES duration:0.38];
-        });
+        if (detectedOrient == _candidateOrient) {
+            _candidateOrientCount++;
+        } else {
+            _candidateOrient = detectedOrient;
+            _candidateOrientCount = 1;
+        }
+        if (_candidateOrientCount >= 3) {
+            UIInterfaceOrientation confirmedOrient = detectedOrient;
+            __block DeskCompanionViewController *blockSelf = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!blockSelf) return;
+                [blockSelf transitionToOrientation:confirmedOrient animated:YES duration:0.38];
+            });
+        }
+    } else {
+        _candidateOrientCount = 0;
     }
 
     // Detect sudden desk knocks or device shake
@@ -3136,12 +3177,12 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     if (_pruneTimer) { [_pruneTimer invalidate]; _pruneTimer = nil; }
     if (_reactionTimer) { [_reactionTimer invalidate]; _reactionTimer = nil; }
     if (_standbyWatchdogTimer) { [_standbyWatchdogTimer invalidate]; _standbyWatchdogTimer = nil; }
+    if (_antiBlankTimer) { [_antiBlankTimer invalidate]; _antiBlankTimer = nil; }
     [self stopProximityMonitor];
     [super viewDidUnload];
 }
 
 - (void)dealloc {
-    [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     _observersAdded = NO;
     [self stopProximityMonitor];
@@ -3203,6 +3244,10 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     if (_standbyWatchdogTimer) {
         [_standbyWatchdogTimer invalidate];
         _standbyWatchdogTimer = nil;
+    }
+    if (_antiBlankTimer) {
+        [_antiBlankTimer invalidate];
+        _antiBlankTimer = nil;
     }
     [self stopProximityMonitor];
     [_lastWakeReason release];
