@@ -10,6 +10,7 @@ ddi_9.3/
 
 # Compiled Mach-O binaries & artifacts
 *.o
+*.dylib
 *.dSYM/
 PhysicalAgent/PhysicalAgent
 PhysicalAgent/PhysicalAgent_raw
