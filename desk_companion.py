@@ -266,6 +266,11 @@ class DeskCompanion:
     def set_torch(self, enable=True):
         return self._send_cmd({"command": "torch", "enable": bool(enable)})
 
+    def probe_luminance(self, camera="front"):
+        """Samples mean scene luminance [0.0, 1.0] from the specified camera ('front' or 'back')."""
+        cam = camera if camera in ("front", "back") else "front"
+        return self._send_cmd({"command": "probe_luminance", "camera": cam}, timeout=15.0)
+
     def set_brightness(self, level=1.0):
         level = max(0.0, min(1.0, float(level)))
         return self._send_cmd({"command": "brightness", "level": level})
@@ -447,6 +452,7 @@ def interactive_cli():
     print("  sound <name>        Play acoustic sound (confirm, begin, cancel, shutter, tweet, mail, tink, beep)")
     print("  torch <on|off>      Toggle rear camera LED flashlight")
     print("  photo [front|back]  Capture camera photo and save locally")
+    print("  luma [front|back]   Probe camera scene luminance [0.0, 1.0]")
     print("  inspect             Capture both front (desk) and rear (macro) angles")
     print("  listen [duration]   Record audio from iPhone 4S mic and save WAV")
     print("  screenshot          Capture pixel-exact Retina display PNG")
@@ -501,6 +507,10 @@ def interactive_cli():
             elif cmd == "photo":
                 cam = arg if arg in ("front", "back") else "back"
                 res = companion.snapshot(cam)
+                print("Result:", res)
+            elif cmd == "luma":
+                cam = arg if arg in ("front", "back") else "front"
+                res = companion.probe_luminance(cam)
                 print("Result:", res)
             elif cmd == "inspect":
                 res = companion.inspect_environment()
