@@ -280,7 +280,7 @@ class DeskCompanion:
         """Transitions companion into 'obsidian' (pitch-black) or 'ambient' standby."""
         return self._send_cmd({"command": "sleep", "mode": str(mode)})
 
-    def set_standby_config(self, idle_timeout=60.0, standby_timeout=180.0):
+    def set_standby_config(self, idle_timeout=180.0, standby_timeout=360.0):
         """Configures inactivity timeouts in seconds."""
         try:
             idle_val = float(idle_timeout)
