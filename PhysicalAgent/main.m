@@ -2382,12 +2382,19 @@ static dispatch_queue_t GetCameraSessionQueue(void) {
 static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
     if (!jpegData || [jpegData length] == 0) return -1.0f;
     UIImage *img = [[UIImage alloc] initWithData:jpegData];
-    if (!img || !img.CGImage) {
+    CGImageRef cgImg = img ? img.CGImage : NULL;
+    if (!cgImg) {
         [img release];
         return -1.0f;
     }
-    const size_t w = 16;
-    const size_t h = 16;
+    size_t srcW = CGImageGetWidth(cgImg);
+    size_t srcH = CGImageGetHeight(cgImg);
+    if (srcW == 0 || srcH == 0) {
+        [img release];
+        return -1.0f;
+    }
+    const size_t w = (srcW < 16) ? srcW : 16;
+    const size_t h = (srcH < 16) ? srcH : 16;
     uint8_t pixels[16 * 16 * 4];
     memset(pixels, 0, sizeof(pixels));
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
@@ -2395,7 +2402,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
         [img release];
         return -1.0f;
     }
-    // CGContextDrawImage converts any decoded JPEG color space/layout into normalized 8-bit RGBA (R,G,B,A)
+    // CGContextDrawImage downsamples the full source CGImage into a normalized 8-bit RGBA buffer
     CGContextRef ctx = CGBitmapContextCreate(pixels, w, h, 8, w * 4, cs,
                                              kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
     CGColorSpaceRelease(cs);
@@ -2404,7 +2411,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
         return -1.0f;
     }
     CGContextSetInterpolationQuality(ctx, kCGInterpolationLow);
-    CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)w, (CGFloat)h), img.CGImage);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)w, (CGFloat)h), cgImg);
     CGContextRelease(ctx);
     [img release];
 
