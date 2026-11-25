@@ -1184,6 +1184,9 @@ static NSUInteger s_activeProximityGen = 0;
     BOOL _isCameraBusy;
     BOOL _obstructionActive;
     NSUInteger _obstructionCount;
+    NSUInteger _proximityEpisodeGen;
+    int _obstructionRetryCount;
+    int _rearFlipRetryCount;
     NSTimeInterval _lastObstructionTime;
     float _lastFrontLuminance;
     float _lastRearLuminance;
@@ -1441,6 +1444,8 @@ static NSUInteger s_activeProximityGen = 0;
     [self stopProximityMonitor];
     if (_standbyWatchdogTimer) { [_standbyWatchdogTimer invalidate]; _standbyWatchdogTimer = nil; }
     if (_antiBlankTimer) { [_antiBlankTimer invalidate]; _antiBlankTimer = nil; }
+    if (_obstructionTimer) { [_obstructionTimer invalidate]; _obstructionTimer = nil; }
+    if (_rearFlipTimer) { [_rearFlipTimer invalidate]; _rearFlipTimer = nil; }
     if (_reactionTimer) { [_reactionTimer invalidate]; _reactionTimer = nil; }
     if (_waveTimer) { [_waveTimer invalidate]; _waveTimer = nil; }
 
@@ -1485,6 +1490,9 @@ static NSUInteger s_activeProximityGen = 0;
     _isCameraBusy = NO;
     _obstructionActive = NO;
     _obstructionCount = 0;
+    _proximityEpisodeGen = 0;
+    _obstructionRetryCount = 0;
+    _rearFlipRetryCount = 0;
     _lastObstructionTime = 0.0;
     _lastFrontLuminance = -1.0f;
     _lastRearLuminance = -1.0f;
@@ -1561,6 +1569,9 @@ static NSUInteger s_activeProximityGen = 0;
         _rearFlipTimer = nil;
     }
     _obstructionActive = NO;
+    _obstructionRetryCount = 0;
+    _rearFlipRetryCount = 0;
+    _proximityEpisodeGen++;
     _isForegroundActive = NO;
     _lifecycleGen++;
     EnsureProximityModeOnly(0);
@@ -2359,6 +2370,15 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     return NO;
 }
 
+static dispatch_queue_t GetCameraSessionQueue(void) {
+    static dispatch_queue_t s_camQueue = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        s_camQueue = dispatch_queue_create("com.antigravity.deskcompanion.camera", DISPATCH_QUEUE_SERIAL);
+    });
+    return s_camQueue;
+}
+
 static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
     if (!jpegData || [jpegData length] == 0) return -1.0f;
     UIImage *img = [[UIImage alloc] initWithData:jpegData];
@@ -2375,6 +2395,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
         [img release];
         return -1.0f;
     }
+    // CGContextDrawImage converts any decoded JPEG color space/layout into normalized 8-bit RGBA (R,G,B,A)
     CGContextRef ctx = CGBitmapContextCreate(pixels, w, h, 8, w * 4, cs,
                                              kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
     CGColorSpaceRelease(cs);
@@ -2409,116 +2430,148 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
     _isCameraBusy = YES;
     BOOL isFront = [cameraPosition isEqualToString:@"front"];
     AVCaptureDevicePosition pos = isFront ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
-
-    AVCaptureSession *session = [[AVCaptureSession alloc] init];
-    session.sessionPreset = AVCaptureSessionPreset640x480;
-
-    AVCaptureDevice *chosenDevice = nil;
-    NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
-    for (AVCaptureDevice *dev in devices) {
-        if (dev.position == pos) {
-            chosenDevice = dev;
-            break;
-        }
-    }
-    if (!chosenDevice) chosenDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
-
-    NSError *inputErr = nil;
-    AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:chosenDevice error:&inputErr];
-    if (!input || ![session canAddInput:input]) {
-        [session release];
-        _isCameraBusy = NO;
-        if (completion) completion(nil, 0, -1.0f, inputErr ? inputErr : [NSError errorWithDomain:@"DeskCompanion" code:-1 userInfo:nil]);
-        return;
-    }
-    [session addInput:input];
-
-    AVCaptureStillImageOutput *output = [[AVCaptureStillImageOutput alloc] init];
-    output.outputSettings = @{ AVVideoCodecKey : AVVideoCodecJPEG };
-    if (![session canAddOutput:output]) {
-        [output release];
-        [session release];
-        _isCameraBusy = NO;
-        if (completion) completion(nil, 0, -1.0f, [NSError errorWithDomain:@"DeskCompanion" code:-2 userInfo:nil]);
-        return;
-    }
-    [session addOutput:output];
-
-    [session startRunning];
-
     __block DeskCompanionViewController *blockSelf = self;
     void (^copiedCompletion)(NSString *, NSUInteger, float, NSError *) = [completion copy];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        AVCaptureConnection *videoConn = nil;
-        for (AVCaptureConnection *conn in output.connections) {
-            for (AVCaptureInputPort *port in [conn inputPorts]) {
-                if ([[port mediaType] isEqual:AVMediaTypeVideo]) {
-                    videoConn = conn;
+    dispatch_queue_t camQueue = GetCameraSessionQueue();
+
+    dispatch_async(camQueue, ^{
+        @autoreleasepool {
+            AVCaptureSession *session = [[AVCaptureSession alloc] init];
+            session.sessionPreset = AVCaptureSessionPreset640x480;
+
+            AVCaptureDevice *chosenDevice = nil;
+            NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+            for (AVCaptureDevice *dev in devices) {
+                if (dev.position == pos) {
+                    chosenDevice = dev;
                     break;
                 }
             }
-            if (videoConn) break;
-        }
+            if (!chosenDevice) chosenDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
 
-        if (!videoConn) {
-            [session stopRunning];
-            [output release];
-            [session release];
-            if (blockSelf) blockSelf->_isCameraBusy = NO;
-            if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, [NSError errorWithDomain:@"DeskCompanion" code:-3 userInfo:nil]);
-            [copiedCompletion release];
-            return;
-        }
-
-        [output captureStillImageAsynchronouslyFromConnection:videoConn completionHandler:^(CMSampleBufferRef sbuf, NSError *err) {
-            [session stopRunning];
-            [output release];
-            [session release];
-            NSData *jpegCopy = nil;
-            if (!err && sbuf) {
-                NSData *jpeg = [AVCaptureStillImageOutput jpegStillImageNSDataRepresentation:sbuf];
-                if (jpeg) jpegCopy = [jpeg copy];
-            }
-            NSError *errCopy = err ? [err copy] : nil;
-
-            dispatch_async(dispatch_get_main_queue(), ^{
-                @autoreleasepool {
+            NSError *inputErr = nil;
+            AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:chosenDevice error:&inputErr];
+            if (!input || ![session canAddInput:input]) {
+                [session release];
+                NSError *errCopy = inputErr ? [inputErr copy] : [[NSError errorWithDomain:@"DeskCompanion" code:-1 userInfo:nil] retain];
+                dispatch_async(dispatch_get_main_queue(), ^{
                     if (blockSelf) blockSelf->_isCameraBusy = NO;
-                    if (errCopy || !jpegCopy) {
-                        if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, errCopy);
-                        [copiedCompletion release];
-                        [errCopy release];
-                        [jpegCopy release];
-                        return;
-                    }
-                    float luma = ComputeMeanLuminanceFromJPEGData(jpegCopy);
-                    if (blockSelf && luma >= 0.0f) {
-                        if (isFront) {
-                            blockSelf->_lastFrontLuminance = luma;
-                        } else {
-                            blockSelf->_lastRearLuminance = luma;
-                        }
-                    }
-                    if (!saveFile) {
-                        if (copiedCompletion) copiedCompletion(nil, [jpegCopy length], luma, nil);
-                        [copiedCompletion release];
-                        [jpegCopy release];
-                        return;
-                    }
-                    NSString *snapId = [[NSProcessInfo processInfo] globallyUniqueString];
-                    NSString *savePath = [NSString stringWithFormat:@"/tmp/companion_snapshot_%@.jpg", snapId];
-                    BOOL written = [jpegCopy writeToFile:savePath atomically:YES];
-                    if (blockSelf) [blockSelf playSoundNamed:@"shutter"];
-                    if (written) {
-                        if (copiedCompletion) copiedCompletion(savePath, [jpegCopy length], luma, nil);
-                    } else {
-                        if (copiedCompletion) copiedCompletion(nil, 0, luma, [NSError errorWithDomain:@"DeskCompanion" code:-4 userInfo:nil]);
-                    }
+                    if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, errCopy);
                     [copiedCompletion release];
-                    [jpegCopy release];
+                    [errCopy release];
+                });
+                return;
+            }
+            [session addInput:input];
+
+            AVCaptureStillImageOutput *output = [[AVCaptureStillImageOutput alloc] init];
+            output.outputSettings = @{ AVVideoCodecKey : AVVideoCodecJPEG };
+            if (![session canAddOutput:output]) {
+                [output release];
+                [session release];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (blockSelf) blockSelf->_isCameraBusy = NO;
+                    if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, [NSError errorWithDomain:@"DeskCompanion" code:-2 userInfo:nil]);
+                    [copiedCompletion release];
+                });
+                return;
+            }
+            [session addOutput:output];
+
+            [session startRunning];
+
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), camQueue, ^{
+                @autoreleasepool {
+                    AVCaptureConnection *videoConn = nil;
+                    for (AVCaptureConnection *conn in output.connections) {
+                        for (AVCaptureInputPort *port in [conn inputPorts]) {
+                            if ([[port mediaType] isEqual:AVMediaTypeVideo]) {
+                                videoConn = conn;
+                                break;
+                            }
+                        }
+                        if (videoConn) break;
+                    }
+
+                    if (!videoConn) {
+                        [session stopRunning];
+                        [output release];
+                        [session release];
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (blockSelf) blockSelf->_isCameraBusy = NO;
+                            if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, [NSError errorWithDomain:@"DeskCompanion" code:-3 userInfo:nil]);
+                            [copiedCompletion release];
+                        });
+                        return;
+                    }
+
+                    [output captureStillImageAsynchronouslyFromConnection:videoConn completionHandler:^(CMSampleBufferRef sbuf, NSError *err) {
+                        NSData *jpegCopy = nil;
+                        if (!err && sbuf) {
+                            NSData *jpeg = [AVCaptureStillImageOutput jpegStillImageNSDataRepresentation:sbuf];
+                            if (jpeg) jpegCopy = [jpeg copy];
+                        }
+                        NSError *errCopy = err ? [err copy] : nil;
+
+                        dispatch_async(camQueue, ^{
+                            @autoreleasepool {
+                                [session stopRunning];
+                                [output release];
+                                [session release];
+
+                                if (errCopy || !jpegCopy) {
+                                    dispatch_async(dispatch_get_main_queue(), ^{
+                                        if (blockSelf) blockSelf->_isCameraBusy = NO;
+                                        if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, errCopy);
+                                        [copiedCompletion release];
+                                        [errCopy release];
+                                        [jpegCopy release];
+                                    });
+                                    return;
+                                }
+
+                                float luma = ComputeMeanLuminanceFromJPEGData(jpegCopy);
+                                NSUInteger jpegLen = [jpegCopy length];
+                                NSString *savePathCopy = nil;
+                                BOOL written = NO;
+                                if (saveFile) {
+                                    NSString *snapId = [[NSProcessInfo processInfo] globallyUniqueString];
+                                    NSString *savePath = [NSString stringWithFormat:@"/tmp/companion_snapshot_%@.jpg", snapId];
+                                    written = [jpegCopy writeToFile:savePath atomically:YES];
+                                    if (written) savePathCopy = [savePath copy];
+                                }
+                                [jpegCopy release];
+
+                                dispatch_async(dispatch_get_main_queue(), ^{
+                                    if (blockSelf) {
+                                        blockSelf->_isCameraBusy = NO;
+                                        if (luma >= 0.0f) {
+                                            if (isFront) {
+                                                blockSelf->_lastFrontLuminance = luma;
+                                            } else {
+                                                blockSelf->_lastRearLuminance = luma;
+                                            }
+                                        }
+                                    }
+                                    if (!saveFile) {
+                                        if (copiedCompletion) copiedCompletion(nil, jpegLen, luma, nil);
+                                    } else {
+                                        if (blockSelf) [blockSelf playSoundNamed:@"shutter"];
+                                        if (written && savePathCopy) {
+                                            if (copiedCompletion) copiedCompletion(savePathCopy, jpegLen, luma, nil);
+                                        } else {
+                                            if (copiedCompletion) copiedCompletion(nil, 0, luma, [NSError errorWithDomain:@"DeskCompanion" code:-4 userInfo:nil]);
+                                        }
+                                    }
+                                    [savePathCopy release];
+                                    [copiedCompletion release];
+                                });
+                            }
+                        });
+                    }];
                 }
             });
-        }];
+        }
     });
 }
 
@@ -2858,6 +2911,9 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
         return;
     }
     _lastProximityNear = isNear;
+    _proximityEpisodeGen++;
+    _obstructionRetryCount = 0;
+    _rearFlipRetryCount = 0;
 
     if (!isNear && _powerState != MonolithPowerStateActive) {
         // Departing hand while asleep should sync state quietly without lighting or animating standby
@@ -2865,6 +2921,15 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
             [_antiBlankTimer invalidate];
             _antiBlankTimer = nil;
         }
+        if (_obstructionTimer) {
+            [_obstructionTimer invalidate];
+            _obstructionTimer = nil;
+        }
+        if (_rearFlipTimer) {
+            [_rearFlipTimer invalidate];
+            _rearFlipTimer = nil;
+        }
+        _obstructionActive = NO;
         return;
     }
 
@@ -2944,22 +3009,32 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
 
 - (void)evaluateFrontObstruction:(NSTimer *)timer {
     _obstructionTimer = nil;
-    if (!_lastProximityNear || !_isForegroundActive || _powerState != MonolithPowerStateActive || _isCameraBusy || _isRecording) {
+    if (!_lastProximityNear || !_isForegroundActive || _powerState != MonolithPowerStateActive) {
         return;
     }
+    if (_isCameraBusy || _isRecording) {
+        if (_obstructionRetryCount < 5) {
+            _obstructionRetryCount++;
+            _obstructionTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(evaluateFrontObstruction:) userInfo:nil repeats:NO];
+        }
+        return;
+    }
+    _obstructionRetryCount = 0;
     NSTimeInterval now = CACurrentMediaTime();
     if (_lastObstructionTime > 0.0 && (now - _lastObstructionTime) < 8.0) {
         return;
     }
     NSUInteger gen = _lifecycleGen;
+    NSUInteger episodeGen = _proximityEpisodeGen;
     __block DeskCompanionViewController *blockSelf = self;
     [self captureFrameAndMeasureLuminanceForCamera:@"front" saveFile:NO completion:^(NSString *path, NSUInteger size, float meanLuminance, NSError *err) {
-        if (!blockSelf || blockSelf->_lifecycleGen != gen || !blockSelf->_isForegroundActive || !blockSelf->_lastProximityNear || blockSelf->_powerState != MonolithPowerStateActive) {
+        if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive || !blockSelf->_lastProximityNear || blockSelf->_powerState != MonolithPowerStateActive) {
             return;
         }
         if (!err && meanLuminance >= 0.0f && meanLuminance <= 0.12f) {
             blockSelf->_obstructionActive = YES;
             blockSelf->_obstructionCount++;
+            blockSelf->_rearFlipRetryCount = 0;
             blockSelf->_lastObstructionTime = CACurrentMediaTime();
             if (blockSelf->_activeCamera) {
                 [blockSelf->_activeCamera release];
@@ -2974,7 +3049,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
             AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
             [blockSelf playSoundNamed:@"beep"];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.24 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (!blockSelf || blockSelf->_lifecycleGen != gen || !blockSelf->_isForegroundActive) return;
+                if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive) return;
                 AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
             });
 
@@ -2990,13 +3065,22 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
 
 - (void)performRearMacroInspection:(NSTimer *)timer {
     _rearFlipTimer = nil;
-    if (!_isForegroundActive || _powerState != MonolithPowerStateActive || _isCameraBusy || _isRecording) {
+    if (!_isForegroundActive || _powerState != MonolithPowerStateActive || !_obstructionActive || !_lastProximityNear) {
         return;
     }
+    if (_isCameraBusy || _isRecording) {
+        if (_rearFlipRetryCount < 5) {
+            _rearFlipRetryCount++;
+            _rearFlipTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(performRearMacroInspection:) userInfo:nil repeats:NO];
+        }
+        return;
+    }
+    _rearFlipRetryCount = 0;
     NSUInteger gen = _lifecycleGen;
+    NSUInteger episodeGen = _proximityEpisodeGen;
     __block DeskCompanionViewController *blockSelf = self;
     [self captureFrameAndMeasureLuminanceForCamera:@"back" saveFile:YES completion:^(NSString *path, NSUInteger size, float meanLuminance, NSError *err) {
-        if (!blockSelf || blockSelf->_lifecycleGen != gen || !blockSelf->_isForegroundActive) {
+        if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive || !blockSelf->_obstructionActive) {
             return;
         }
         if (path) {
@@ -3533,6 +3617,10 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
     if (_antiBlankTimer) { [_antiBlankTimer invalidate]; _antiBlankTimer = nil; }
     if (_obstructionTimer) { [_obstructionTimer invalidate]; _obstructionTimer = nil; }
     if (_rearFlipTimer) { [_rearFlipTimer invalidate]; _rearFlipTimer = nil; }
+    _obstructionActive = NO;
+    _obstructionRetryCount = 0;
+    _rearFlipRetryCount = 0;
+    _proximityEpisodeGen++;
     [self stopProximityMonitor];
     [super viewDidUnload];
 }
