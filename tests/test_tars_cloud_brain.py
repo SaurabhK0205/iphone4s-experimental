@@ -609,7 +609,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         action = self.brain._parse_action_json(raw_json)
         self.assertIsNotNone(action)
         self.assertNotIn(chr(0x2014), action["speech"])
-        self.assertIn("complete:initiating spin", action["speech"])
+        self.assertIn("complete: initiating spin", action["speech"])
 
     def test_transcribe_audio_file_bounded_read(self):
         import tempfile

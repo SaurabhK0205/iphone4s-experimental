@@ -850,7 +850,7 @@ class TarsCloudBrain:
         """Extracts and validates TARS action JSON object from raw LLM output."""
         if not raw_text or not raw_text.strip():
             raise ValueError("Cannot parse action from empty LLM text")
-        text = raw_text.strip().replace(chr(0x2014), ":").replace(chr(0x2013), "-")
+        text = raw_text.strip().replace(chr(0x2014), ": ").replace(chr(0x2013), "-")
         # Extract markdown code blocks if present; search from last block backwards
         if "```" in text:
             matches = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
@@ -883,7 +883,7 @@ class TarsCloudBrain:
 
         # Normalize action keys and validate types
         speech = str(action.get("speech", "")).strip()
-        speech = speech.replace(chr(0x2014), " - ").replace(chr(0x2013), "-")
+        speech = speech.replace(chr(0x2014), ": ").replace(chr(0x2013), "-")
         expression = str(action.get("expression", "neutral")).lower()
         if expression not in self.VALID_EXPRESSIONS:
             expression = "neutral"
@@ -921,10 +921,10 @@ class TarsCloudBrain:
     def _record_turn(self, history: List[Dict[str, Any]], user_text: str, assistant_text: str) -> None:
         """Appends conversational turn to history keeping up to 10 recent messages."""
         if user_text:
-            clean_user = user_text.replace(chr(0x2014), " - ").replace(chr(0x2013), "-")
+            clean_user = user_text.replace(chr(0x2014), ": ").replace(chr(0x2013), "-")
             history.append({"role": "user", "content": clean_user})
         if assistant_text:
-            clean_assistant = assistant_text.replace(chr(0x2014), " - ").replace(chr(0x2013), "-")
+            clean_assistant = assistant_text.replace(chr(0x2014), ": ").replace(chr(0x2013), "-")
             history.append({"role": "assistant", "content": clean_assistant})
         while len(history) > 10:
             history.pop(0)
