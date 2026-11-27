@@ -121,6 +121,9 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def load_dotenv(filepath: Optional[str] = None) -> None:
     """Loads key-value pairs from a .env file into os.environ if not already set."""
+    if sys.platform == "darwin" and "SSL_CERT_FILE" not in os.environ and os.path.exists("/etc/ssl/cert.pem"):
+        os.environ["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
+
     if filepath is None:
         filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
     if not os.path.isfile(filepath):
@@ -434,6 +437,7 @@ class TarsCloudBrain:
         req = urllib.request.Request(url, data=payload, method="POST")
         req.add_header("Authorization", f"Bearer {self.groq_api_key}")
         req.add_header("Content-Type", content_type)
+        req.add_header("User-Agent", "TARS-PhysicalAgent/1.0")
 
         resp_bytes = self._urlopen_with_backoff(req, timeout=timeout, deadline=deadline)
         data = json.loads(resp_bytes.decode("utf-8"))
@@ -633,6 +637,7 @@ class TarsCloudBrain:
         req = urllib.request.Request(url, data=data_bytes, method="POST")
         req.add_header("Authorization", f"Bearer {self.groq_api_key}")
         req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", "TARS-PhysicalAgent/1.0")
 
         resp_bytes = self._urlopen_with_backoff(req, timeout=timeout, deadline=deadline)
         data = json.loads(resp_bytes.decode("utf-8"))
@@ -689,6 +694,10 @@ class TarsCloudBrain:
         data = json.loads(resp_bytes.decode("utf-8"))
         result = data.get("result", {})
         content = result.get("response", "")
+        if isinstance(content, dict):
+            content = json.dumps(content)
+        elif not isinstance(content, str):
+            content = str(content)
         if not content or not content.strip():
             raise ValueError("Cloudflare Workers AI returned empty response content")
         return self._parse_action_json(content, allow_raw_fallback=False)
@@ -707,7 +716,7 @@ class TarsCloudBrain:
         url = "https://openrouter.ai/api/v1/chat/completions"
         has_vision = bool(front_b64 or back_b64)
         vision_model = os.environ.get("OPENROUTER_VISION_MODEL", "openrouter/free")
-        text_model = os.environ.get("OPENROUTER_TEXT_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+        text_model = os.environ.get("OPENROUTER_TEXT_MODEL", "nvidia/nemotron-3.5-lightning:free")
         model = vision_model if has_vision else text_model
 
         if has_vision and front_b64 and back_b64:

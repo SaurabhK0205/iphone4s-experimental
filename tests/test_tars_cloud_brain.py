@@ -871,6 +871,59 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(result.get("error"), "vision_capture_failed")
         self.assertNotIn("vision_status", result)
 
+    @patch("urllib.request.OpenerDirector.open")
+    def test_groq_user_agent_header(self, mock_urlopen):
+        mock_urlopen.return_value = make_mock_response({
+            "choices": [{"message": {"content": '{"speech": "Nominal", "expression": "neutral"}'}}]
+        })
+        self.brain._think_groq("Status", "sys_prompt", None, None, [])
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual(req.get_header("User-agent"), "TARS-PhysicalAgent/1.0")
+
+        mock_urlopen.return_value = make_mock_response({"text": "Whisper audio test."})
+        self.brain._transcribe_groq(b"RIFF\x24\x00\x00\x00WAVEfmt ", "audio.wav")
+        req_stt = mock_urlopen.call_args[0][0]
+        self.assertEqual(req_stt.get_header("User-agent"), "TARS-PhysicalAgent/1.0")
+
+    @patch("urllib.request.OpenerDirector.open")
+    def test_cloudflare_dict_response_handling(self, mock_urlopen):
+        # Cloudflare Workers AI can return result.response as an already parsed JSON dict
+        mock_urlopen.return_value = make_mock_response({
+            "result": {
+                "response": {
+                    "speech": "Parsed from dict response.",
+                    "expression": "skeptical"
+                }
+            }
+        })
+        action = self.brain._think_cloudflare("Status", "sys_prompt", None, None, [])
+        self.assertIsNotNone(action)
+        self.assertEqual(action["speech"], "Parsed from dict response.")
+        self.assertEqual(action["expression"], "skeptical")
+
+    @patch("urllib.request.OpenerDirector.open")
+    def test_openrouter_default_text_model(self, mock_urlopen):
+        mock_urlopen.return_value = make_mock_response({
+            "choices": [{"message": {"content": '{"speech": "Nemotron online", "expression": "neutral"}'}}]
+        })
+        self.brain._think_openrouter("Status", "sys_prompt", None, None, [])
+        req = mock_urlopen.call_args[0][0]
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload["model"], "nvidia/nemotron-3.5-lightning:free")
+
+    def test_darwin_ssl_cert_file_auto_configured(self):
+        from tars_cloud_brain import load_dotenv
+        saved_ssl = os.environ.pop("SSL_CERT_FILE", None)
+        try:
+            with patch("sys.platform", "darwin"), patch("os.path.exists", return_value=True):
+                load_dotenv("/dev/null")
+                self.assertEqual(os.environ.get("SSL_CERT_FILE"), "/etc/ssl/cert.pem")
+        finally:
+            if saved_ssl is not None:
+                os.environ["SSL_CERT_FILE"] = saved_ssl
+            else:
+                os.environ.pop("SSL_CERT_FILE", None)
+
     def test_repository_zero_em_dashes(self):
         """Strict repository-wide verification of anti-AI-slop rule across all project files."""
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
