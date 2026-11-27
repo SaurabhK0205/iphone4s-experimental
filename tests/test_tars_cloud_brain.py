@@ -15,6 +15,7 @@ Tests:
 
 import json
 import os
+import tempfile
 import time
 import unittest
 import urllib.error
@@ -42,7 +43,7 @@ class TestTarsCloudBrain(unittest.TestCase):
             "TARS_HUMOR_PERCENT", "TARS_HONESTY_PERCENT",
             "OPENROUTER_VISION_MODEL", "GEMINI_API_KEY",
             "GROQ_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID",
-            "OPENROUTER_API_KEY"
+            "OPENROUTER_API_KEY", "OPENROUTER_TEXT_MODEL"
         ):
             if key in os.environ:
                 self._saved_env[key] = os.environ.pop(key)
@@ -63,7 +64,7 @@ class TestTarsCloudBrain(unittest.TestCase):
             "TARS_HUMOR_PERCENT", "TARS_HONESTY_PERCENT",
             "OPENROUTER_VISION_MODEL", "GEMINI_API_KEY",
             "GROQ_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID",
-            "OPENROUTER_API_KEY"
+            "OPENROUTER_API_KEY", "OPENROUTER_TEXT_MODEL"
         ):
             if key in os.environ:
                 del os.environ[key]
@@ -902,14 +903,31 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(action["expression"], "skeptical")
 
     @patch("urllib.request.OpenerDirector.open")
+    def test_cloudflare_empty_dict_response_raises_value_error(self, mock_urlopen):
+        mock_urlopen.return_value = make_mock_response({
+            "result": {
+                "response": {}
+            }
+        })
+        with self.assertRaises(ValueError):
+            self.brain._think_cloudflare("Status", "sys_prompt", None, None, [])
+
+    @patch("urllib.request.OpenerDirector.open")
     def test_openrouter_default_text_model(self, mock_urlopen):
         mock_urlopen.return_value = make_mock_response({
             "choices": [{"message": {"content": '{"speech": "Nemotron online", "expression": "neutral"}'}}]
         })
-        self.brain._think_openrouter("Status", "sys_prompt", None, None, [])
-        req = mock_urlopen.call_args[0][0]
-        payload = json.loads(req.data.decode("utf-8"))
-        self.assertEqual(payload["model"], "nvidia/nemotron-3.5-lightning:free")
+        saved_model = os.environ.pop("OPENROUTER_TEXT_MODEL", None)
+        try:
+            self.brain._think_openrouter("Status", "sys_prompt", None, None, [])
+            req = mock_urlopen.call_args[0][0]
+            payload = json.loads(req.data.decode("utf-8"))
+            self.assertEqual(payload["model"], "nvidia/nemotron-3.5-lightning:free")
+        finally:
+            if saved_model is not None:
+                os.environ["OPENROUTER_TEXT_MODEL"] = saved_model
+            else:
+                os.environ.pop("OPENROUTER_TEXT_MODEL", None)
 
     def test_darwin_ssl_cert_file_auto_configured(self):
         from tars_cloud_brain import load_dotenv
@@ -918,6 +936,26 @@ class TestTarsCloudBrain(unittest.TestCase):
             with patch("sys.platform", "darwin"), patch("os.path.exists", return_value=True):
                 load_dotenv("/dev/null")
                 self.assertEqual(os.environ.get("SSL_CERT_FILE"), "/etc/ssl/cert.pem")
+        finally:
+            if saved_ssl is not None:
+                os.environ["SSL_CERT_FILE"] = saved_ssl
+            else:
+                os.environ.pop("SSL_CERT_FILE", None)
+
+    def test_darwin_custom_ssl_cert_preserved_from_dotenv(self):
+        from tars_cloud_brain import load_dotenv
+        saved_ssl = os.environ.pop("SSL_CERT_FILE", None)
+        try:
+            with tempfile.NamedTemporaryFile("w+", delete=False) as f:
+                f.write('SSL_CERT_FILE="/custom/cert.pem"\n')
+                tmp_path = f.name
+            try:
+                with patch("sys.platform", "darwin"), patch("os.path.exists", return_value=True):
+                    load_dotenv(tmp_path)
+                    self.assertEqual(os.environ.get("SSL_CERT_FILE"), "/custom/cert.pem")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
         finally:
             if saved_ssl is not None:
                 os.environ["SSL_CERT_FILE"] = saved_ssl
