@@ -123,23 +123,24 @@ def load_dotenv(filepath: Optional[str] = None) -> None:
     """Loads key-value pairs from a .env file into os.environ if not already set."""
     if filepath is None:
         filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if not os.path.isfile(filepath):
-        return
+    if os.path.isfile(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        key = key.strip()
+                        val = val.strip().strip("\"'")
+                        if key and key not in os.environ:
+                            os.environ[key] = val
+        except Exception as e:
+            logger.warning(f"Could not load .env file: {e}")
 
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    key, val = line.split("=", 1)
-                    key = key.strip()
-                    val = val.strip().strip("\"'")
-                    if key and key not in os.environ:
-                        os.environ[key] = val
-    except Exception as e:
-        logger.warning(f"Could not load .env file: {e}")
+    if sys.platform == "darwin" and "SSL_CERT_FILE" not in os.environ and os.path.exists("/etc/ssl/cert.pem"):
+        os.environ["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
 
 
 def encode_multipart_formdata(fields: Dict[str, str], files: Dict[str, Tuple[str, bytes, str]]) -> Tuple[bytes, str]:
@@ -434,6 +435,7 @@ class TarsCloudBrain:
         req = urllib.request.Request(url, data=payload, method="POST")
         req.add_header("Authorization", f"Bearer {self.groq_api_key}")
         req.add_header("Content-Type", content_type)
+        req.add_header("User-Agent", "TARS-PhysicalAgent/1.0")
 
         resp_bytes = self._urlopen_with_backoff(req, timeout=timeout, deadline=deadline)
         data = json.loads(resp_bytes.decode("utf-8"))
@@ -633,6 +635,7 @@ class TarsCloudBrain:
         req = urllib.request.Request(url, data=data_bytes, method="POST")
         req.add_header("Authorization", f"Bearer {self.groq_api_key}")
         req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", "TARS-PhysicalAgent/1.0")
 
         resp_bytes = self._urlopen_with_backoff(req, timeout=timeout, deadline=deadline)
         data = json.loads(resp_bytes.decode("utf-8"))
@@ -689,6 +692,12 @@ class TarsCloudBrain:
         data = json.loads(resp_bytes.decode("utf-8"))
         result = data.get("result", {})
         content = result.get("response", "")
+        if isinstance(content, dict):
+            if not content:
+                raise ValueError("Cloudflare Workers AI returned empty response content")
+            content = json.dumps(content)
+        elif not isinstance(content, str):
+            content = str(content)
         if not content or not content.strip():
             raise ValueError("Cloudflare Workers AI returned empty response content")
         return self._parse_action_json(content, allow_raw_fallback=False)
@@ -707,7 +716,7 @@ class TarsCloudBrain:
         url = "https://openrouter.ai/api/v1/chat/completions"
         has_vision = bool(front_b64 or back_b64)
         vision_model = os.environ.get("OPENROUTER_VISION_MODEL", "openrouter/free")
-        text_model = os.environ.get("OPENROUTER_TEXT_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+        text_model = os.environ.get("OPENROUTER_TEXT_MODEL", "nvidia/nemotron-3.5-lightning:free")
         model = vision_model if has_vision else text_model
 
         if has_vision and front_b64 and back_b64:
