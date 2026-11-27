@@ -14,6 +14,7 @@ import re
 import math
 import uuid
 import shlex
+from tars_cloud_brain import TarsCloudBrain
 
 # Strict repository standard: verify virtual environment isolation
 def is_in_venv():
@@ -50,6 +51,7 @@ class DeskCompanion:
         self._active_host = None
         self._active_port = None
         self._active_ssh_port = None
+        self.brain = TarsCloudBrain()
 
     def _get_connection_target(self):
         """Auto-detects whether USB or Wi-Fi is reachable (cached)."""
@@ -386,6 +388,106 @@ class DeskCompanion:
         self.set_expression("neutral")
         self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting multimodal input")
 
+    def brain_status(self):
+        """Returns the readiness and configured tiers of the multi-cloud TARS brain."""
+        return self.brain.get_status()
+
+    def listen_and_think(self, duration=3.0, with_vision=False):
+        """Records physical audio from iPhone 4S mic, executes multi-cloud TARS cognition,
+        and triggers synchronized physical action and speech output."""
+        print(f"\n[TARS] Recording {duration:.1f}s audio from physical iPhone 4S mic...")
+        self.set_status("TARS // LISTENING", "Recording microphone audio")
+        rec_res = self.record_audio(duration=duration)
+        if rec_res.get("status") != "ok" or "local_file" not in rec_res:
+            print("[TARS] Failed to capture audio:", rec_res)
+            self.set_expression("skeptical")
+            return {"error": "audio_recording_failed", "details": rec_res}
+
+        audio_path = rec_res["local_file"]
+        front_path = None
+        if with_vision:
+            print("[TARS] Capturing front camera snapshot for visual context...")
+            snap_res = self.snapshot("front")
+            if snap_res.get("status") == "ok" and "local_file" in snap_res:
+                front_path = snap_res["local_file"]
+
+        print("[TARS] Setting expression to 'thinking' and processing cloud cascade...")
+        self.set_expression("thinking")
+        self.set_status("TARS // THINKING", "Processing multi-cloud cascade")
+
+        try:
+            transcript = self.brain.transcribe_audio(audio_path)
+            print(f"[TARS Hearing] Transcript: '{transcript}'")
+        except Exception as e:
+            print(f"[TARS Hearing] Transcription error: {e}")
+            transcript = ""
+
+        if not transcript and not with_vision:
+            print("[TARS] No audible speech detected.")
+            self.set_expression("neutral")
+            self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
+            return {"status": "silent", "transcript": ""}
+
+        action = self.brain.think_and_act(transcript=transcript, front_image_path=front_path)
+        print(f"[TARS Cognition] Action plan: {json.dumps(action, indent=2)}")
+
+        # Execute physical reflexes on iPhone 4S
+        return self._execute_tars_action(action)
+
+    def interact(self, prompt, with_vision=False):
+        """Executes a direct text reasoning turn with multi-cloud TARS brain without audio recording."""
+        front_path = None
+        if with_vision:
+            print("[TARS] Capturing front camera snapshot for visual context...")
+            snap_res = self.snapshot("front")
+            if snap_res.get("status") == "ok" and "local_file" in snap_res:
+                front_path = snap_res["local_file"]
+
+        print("[TARS] Setting expression to 'thinking' and querying cloud brain...")
+        self.set_expression("thinking")
+        self.set_status("TARS // THINKING", prompt[:30])
+
+        action = self.brain.think_and_act(transcript=prompt, front_image_path=front_path)
+        print(f"[TARS Cognition] Action plan: {json.dumps(action, indent=2)}")
+        return self._execute_tars_action(action)
+
+    def _execute_tars_action(self, action):
+        """Applies TarsAction dictionary to physical iPhone 4S hardware."""
+        # 1. Haptics
+        haptic = action.get("haptic")
+        if haptic == "double":
+            self.vibrate()
+            time.sleep(0.08)
+            self.vibrate()
+        elif haptic == "pulse":
+            self.vibrate()
+
+        # 2. Look at target
+        look_at = action.get("look_at")
+        if look_at and isinstance(look_at, (list, tuple)) and len(look_at) == 2:
+            self.look_at(look_at[0], look_at[1])
+
+        # 3. Torch
+        torch = action.get("torch")
+        if torch is not None:
+            self.set_torch(bool(torch))
+
+        # 4. Speech & Spectrum Synchronization
+        speech = action.get("speech", "")
+        expression = action.get("expression", "neutral")
+        if speech:
+            self.set_status("TARS // SPEAKING", speech[:40])
+            self.set_speaking(True)
+            self.set_expression(expression)
+            voice = os.environ.get("TARS_DEFAULT_VOICE", "Samantha")
+            subprocess.run(["say", "-v", voice, speech])
+            self.set_speaking(False)
+
+        # 5. Settle expression and status
+        self.set_expression(expression)
+        self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
+        return action
+
     def run_demo(self):
         print("\n>>> STARTING EMBODIED COMPANION DEMO SEQUENCE <<<")
         print("1. Waking up...")
@@ -461,6 +563,10 @@ def interactive_cli():
     print("  wave <on|off>       Toggle audio spectrum waveform visualizer")
     print("  zen                 Toggle Zen mode (dim HUD cards for night ambiance)")
     print("  telemetry           Display battery, memory, brightness")
+    print("  brain               Inspect multi-cloud TARS brain readiness and tiers")
+    print("  tars <prompt>       Direct conversation turn with TARS cloud brain")
+    print("  tars_listen [sec]   Record iPhone 4S mic and process via TARS brain")
+    print("  tars_see [prompt]   Capture front desk photo and process via TARS vision")
     print("  demo                Run full interactive presentation demo")
     print("  exit / quit         Exit CLI")
     print("=" * 60)
@@ -543,6 +649,17 @@ def interactive_cli():
                 print("Result:", res)
             elif cmd == "telemetry":
                 print(json.dumps(companion.telemetry(), indent=2))
+            elif cmd == "brain":
+                print(json.dumps(companion.brain_status(), indent=2))
+            elif cmd == "tars":
+                prompt = arg if arg else "Status report, TARS."
+                companion.interact(prompt, with_vision=False)
+            elif cmd == "tars_listen":
+                dur = float(arg) if arg else 3.0
+                companion.listen_and_think(duration=dur, with_vision=False)
+            elif cmd == "tars_see":
+                prompt = arg if arg else "What do you see on my desk?"
+                companion.interact(prompt, with_vision=True)
             elif cmd == "demo":
                 companion.run_demo()
             else:
