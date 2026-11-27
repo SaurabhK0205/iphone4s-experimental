@@ -202,7 +202,10 @@ class DeskCompanion:
                     self._active_host, self._active_port, self._active_ssh_port = None, None, None
                     return {"error": "empty_response"}
                 line = buffer.split(b"\n", 1)[0]
-                return json.loads(line.decode("utf-8"))
+                res = json.loads(line.decode("utf-8"))
+                if not isinstance(res, dict):
+                    return {"status": "error", "error": "malformed_response", "raw": str(res)}
+                return res
             except Exception as e:
                 self._active_host, self._active_port, self._active_ssh_port = None, None, None
                 return {"error": str(e)}
@@ -223,7 +226,16 @@ class DeskCompanion:
         Also supports: curious, thinking, alert, asleep, confused,
           glance_left, glance_right.
         """
-        return self._send_cmd({"command": "expression", "name": expression_name, "duration": float(duration)})
+        exp = str(expression_name).lower().strip()
+        if exp == "skeptical":
+            exp = "skeptic"
+        try:
+            dur = float(duration)
+            if math.isnan(dur) or math.isinf(dur) or dur <= 0.0:
+                dur = 0.28
+        except (ValueError, TypeError):
+            dur = 0.28
+        return self._send_cmd({"command": "expression", "name": exp, "duration": dur})
 
     def look_at(self, x=0.0, y=0.0, duration=0.22):
         """Sets companion gaze direction using normalized coordinates [-1.0, 1.0]."""
@@ -344,7 +356,7 @@ class DeskCompanion:
         """Records physical microphone audio on iPhone 4S and retrieves linear PCM WAV."""
         try:
             dur = float(duration)
-            if not (dur > 0.0) or dur != dur:
+            if math.isnan(dur) or math.isinf(dur) or dur <= 0.0:
                 dur = 3.0
             dur = max(0.1, min(dur, 30.0))
         except (ValueError, TypeError):
@@ -451,11 +463,15 @@ class DeskCompanion:
     def _run_tars_turn(self, prompt, with_vision=False):
         """Shared cognitive execution pipeline for voice and text turns."""
         front_path = None
+        snap_res = None
         if with_vision:
             print("[TARS] Capturing front camera snapshot for visual context...")
             snap_res = self.snapshot("front")
             if snap_res.get("status") == "ok" and "local_file" in snap_res:
                 front_path = snap_res["local_file"]
+            else:
+                err_msg = snap_res.get("error", "snapshot_unavailable") if snap_res else "snapshot_unavailable"
+                print(f"[TARS Warning] Front camera capture failed: {err_msg}. Continuing with degraded text reasoning.")
 
         print("[TARS] Setting expression to 'thinking' and processing cloud cascade...")
         self.set_expression("thinking")
@@ -467,29 +483,43 @@ class DeskCompanion:
         else:
             action.setdefault("status", "ok")
         action.setdefault("transcript", prompt)
+        if with_vision and not front_path:
+            action["vision_status"] = "failed"
+            action["vision_error"] = snap_res.get("error", "snapshot_unavailable") if snap_res else "snapshot_unavailable"
         print(f"[TARS Cognition] Action plan: {json.dumps(action, indent=2)}")
         return self._execute_tars_action(action)
 
     def _execute_tars_action(self, action):
         """Applies TarsAction dictionary to physical iPhone 4S hardware."""
+        device_errors = []
         # 1. Haptics
         haptic = action.get("haptic")
         if haptic == "double":
-            self.vibrate()
+            res1 = self.vibrate()
+            if isinstance(res1, dict) and res1.get("status") != "ok" and "error" in res1:
+                device_errors.append(f"vibrate_1: {res1.get('error')}")
             time.sleep(0.08)
-            self.vibrate()
+            res2 = self.vibrate()
+            if isinstance(res2, dict) and res2.get("status") != "ok" and "error" in res2:
+                device_errors.append(f"vibrate_2: {res2.get('error')}")
         elif haptic == "pulse":
-            self.vibrate()
+            res = self.vibrate()
+            if isinstance(res, dict) and res.get("status") != "ok" and "error" in res:
+                device_errors.append(f"vibrate: {res.get('error')}")
 
         # 2. Look at target
         look_at = action.get("look_at")
         if look_at and isinstance(look_at, (list, tuple)) and len(look_at) == 2:
-            self.look_at(look_at[0], look_at[1])
+            res = self.look_at(look_at[0], look_at[1])
+            if isinstance(res, dict) and res.get("status") != "ok" and "error" in res:
+                device_errors.append(f"look_at: {res.get('error')}")
 
         # 3. Torch
         torch = action.get("torch")
         if torch is not None:
-            self.set_torch(bool(torch))
+            res = self.set_torch(bool(torch))
+            if isinstance(res, dict) and res.get("status") != "ok" and "error" in res:
+                device_errors.append(f"torch: {res.get('error')}")
 
         # 4. Speech & Spectrum Synchronization
         speech = action.get("speech", "")
@@ -503,12 +533,17 @@ class DeskCompanion:
                 self._speak_text(speech, voice=voice)
             except Exception as e:
                 print(f"[TARS Speech] Playback error: {e}")
+                device_errors.append(f"speech: {e}")
             finally:
                 self.set_speaking(False)
                 self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
         else:
             self.set_expression(expression)
             self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
+
+        if device_errors:
+            action["_device_errors"] = device_errors
+            print(f"[TARS Hardware Warning] Some hardware actions could not be confirmed: {', '.join(device_errors)}")
 
         return action
 

@@ -295,7 +295,8 @@ class TarsCloudBrain:
         deadline: float,
     ) -> bytes:
         """Executes a single HTTP transfer on an isolated daemon worker bounded by an absolute deadline."""
-        if not self._worker_semaphore.acquire(blocking=False):
+        rem_admission = min(0.2, max(deadline - time.monotonic() - 0.5, 0.0))
+        if rem_admission <= 0.0 or not self._worker_semaphore.acquire(blocking=True, timeout=rem_admission):
             raise TimeoutError("HTTP worker admission limit reached: system busy or network DNS blocked")
 
         ctx = _RequestContext()
@@ -643,7 +644,7 @@ class TarsCloudBrain:
         if not content or not content.strip():
             finish_reason = choices[0].get("finish_reason")
             raise ValueError(f"Groq returned empty response content (finish_reason={finish_reason})")
-        return self._parse_action_json(content)
+        return self._parse_action_json(content, allow_raw_fallback=False)
 
     def _think_cloudflare(
         self,
@@ -690,7 +691,7 @@ class TarsCloudBrain:
         content = result.get("response", "")
         if not content or not content.strip():
             raise ValueError("Cloudflare Workers AI returned empty response content")
-        return self._parse_action_json(content)
+        return self._parse_action_json(content, allow_raw_fallback=False)
 
     def _think_openrouter(
         self,
@@ -757,7 +758,7 @@ class TarsCloudBrain:
         if not content or not content.strip():
             finish_reason = choices[0].get("finish_reason")
             raise ValueError(f"OpenRouter returned empty response content (finish_reason={finish_reason})")
-        return self._parse_action_json(content)
+        return self._parse_action_json(content, allow_raw_fallback=False)
 
     def _think_gemini(
         self,
@@ -823,7 +824,7 @@ class TarsCloudBrain:
         text = content_parts[0].get("text", "")
         if not text or not text.strip():
             raise ValueError("Gemini returned empty text")
-        return self._parse_action_json(text)
+        return self._parse_action_json(text, allow_raw_fallback=False)
 
     # =========================================================================
     # 3. HELPER METHODS & VALIDATION
@@ -843,7 +844,7 @@ class TarsCloudBrain:
             logger.warning(f"Could not read image for base64 encoding: {e}")
             return None
 
-    def _parse_action_json(self, raw_text: str) -> Dict[str, Any]:
+    def _parse_action_json(self, raw_text: str, allow_raw_fallback: bool = True) -> Dict[str, Any]:
         """Extracts and validates TARS action JSON object from raw LLM output."""
         if not raw_text or not raw_text.strip():
             raise ValueError("Cannot parse action from empty LLM text")
@@ -866,7 +867,9 @@ class TarsCloudBrain:
         try:
             action = json.loads(text)
         except Exception:
-            # Fallback if raw text wasn't valid JSON
+            if not allow_raw_fallback:
+                raise ValueError(f"Could not parse valid JSON action from LLM response: {text[:100]}")
+            # Fallback if raw text wasn't valid JSON and fallback allowed
             logger.warning(f"Could not parse valid JSON from LLM: {text[:100]}")
             return {
                 "speech": text.replace("\n", " ").strip()[:200],
