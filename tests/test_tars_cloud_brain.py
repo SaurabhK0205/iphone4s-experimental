@@ -15,12 +15,14 @@ Tests:
 
 import json
 import os
+import time
 import unittest
 import urllib.error
 from unittest.mock import MagicMock, patch
 
 from tars_cloud_brain import (
     TarsCloudBrain,
+    _NoRedirectHandler,
     encode_multipart_formdata,
 )
 
@@ -206,6 +208,52 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(action["expression"], "happy")
 
     @patch("tars_cloud_brain.urllib.request.urlopen")
+    def test_think_and_act_groq_empty_content_cascades_to_cloudflare(self, mock_urlopen):
+        # Groq returns empty content e.g. when reasoning tokens exhaust budget
+        groq_empty = make_mock_response({
+            "choices": [{
+                "message": {"content": ""},
+                "finish_reason": "length"
+            }]
+        })
+        cf_response = make_mock_response({
+            "result": {
+                "response": json.dumps({
+                    "speech": "Cloudflare edge fallback active.",
+                    "expression": "alert",
+                    "look_at": [0.0, 0.0],
+                    "torch": False,
+                    "haptic": "pulse"
+                })
+            }
+        })
+        mock_urlopen.side_effect = [groq_empty, cf_response]
+
+        action = self.brain.think_and_act("Test empty reasoning output")
+        self.assertEqual(action["speech"], "Cloudflare edge fallback active.")
+        self.assertEqual(action["expression"], "alert")
+
+    @patch("tars_cloud_brain.urllib.request.urlopen")
+    def test_stt_whisper_groq_empty_transcript_preservation(self, mock_urlopen):
+        # A successful STT call returning empty text must return "" without triggering failover
+        groq_empty_response = make_mock_response({"text": ""})
+        mock_urlopen.return_value = groq_empty_response
+
+        transcript = self.brain.transcribe_audio(b"RIFFmockwavdata")
+        self.assertEqual(transcript, "")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+    @patch("tars_cloud_brain.urllib.request.urlopen")
+    def test_stt_whisper_groq_malformed_response_triggers_failover(self, mock_urlopen):
+        # When Groq returns {} without 'text', it must raise ValueError and failover to Cloudflare
+        groq_malformed = make_mock_response({})
+        cf_response = make_mock_response({"result": {"text": "Failover transcription."}})
+        mock_urlopen.side_effect = [groq_malformed, cf_response]
+
+        transcript = self.brain.transcribe_audio(b"RIFFmockwavdata")
+        self.assertEqual(transcript, "Failover transcription.")
+
+    @patch("tars_cloud_brain.urllib.request.urlopen")
     def test_stt_whisper_groq_failover_to_cloudflare(self, mock_urlopen):
         err_groq = urllib.error.HTTPError(url="", code=429, msg="Rate Limited", hdrs={}, fp=None)
         cf_response = make_mock_response({
@@ -229,6 +277,244 @@ class TestTarsCloudBrain(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             self.brain.transcribe_audio(b"RIFFmockwavdata")
         self.assertIn("All configured speech-to-text tiers failed", str(ctx.exception))
+
+    def test_urlopen_slow_headers_deadline_abort(self):
+        # Starts a local server that trickles headers slowly
+        import http.server
+        import socketserver
+        import threading
+        import time
+        import urllib.request
+
+        # Explicitly bypass ambient proxies for loopback test
+        self.brain._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler)
+
+        class SlowHeaderHandler(http.server.BaseHTTPRequestHandler):
+            def handle_one_request(self):
+                try:
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\nServer: SlowTest\r\n")
+                    self.wfile.flush()
+                    for i in range(10):
+                        time.sleep(0.5)
+                        self.wfile.write(f"X-Hdr-{i}: slow\r\n".encode())
+                        self.wfile.flush()
+                    self.wfile.write(b"\r\nBody")
+                    self.wfile.flush()
+                except Exception:
+                    pass
+
+        server = socketserver.TCPServer(("127.0.0.1", 0), SlowHeaderHandler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.handle_request, daemon=True)
+        t.start()
+
+        start = time.monotonic()
+        req = urllib.request.Request(f"http://127.0.0.1:{port}")
+        # Deadline set to 0.7s, well below the 5.0s header trickle
+        try:
+            with self.assertRaises(TimeoutError):
+                self.brain._urlopen_with_backoff(req, timeout=5.0, deadline=start + 0.7)
+            elapsed = time.monotonic() - start
+            # Must abort close to deadline (under 2.0s) rather than blocking for 5.0s
+            self.assertLess(elapsed, 2.0)
+        finally:
+            server.server_close()
+
+    def test_urlopen_slow_dns_deadline_abort(self):
+        # Verifies that a slow DNS getaddrinfo (1.5s) does not block past deadline (0.8s),
+        # exercises _fetch_with_deadline, and prevents HTTP transmission after resolution.
+        import http.server
+        import socket
+        import socketserver
+        import threading
+        import time
+        import urllib.request
+
+        # Explicitly bypass ambient proxies for loopback test
+        self.brain._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler)
+
+        received_requests = []
+        gai_called = [False]
+
+        class RequestMonitor(http.server.BaseHTTPRequestHandler):
+            def handle_one_request(self):
+                self.raw_requestline = self.rfile.readline(65537)
+                if self.raw_requestline:
+                    received_requests.append(self.raw_requestline)
+
+        server = socketserver.TCPServer(("127.0.0.1", 0), RequestMonitor)
+        port = server.server_address[1]
+        t_srv = threading.Thread(target=server.handle_request, daemon=True)
+        t_srv.start()
+
+        orig_getaddrinfo = socket.getaddrinfo
+        dns_unblock_event = threading.Event()
+
+        def slow_getaddrinfo(host, p, *args, **kwargs):
+            if host == "127.0.0.1":
+                gai_called[0] = True
+                dns_unblock_event.wait(timeout=2.0)
+            return orig_getaddrinfo(host, p, *args, **kwargs)
+
+        socket.getaddrinfo = slow_getaddrinfo
+        try:
+            start = time.monotonic()
+            req = urllib.request.Request(f"http://127.0.0.1:{port}", data=b"payload", method="POST")
+            with self.assertRaises(TimeoutError):
+                self.brain._urlopen_with_backoff(req, timeout=5.0, deadline=start + 0.8)
+            elapsed = time.monotonic() - start
+            # Must abort around the 0.8s deadline, well before 2.0s DNS completion
+            self.assertLess(elapsed, 1.3)
+            self.assertTrue(gai_called[0])
+
+            # Unblock the slow getaddrinfo and allow worker thread to exit
+            dns_unblock_event.set()
+            time.sleep(0.1)
+            # Verify server received zero transmitted requests
+            self.assertEqual(len(received_requests), 0)
+        finally:
+            dns_unblock_event.set()
+            socket.getaddrinfo = orig_getaddrinfo
+            server.server_close()
+
+    def test_worker_admission_limit_bounds_concurrent_workers(self):
+        # Exhaust all available worker slots on the semaphore
+        acquired_slots = []
+        for _ in range(4):
+            acquired = self.brain._worker_semaphore.acquire(blocking=False)
+            self.assertTrue(acquired)
+            acquired_slots.append(acquired)
+
+        try:
+            req = urllib.request.Request("http://127.0.0.1:9")
+            with self.assertRaises(TimeoutError) as ctx:
+                self.brain._urlopen_with_backoff(req, timeout=5.0, deadline=time.monotonic() + 5.0)
+            self.assertIn("admission limit reached", str(ctx.exception))
+        finally:
+            for _ in acquired_slots:
+                self.brain._worker_semaphore.release()
+
+    def test_urlopen_redirect_does_not_drain_body_or_block_worker(self):
+        # A 302 redirect with a trickling body must raise HTTPError immediately without draining body
+        import http.server
+        import socketserver
+        import threading
+
+        # Explicitly bypass ambient proxies for loopback test
+        self.brain._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler)
+
+        class Trickling302Handler(http.server.BaseHTTPRequestHandler):
+            def handle_one_request(self):
+                self.raw_requestline = self.rfile.readline(65537)
+                if not self.parse_request():
+                    return
+                self.send_response(302)
+                self.send_header("Location", "/other")
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                for _ in range(10):
+                    time.sleep(0.5)
+                    try:
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                    except Exception:
+                        break
+
+        server = socketserver.TCPServer(("127.0.0.1", 0), Trickling302Handler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.handle_request, daemon=True)
+        t.start()
+
+        start = time.monotonic()
+        req = urllib.request.Request(f"http://127.0.0.1:{port}")
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.brain._urlopen_with_backoff(req, timeout=5.0, deadline=start + 5.0)
+            self.assertEqual(ctx.exception.code, 302)
+            elapsed = time.monotonic() - start
+            # Must abort immediately (under 1.0s) rather than waiting for 5.0s body trickle
+            self.assertLess(elapsed, 1.0)
+        finally:
+            server.server_close()
+
+    def test_instance_opener_captures_proxy_from_dotenv(self):
+        # Verify that instance-local opener created after load_dotenv captures proxy settings from .env file
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+            f.write("HTTPS_PROXY=http://proxy.local:8080\n")
+            dotenv_path = f.name
+
+        try:
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("HTTPS_PROXY", None)
+                os.environ.pop("https_proxy", None)
+                brain = TarsCloudBrain(dotenv_path=dotenv_path)
+                proxy_handlers = [h for h in brain._opener.handlers if isinstance(h, urllib.request.ProxyHandler)]
+                self.assertTrue(len(proxy_handlers) > 0)
+                self.assertEqual(proxy_handlers[0].proxies.get("https"), "http://proxy.local:8080")
+        finally:
+            if os.path.exists(dotenv_path):
+                os.unlink(dotenv_path)
+
+    def test_tls_handshake_stall_abort_and_healthy_failover(self):
+        # Verifies that cancellation during a stalled TLS handshake releases worker slots
+        # and allows subsequent requests to healthy providers to proceed without blockage.
+        import http.server
+        import socket
+        import socketserver
+        import threading
+
+        # Stalling TLS server
+        srv_stall = socketserver.TCPServer(("127.0.0.1", 0), socketserver.BaseRequestHandler)
+        stall_port = srv_stall.server_address[1]
+
+        def srv_stall_loop():
+            while True:
+                try:
+                    sock, _ = srv_stall.socket.accept()
+                    time.sleep(5)
+                    sock.close()
+                except Exception:
+                    break
+
+        t_stall = threading.Thread(target=srv_stall_loop, daemon=True)
+        t_stall.start()
+
+        # Healthy local HTTP server
+        class HealthyHandler(http.server.BaseHTTPRequestHandler):
+            def handle_one_request(self):
+                self.raw_requestline = self.rfile.readline(65537)
+                if not self.parse_request():
+                    return
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"HEALTHY_OK")
+
+        srv_healthy = socketserver.TCPServer(("127.0.0.1", 0), HealthyHandler)
+        healthy_port = srv_healthy.server_address[1]
+        t_healthy = threading.Thread(target=srv_healthy.handle_request, daemon=True)
+        t_healthy.start()
+
+        # Run 4 stalled HTTPS transfers
+        try:
+            for _ in range(4):
+                start = time.monotonic()
+                req = urllib.request.Request(f"https://127.0.0.1:{stall_port}")
+                try:
+                    self.brain._urlopen_with_backoff(req, timeout=5.0, deadline=start + 0.8)
+                except Exception:
+                    pass
+
+            # Confirm all 4 worker slots recovered immediately
+            self.assertEqual(self.brain._worker_semaphore._value, 4)
+
+            # Submit 5th request to healthy endpoint
+            req_healthy = urllib.request.Request(f"http://127.0.0.1:{healthy_port}")
+            resp_bytes = self.brain._urlopen_with_backoff(req_healthy, timeout=5.0, deadline=time.monotonic() + 5.0)
+            self.assertEqual(resp_bytes, b"HEALTHY_OK")
+        finally:
+            srv_stall.server_close()
+            srv_healthy.server_close()
 
     @patch("tars_cloud_brain.urllib.request.urlopen")
     def test_gemini_header_auth_and_history(self, mock_urlopen):
@@ -309,6 +595,89 @@ class TestTarsCloudBrain(unittest.TestCase):
             history=[]
         )
         self.assertIsNone(action)
+
+    def test_openrouter_dual_camera_skips_to_gemini(self):
+        # OpenRouter free tier models may not reliably support multi-image inputs.
+        # When both front and back images are supplied and default openrouter/free is used,
+        # it must return None so execution cascades to Gemini which natively supports multiple images.
+        action = self.brain._think_openrouter(
+            transcript="Describe both views",
+            system_prompt="System prompt",
+            front_b64="bW9ja19mcm9udA==",
+            back_b64="bW9ja19iYWNr",
+            history=[]
+        )
+        self.assertIsNone(action)
+
+    @patch("tars_cloud_brain.urllib.request.urlopen")
+    def test_openrouter_dual_camera_honors_model_override(self, mock_urlopen):
+        # When OPENROUTER_VISION_MODEL is explicitly overridden, dual-camera requests
+        # must not be skipped and both images should be passed in payload
+        openrouter_resp = make_mock_response({
+            "choices": [{
+                "message": {
+                    "content": json.dumps({
+                        "speech": "Dual camera analyzed via override model.",
+                        "expression": "focused",
+                        "look_at": [0.0, 0.0],
+                        "torch": False,
+                        "haptic": "pulse"
+                    })
+                }
+            }]
+        })
+        mock_urlopen.return_value = openrouter_resp
+
+        with patch.dict(os.environ, {"OPENROUTER_VISION_MODEL": "qwen/qwen-2.5-vl-72b-instruct:free"}):
+            action = self.brain._think_openrouter(
+                transcript="Describe both views",
+                system_prompt="System prompt",
+                front_b64="bW9ja19mcm9udA==",
+                back_b64="bW9ja19iYWNr",
+                history=[]
+            )
+            self.assertIsNotNone(action)
+            self.assertEqual(action["speech"], "Dual camera analyzed via override model.")
+
+            call_args = mock_urlopen.call_args[0]
+            req = call_args[0]
+            payload = json.loads(req.data.decode("utf-8"))
+            self.assertEqual(payload["model"], "qwen/qwen-2.5-vl-72b-instruct:free")
+            images = [item for item in payload["messages"][-1]["content"] if isinstance(item, dict) and item.get("type") == "image_url"]
+            self.assertEqual(len(images), 2)
+
+    @patch("tars_cloud_brain.urllib.request.urlopen")
+    def test_openrouter_dual_camera_honored_when_gemini_missing(self, mock_urlopen):
+        # When Gemini is unconfigured, OpenRouter should not skip dual-camera requests
+        # even on default openrouter/free model
+        openrouter_resp = make_mock_response({
+            "choices": [{
+                "message": {
+                    "content": json.dumps({
+                        "speech": "Dual camera processed by OpenRouter fallback.",
+                        "expression": "focused",
+                        "look_at": [0.0, 0.0],
+                        "torch": False,
+                        "haptic": "pulse"
+                    })
+                }
+            }]
+        })
+        mock_urlopen.return_value = openrouter_resp
+
+        brain_no_gemini = TarsCloudBrain(
+            openrouter_api_key="mock_openrouter_key",
+            gemini_api_key=""
+        )
+        action = brain_no_gemini._think_openrouter(
+            transcript="Describe both views",
+            system_prompt="System prompt",
+            front_b64="bW9ja19mcm9udA==",
+            back_b64="bW9ja19iYWNr",
+            history=[]
+        )
+        self.assertIsNotNone(action)
+        self.assertEqual(action["speech"], "Dual camera processed by OpenRouter fallback.")
 
     @patch("tars_cloud_brain.urllib.request.urlopen")
     def test_cloudflare_single_camera_data_uri(self, mock_urlopen):
