@@ -160,7 +160,7 @@ class TarsCloudBrain:
             if not os.path.isfile(audio_path_or_bytes):
                 raise FileNotFoundError(f"Audio file not found: {audio_path_or_bytes}")
             with open(audio_path_or_bytes, "rb") as f:
-                audio_bytes = f.read()
+                audio_bytes = f.read(MAX_AUDIO_BYTES + 1)
             filename = os.path.basename(audio_path_or_bytes)
         elif isinstance(audio_path_or_bytes, (bytes, bytearray)):
             audio_bytes = bytes(audio_path_or_bytes)
@@ -354,7 +354,9 @@ class TarsCloudBrain:
         """Queries Groq Cloud with vision or text models."""
         url = "https://api.groq.com/openai/v1/chat/completions"
         has_vision = bool(front_b64 or back_b64)
-        model = "llama-3.2-11b-vision-preview" if has_vision else "llama-3.3-70b-versatile"
+        vision_model = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
+        text_model = os.environ.get("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
+        model = vision_model if has_vision else text_model
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         for turn in history[-4:]:
@@ -420,13 +422,12 @@ class TarsCloudBrain:
             "max_tokens": 512,
             "temperature": 0.6,
         }
-        if has_vision and (front_b64 or back_b64):
-            images = []
-            if front_b64:
-                images.append(front_b64)
-            if back_b64:
-                images.append(back_b64)
-            payload["image"] = images[0] if len(images) == 1 else images
+        if has_vision:
+            if front_b64 and back_b64:
+                # Cloudflare Workers AI schema supports only a single image.
+                # Skip to subsequent tiers (OpenRouter/Gemini) that natively support dual-camera views.
+                return None
+            payload["image"] = front_b64 or back_b64
 
         data_bytes = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data_bytes, method="POST")
@@ -603,6 +604,7 @@ class TarsCloudBrain:
 
         # Normalize action keys and validate types
         speech = str(action.get("speech", "")).strip()
+        speech = speech.replace(chr(0x2014), " - ").replace(chr(0x2013), "-")
         expression = str(action.get("expression", "neutral")).lower()
         if expression not in self.VALID_EXPRESSIONS:
             expression = "neutral"
@@ -640,8 +642,10 @@ class TarsCloudBrain:
     def _record_turn(self, history: List[Dict[str, Any]], user_text: str, assistant_text: str) -> None:
         """Appends conversational turn to history keeping up to 10 recent messages."""
         if user_text:
-            history.append({"role": "user", "content": user_text})
+            clean_user = user_text.replace(chr(0x2014), " - ").replace(chr(0x2013), "-")
+            history.append({"role": "user", "content": clean_user})
         if assistant_text:
-            history.append({"role": "assistant", "content": assistant_text})
+            clean_assistant = assistant_text.replace(chr(0x2014), " - ").replace(chr(0x2013), "-")
+            history.append({"role": "assistant", "content": clean_assistant})
         while len(history) > 10:
             history.pop(0)

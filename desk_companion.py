@@ -15,8 +15,7 @@ import math
 import uuid
 import shlex
 import shutil
-import os
-from tars_cloud_brain import TarsCloudBrain
+from tars_cloud_brain import TarsCloudBrain, load_dotenv
 
 # Strict repository standard: verify virtual environment isolation
 def is_in_venv():
@@ -40,6 +39,7 @@ WIFI_SSH_PORT = 22
 
 class DeskCompanion:
     def __init__(self, host=None, port=None, ssh_port=None, ssh_key=None, strict_host_key_checking=None, known_hosts=None, auth_token=None):
+        load_dotenv()
         self.host = host
         self.port = port
         self.ssh_port = ssh_port
@@ -414,6 +414,7 @@ class DeskCompanion:
         if rec_res.get("status") != "ok" or "local_file" not in rec_res:
             print("[TARS] Failed to capture audio:", rec_res)
             self.set_expression("skeptical")
+            self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
             return {"error": "audio_recording_failed", "details": rec_res}
 
         audio_path = rec_res["local_file"]
@@ -484,13 +485,15 @@ class DeskCompanion:
             voice = os.environ.get("TARS_DEFAULT_VOICE", "Samantha")
             try:
                 self._speak_text(speech, voice=voice)
+            except Exception as e:
+                print(f"[TARS Speech] Playback error: {e}")
             finally:
                 self.set_speaking(False)
+                self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
         else:
             self.set_expression(expression)
+            self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
 
-        # 5. Settle status
-        self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
         return action
 
     def run_demo(self):

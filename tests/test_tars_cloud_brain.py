@@ -273,6 +273,41 @@ class TestTarsCloudBrain(unittest.TestCase):
             self.brain.transcribe_audio(oversized)
         self.assertIn("exceeds maximum limit", str(ctx.exception))
 
+    def test_parse_action_json_escaped_em_dash(self):
+        # Simulates JSON response with unicode-escaped em-dash and en-dash
+        raw_json = '{"speech": "Docking sequence complete\\u2014initiating spin", "expression": "neutral"}'
+        action = self.brain._parse_action_json(raw_json)
+        self.assertIsNotNone(action)
+        self.assertNotIn(chr(0x2014), action["speech"])
+        self.assertIn(" - ", action["speech"])
+
+    def test_transcribe_audio_file_bounded_read(self):
+        import tempfile
+        from tars_cloud_brain import MAX_AUDIO_BYTES
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(b"0" * (MAX_AUDIO_BYTES + 2048))
+            temp_path = f.name
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                self.brain.transcribe_audio(temp_path)
+            self.assertIn("exceeds maximum limit", str(ctx.exception))
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    def test_cloudflare_dual_camera_skips_to_preserve_views(self):
+        # Cloudflare Workers AI only accepts a single image.
+        # When both front and back images are supplied, it must return None
+        # so execution cascades to OpenRouter/Gemini which support both images.
+        action = self.brain._think_cloudflare(
+            transcript="Describe both views",
+            system_prompt="System prompt",
+            front_b64="bW9ja19mcm9udA==",
+            back_b64="bW9ja19iYWNr",
+            history=[]
+        )
+        self.assertIsNone(action)
+
     def test_repository_zero_em_dashes(self):
         """Strict verification of anti-AI-slop rule across all modified and new files."""
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
