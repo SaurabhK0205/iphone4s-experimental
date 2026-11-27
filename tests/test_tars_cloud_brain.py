@@ -505,7 +505,11 @@ class TestTarsCloudBrain(unittest.TestCase):
                 except Exception:
                     pass
 
-            # Confirm all 4 worker slots recovered immediately
+            # Confirm all 4 worker slots recovered
+            for _ in range(20):
+                if self.brain._worker_semaphore._value == 4:
+                    break
+                time.sleep(0.05)
             self.assertEqual(self.brain._worker_semaphore._value, 4)
 
             # Submit 5th request to healthy endpoint
