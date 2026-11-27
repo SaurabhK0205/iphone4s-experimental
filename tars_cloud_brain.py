@@ -307,10 +307,7 @@ class TarsCloudBrain:
             worker_id = threading.get_ident()
             _THREAD_CONTEXTS[worker_id] = ctx
             try:
-                if hasattr(urllib.request.urlopen, "assert_called"):
-                    resp = urllib.request.urlopen(req, timeout=timeout)
-                else:
-                    resp = self._opener.open(req, timeout=timeout)
+                resp = self._opener.open(req, timeout=timeout)
                 with ctx.lock:
                     if ctx.cancelled:
                         try:

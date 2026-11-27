@@ -153,7 +153,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(action["speech"], "Target identified.")
         self.assertEqual(action["expression"], "focused")
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_groq_429_failover_to_cloudflare(self, mock_urlopen):
         error_429 = urllib.error.HTTPError(
             url="https://api.groq.com/openai/v1/chat/completions",
@@ -182,7 +182,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(action["speech"], "Cloudflare edge fallback online.")
         self.assertEqual(action["expression"], "happy")
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_groq_and_cloudflare_fail_failover_to_openrouter(self, mock_urlopen):
         err1 = urllib.error.HTTPError(url="", code=429, msg="Rate Limited", hdrs={}, fp=None)
         err2 = urllib.error.HTTPError(url="", code=503, msg="Service Unavailable", hdrs={}, fp=None)
@@ -207,7 +207,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(action["speech"], "OpenRouter free pool activated.")
         self.assertEqual(action["expression"], "happy")
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_think_and_act_groq_empty_content_cascades_to_cloudflare(self, mock_urlopen):
         # Groq returns empty content e.g. when reasoning tokens exhaust budget
         groq_empty = make_mock_response({
@@ -233,7 +233,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(action["speech"], "Cloudflare edge fallback active.")
         self.assertEqual(action["expression"], "alert")
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_stt_whisper_groq_empty_transcript_preservation(self, mock_urlopen):
         # A successful STT call returning empty text must return "" without triggering failover
         groq_empty_response = make_mock_response({"text": ""})
@@ -243,7 +243,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(transcript, "")
         self.assertEqual(mock_urlopen.call_count, 1)
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_stt_whisper_groq_malformed_response_triggers_failover(self, mock_urlopen):
         # When Groq returns {} without 'text', it must raise ValueError and failover to Cloudflare
         groq_malformed = make_mock_response({})
@@ -253,7 +253,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         transcript = self.brain.transcribe_audio(b"RIFFmockwavdata")
         self.assertEqual(transcript, "Failover transcription.")
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_stt_whisper_groq_failover_to_cloudflare(self, mock_urlopen):
         err_groq = urllib.error.HTTPError(url="", code=429, msg="Rate Limited", hdrs={}, fp=None)
         cf_response = make_mock_response({
@@ -267,7 +267,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         transcript = self.brain.transcribe_audio(b"RIFFmockwavdata")
         self.assertEqual(transcript, "Initiating docking sequence.")
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_stt_whisper_all_fail_raises_runtime_error(self, mock_urlopen):
         err_groq = urllib.error.HTTPError(url="", code=429, msg="Rate Limited", hdrs={}, fp=None)
         err_cf = urllib.error.HTTPError(url="", code=500, msg="Server Error", hdrs={}, fp=None)
@@ -516,7 +516,7 @@ class TestTarsCloudBrain(unittest.TestCase):
             srv_stall.server_close()
             srv_healthy.server_close()
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_gemini_header_auth_and_history(self, mock_urlopen):
         gemini_response = make_mock_response({
             "candidates": [{
@@ -609,7 +609,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         )
         self.assertIsNone(action)
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_openrouter_dual_camera_honors_model_override(self, mock_urlopen):
         # When OPENROUTER_VISION_MODEL is explicitly overridden, dual-camera requests
         # must not be skipped and both images should be passed in payload
@@ -646,7 +646,7 @@ class TestTarsCloudBrain(unittest.TestCase):
             images = [item for item in payload["messages"][-1]["content"] if isinstance(item, dict) and item.get("type") == "image_url"]
             self.assertEqual(len(images), 2)
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_openrouter_dual_camera_honored_when_gemini_missing(self, mock_urlopen):
         # When Gemini is unconfigured, OpenRouter should not skip dual-camera requests
         # even on default openrouter/free model
@@ -679,7 +679,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertIsNotNone(action)
         self.assertEqual(action["speech"], "Dual camera processed by OpenRouter fallback.")
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_cloudflare_single_camera_data_uri(self, mock_urlopen):
         cf_response = make_mock_response({
             "result": {
@@ -715,7 +715,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertTrue(action.get("_fallback"))
         self.assertIn("autonomous backup reflexes", action["speech"])
 
-    @patch("tars_cloud_brain.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_urlopen_with_backoff_url_error_retry(self, mock_urlopen):
         # Transient network error (URLError) on first try, success on retry
         url_err = urllib.error.URLError("Temporary failure in name resolution")
