@@ -1068,7 +1068,7 @@ static void EnsurePassiveProximityMode(int mode, float brightness) {
     EnsureProximityModeOnly(mode);
 }
 
-static NSUInteger s_activeProximityGen = 0;
+static volatile int32_t s_activeProximityGen = 0;
 
 @interface DeskCompanionViewController : UIViewController <UIGestureRecognizerDelegate, AVAudioRecorderDelegate, AVAudioPlayerDelegate> {
     // Canvas Background
@@ -2830,8 +2830,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
 - (void)startProximityMonitor {
     [self stopProximityMonitor];
 
-    s_activeProximityGen++;
-    NSUInteger gen = s_activeProximityGen;
+    int32_t gen = OSAtomicIncrement32(&s_activeProximityGen);
     _pollHasSampled = NO;
 
     notify_register_dispatch("com.apple.backboard.proximity.changed", &_proximityNotifyToken, dispatch_get_main_queue(), ^(int token) {
@@ -2876,7 +2875,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
 }
 
 - (void)stopProximityMonitor {
-    s_activeProximityGen++;
+    OSAtomicIncrement32(&s_activeProximityGen);
     if (_proximityPollTimer) {
         [_proximityPollTimer invalidate];
         _proximityPollTimer = nil;
