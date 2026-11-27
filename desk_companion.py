@@ -416,17 +416,6 @@ class DeskCompanion:
             return {"error": "audio_recording_failed", "details": rec_res}
 
         audio_path = rec_res["local_file"]
-        front_path = None
-        if with_vision:
-            print("[TARS] Capturing front camera snapshot for visual context...")
-            snap_res = self.snapshot("front")
-            if snap_res.get("status") == "ok" and "local_file" in snap_res:
-                front_path = snap_res["local_file"]
-
-        print("[TARS] Setting expression to 'thinking' and processing cloud cascade...")
-        self.set_expression("thinking")
-        self.set_status("TARS // THINKING", "Processing multi-cloud cascade")
-
         try:
             transcript = self.brain.transcribe_audio(audio_path)
             print(f"[TARS Hearing] Transcript: '{transcript}'")
@@ -440,14 +429,14 @@ class DeskCompanion:
             self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
             return {"status": "silent", "transcript": ""}
 
-        action = self.brain.think_and_act(transcript=transcript, front_image_path=front_path)
-        print(f"[TARS Cognition] Action plan: {json.dumps(action, indent=2)}")
-
-        # Execute physical reflexes on iPhone 4S
-        return self._execute_tars_action(action)
+        return self._run_tars_turn(prompt=transcript, with_vision=with_vision)
 
     def interact(self, prompt, with_vision=False):
         """Executes a direct text reasoning turn with multi-cloud TARS brain without audio recording."""
+        return self._run_tars_turn(prompt=prompt, with_vision=with_vision)
+
+    def _run_tars_turn(self, prompt, with_vision=False):
+        """Shared cognitive execution pipeline for voice and text turns."""
         front_path = None
         if with_vision:
             print("[TARS] Capturing front camera snapshot for visual context...")
@@ -455,9 +444,9 @@ class DeskCompanion:
             if snap_res.get("status") == "ok" and "local_file" in snap_res:
                 front_path = snap_res["local_file"]
 
-        print("[TARS] Setting expression to 'thinking' and querying cloud brain...")
+        print("[TARS] Setting expression to 'thinking' and processing cloud cascade...")
         self.set_expression("thinking")
-        self.set_status("TARS // THINKING", prompt[:30])
+        self.set_status("TARS // THINKING", prompt[:30] if prompt else "Visual scene")
 
         action = self.brain.think_and_act(transcript=prompt, front_image_path=front_path)
         print(f"[TARS Cognition] Action plan: {json.dumps(action, indent=2)}")
@@ -496,9 +485,10 @@ class DeskCompanion:
                 self._speak_text(speech, voice=voice)
             finally:
                 self.set_speaking(False)
+        else:
+            self.set_expression(expression)
 
-        # 5. Settle expression and status
-        self.set_expression(expression)
+        # 5. Settle status
         self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
         return action
 

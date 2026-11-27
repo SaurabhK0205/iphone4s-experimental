@@ -267,6 +267,12 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(req.headers.get("X-goog-api-key"), "mock_gemini_key")
         self.assertNotIn("key=", req.full_url)
 
+    def test_transcribe_audio_size_limit(self):
+        oversized = b"0" * (16 * 1024 * 1024)
+        with self.assertRaises(ValueError) as ctx:
+            self.brain.transcribe_audio(oversized)
+        self.assertIn("exceeds maximum limit", str(ctx.exception))
+
     def test_repository_zero_em_dashes(self):
         """Strict verification of anti-AI-slop rule across all modified and new files."""
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

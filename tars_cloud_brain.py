@@ -11,7 +11,6 @@ Strict anti-AI-slop rule: Zero em-dash characters allowed.
 import base64
 import json
 import logging
-import mimetypes
 import os
 import re
 import time
@@ -22,6 +21,10 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("TarsCloudBrain")
+logger.addHandler(logging.NullHandler())
+
+MAX_AUDIO_BYTES = 15 * 1024 * 1024  # 15MB limit
+MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB limit
 
 
 def load_dotenv(filepath: Optional[str] = None) -> None:
@@ -45,10 +48,6 @@ def load_dotenv(filepath: Optional[str] = None) -> None:
                         os.environ[key] = val
     except Exception as e:
         logger.warning(f"Could not load .env file: {e}")
-
-
-# Initialize environment on module import
-load_dotenv()
 
 
 def encode_multipart_formdata(fields: Dict[str, str], files: Dict[str, Tuple[str, bytes, str]]) -> Tuple[bytes, str]:
@@ -166,6 +165,9 @@ class TarsCloudBrain:
             filename = f"audio_{int(time.time())}.wav"
         else:
             raise ValueError("Expected filepath string or audio bytes")
+
+        if len(audio_bytes) > MAX_AUDIO_BYTES:
+            raise ValueError(f"Audio payload exceeds maximum limit of {MAX_AUDIO_BYTES} bytes")
 
         # Tier 1: Groq Whisper
         if self.groq_api_key:
@@ -417,11 +419,9 @@ class TarsCloudBrain:
             "temperature": 0.6,
         }
         if has_vision and (front_b64 or back_b64):
-            # Cloudflare vision model expects image array of bytes or raw buffer
             target_b64 = front_b64 or back_b64
             if target_b64:
-                raw_bytes = list(base64.b64decode(target_b64))
-                payload["image"] = raw_bytes
+                payload["image"] = target_b64
 
         data_bytes = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data_bytes, method="POST")
@@ -543,6 +543,9 @@ class TarsCloudBrain:
     def _read_image_b64(self, image_path: str) -> Optional[str]:
         """Reads local JPEG image file and returns base64 encoded string."""
         if not image_path or not os.path.isfile(image_path):
+            return None
+        if os.path.getsize(image_path) > MAX_IMAGE_BYTES:
+            logger.warning(f"Image {image_path} exceeds maximum limit of {MAX_IMAGE_BYTES} bytes")
             return None
         try:
             with open(image_path, "rb") as f:
