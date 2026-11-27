@@ -985,6 +985,7 @@ typedef NS_ENUM(NSInteger, MonolithPowerState) {
 };
 
 typedef struct {
+    void *handle;
     void (*setScreenBlanked)(BOOL);
     void (*willUnblank)(void);
     void (*setBacklightFactorWithFade)(float, float);
@@ -994,12 +995,14 @@ typedef struct {
     BOOL loaded;
 } BKSProximityBridge;
 
+static BKSProximityBridge s_bridge = {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NO};
+
 static BKSProximityBridge GetBKSProximityBridge(void) {
-    static BKSProximityBridge s_bridge = {NULL, NULL, NULL, NULL, NULL, NULL, NO};
     static dispatch_once_t s_once;
     dispatch_once(&s_once, ^{
         void *handle = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_NOW);
         if (handle) {
+            s_bridge.handle = handle;
             s_bridge.setScreenBlanked = (void (*)(BOOL))dlsym(handle, "BKSDisplayServicesSetScreenBlanked");
             s_bridge.willUnblank = (void (*)(void))dlsym(handle, "BKSDisplayServicesWillUnblank");
             s_bridge.setBacklightFactorWithFade = (void (*)(float, float))dlsym(handle, "BKSHIDServicesSetBacklightFactorWithFadeDuration");
@@ -1016,6 +1019,14 @@ static BKSProximityBridge GetBKSProximityBridge(void) {
         }
     });
     return s_bridge;
+}
+
+static void UnloadBKSProximityBridge(void) {
+    if (s_bridge.handle) {
+        dlclose(s_bridge.handle);
+        s_bridge.handle = NULL;
+        s_bridge.loaded = NO;
+    }
 }
 
 static float s_activeBrightnessFallback = 0.85f;
@@ -3104,7 +3115,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
     [self retain];
     __block DeskCompanionViewController *blockSelf = self;
     [self captureFrameAndMeasureLuminanceForCamera:@"back" saveFile:YES completion:^(NSString *path, NSUInteger size, float meanLuminance, NSError *err) {
-        if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive || !blockSelf->_obstructionActive) {
+        if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive || !blockSelf->_obstructionActive || blockSelf->_powerState != MonolithPowerStateActive) {
             [blockSelf release];
             return;
         }
@@ -3120,7 +3131,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
                 [blockSelf setTorch:YES];
                 [blockSelf retain];
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (blockSelf) {
+                    if (blockSelf && blockSelf->_powerState == MonolithPowerStateActive) {
                         [blockSelf setTorch:NO];
                     }
                     [blockSelf release];
@@ -4400,7 +4411,12 @@ static void *SocketServerThread(void *arg) {
     return UIInterfaceOrientationMaskAll;
 }
 
+- (void)applicationWillTerminate:(UIApplication *)application {
+    UnloadBKSProximityBridge();
+}
+
 - (void)dealloc {
+    UnloadBKSProximityBridge();
     [_window release];
     [_viewController release];
     [super dealloc];

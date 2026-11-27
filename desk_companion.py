@@ -23,7 +23,7 @@ def is_in_venv():
     repo_venv = os.path.realpath(os.path.join(os.path.dirname(__file__), ".venv"))
     curr_prefix = os.path.realpath(sys.prefix)
     curr_exec = os.path.realpath(sys.executable)
-    return curr_prefix.startswith(repo_venv) or curr_exec.startswith(repo_venv)
+    return curr_prefix == repo_venv or curr_exec.startswith(repo_venv + os.sep)
 
 SAFE_PATH_REGEX = re.compile(r"^/tmp/companion_[a-zA-Z0-9_-]+\.(jpg|wav|png)$")
 
@@ -57,7 +57,6 @@ EXPRESSION_ALIASES = {
     "amazement": "awe",
     "sleep": "sleepy",
     "tired": "sleepy",
-    "asleep": "sleepy",
     "anger": "angry",
     "fury": "furious",
     "mad": "angry",
@@ -419,17 +418,16 @@ class DeskCompanion:
 
     def _speak_text(self, text, voice="Samantha", timeout=15.0):
         """Cross-platform text-to-speech with explicit timeout and fallbacks."""
-        try:
-            if shutil.which("say"):
-                subprocess.run(["say", "-v", voice, text], timeout=timeout)
-            elif shutil.which("espeak"):
-                subprocess.run(["espeak", text], timeout=timeout)
-            else:
-                print(f"[AUDIO TTS] {text}")
-        except subprocess.TimeoutExpired as e:
-            print(f"[TARS Speech] Speech synthesis timed out after {timeout}s: {e}")
-        except Exception as e:
-            print(f"[TARS Speech] Speech synthesis failed: {e}")
+        if shutil.which("say"):
+            proc = subprocess.run(["say", "-v", voice, text], timeout=timeout, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(f"say exited with code {proc.returncode}: {proc.stderr.strip()}")
+        elif shutil.which("espeak"):
+            proc = subprocess.run(["espeak", text], timeout=timeout, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(f"espeak exited with code {proc.returncode}: {proc.stderr.strip()}")
+        else:
+            print(f"[AUDIO TTS] {text}")
 
     def say(self, text, voice="Samantha"):
         """Speaks text using system speech synthesizer while animating companion eyes and spectrum waveform."""
@@ -535,7 +533,11 @@ class DeskCompanion:
                 err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
                 device_errors.append(f"vibrate: {err}")
 
-        # 2. Look at target
+        # 2. Expression Framing (set expression preset before applying fine gaze offset)
+        expression = action.get("expression", "neutral")
+        self.set_expression(expression)
+
+        # 3. Look at target (applies gaze target on top of the established expression)
         look_at = action.get("look_at")
         if look_at and isinstance(look_at, (list, tuple)) and len(look_at) == 2:
             res = self.look_at(look_at[0], look_at[1])
@@ -543,7 +545,7 @@ class DeskCompanion:
                 err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
                 device_errors.append(f"look_at: {err}")
 
-        # 3. Torch
+        # 4. Torch
         torch = action.get("torch")
         if torch is not None:
             res = self.set_torch(bool(torch))
@@ -551,13 +553,11 @@ class DeskCompanion:
                 err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
                 device_errors.append(f"torch: {err}")
 
-        # 4. Speech & Spectrum Synchronization
+        # 5. Speech & Spectrum Synchronization
         speech = action.get("speech", "")
-        expression = action.get("expression", "neutral")
         if speech:
             self.set_status("TARS // SPEAKING", speech[:40])
             self.set_speaking(True)
-            self.set_expression(expression)
             voice = os.environ.get("TARS_DEFAULT_VOICE", "Samantha")
             try:
                 self._speak_text(speech, voice=voice)
@@ -568,7 +568,6 @@ class DeskCompanion:
                 self.set_speaking(False)
                 self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
         else:
-            self.set_expression(expression)
             self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
 
         if device_errors:
