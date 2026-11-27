@@ -90,7 +90,9 @@ class TarsCloudBrain:
         gemini_api_key: Optional[str] = None,
         humor_percent: Optional[int] = None,
         honesty_percent: Optional[int] = None,
+        dotenv_path: Optional[str] = None,
     ):
+        load_dotenv(dotenv_path)
         self.groq_api_key = groq_api_key or os.environ.get("GROQ_API_KEY", "").strip()
         self.cf_api_token = cf_api_token or os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
         self.cf_account_id = cf_account_id or os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
@@ -419,9 +421,12 @@ class TarsCloudBrain:
             "temperature": 0.6,
         }
         if has_vision and (front_b64 or back_b64):
-            target_b64 = front_b64 or back_b64
-            if target_b64:
-                payload["image"] = target_b64
+            images = []
+            if front_b64:
+                images.append(front_b64)
+            if back_b64:
+                images.append(back_b64)
+            payload["image"] = images[0] if len(images) == 1 else images
 
         data_bytes = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data_bytes, method="POST")
@@ -442,19 +447,26 @@ class TarsCloudBrain:
         back_b64: Optional[str],
         history: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Queries OpenRouter free pooled models."""
-        has_vision = bool(front_b64 or back_b64)
-        if has_vision:
-            # Skip text-only OpenRouter free model when multimodal vision is required
-            return None
-
+        """Queries OpenRouter free pooled models with multimodal vision support."""
         url = "https://openrouter.ai/api/v1/chat/completions"
-        model = "meta-llama/llama-3.3-70b-instruct:free"
+        has_vision = bool(front_b64 or back_b64)
+        model = "google/gemini-2.0-flash-exp:free" if has_vision else "meta-llama/llama-3.3-70b-instruct:free"
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         for turn in history[-4:]:
             messages.append(turn)
-        messages.append({"role": "user", "content": transcript})
+
+        user_content: Any
+        if has_vision:
+            user_content = [{"type": "text", "text": transcript if transcript else "Observing visual scene."}]
+            if front_b64:
+                user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{front_b64}"}})
+            if back_b64:
+                user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{back_b64}"}})
+        else:
+            user_content = transcript
+
+        messages.append({"role": "user", "content": user_content})
 
         payload = {
             "model": model,

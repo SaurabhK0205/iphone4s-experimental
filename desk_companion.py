@@ -15,6 +15,7 @@ import math
 import uuid
 import shlex
 import shutil
+import os
 from tars_cloud_brain import TarsCloudBrain
 
 # Strict repository standard: verify virtual environment isolation
