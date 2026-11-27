@@ -10,6 +10,7 @@ ddi_9.3/
 
 # Compiled Mach-O binaries & artifacts
 *.o
+*.dylib
 *.dSYM/
 PhysicalAgent/PhysicalAgent
 PhysicalAgent/PhysicalAgent_raw
@@ -37,6 +38,11 @@ ARCHITECTURE_REFERENCE.md
 
 # macOS
 .DS_Store
+
+# Environment & API keys
+.env
+.env.*
+!.env.example
 
 # Research repositories
 research_repos/

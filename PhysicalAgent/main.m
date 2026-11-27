@@ -13,6 +13,7 @@
 #include <signal.h>
 #include <libkern/OSAtomic.h>
 #include <dlfcn.h>
+#include <notify.h>
 
 // ========================================================
 // 1. ATMOSPHERIC CANVAS DEPTH (Pure Obsidian Black Canvas)
@@ -374,6 +375,46 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     }
 }
 
+static BOOL ApplyEyelidEOClip(CGContextRef ctx, CGFloat W, CGFloat H, CGFloat lidNorm, CGFloat angleDeg, CGFloat bend, BOOL isUpper, BOOL isLeftEye) {
+    if (!ctx || W <= 0.0f || H <= 0.0f) return NO;
+    CGFloat clampedLid = ClampF(lidNorm, 0.0f, 1.0f);
+    if (clampedLid <= 0.001f) return YES;
+
+    CGMutablePathRef eoPath = CGPathCreateMutable();
+    if (!eoPath) return NO;
+
+    CGFloat cx = W * 0.5f;
+    CGFloat cy = H * 0.5f;
+    CGFloat rotSign = isLeftEye ? 1.0f : -1.0f;
+    CGFloat rotRad = angleDeg * rotSign * (CGFloat)(M_PI / 180.0);
+
+    CGFloat lidY = isUpper ? (clampedLid * H) : (H - clampedLid * H);
+    CGFloat bendH = H * (1.0f - clampedLid) * bend;
+    CGFloat edgeY = isUpper ? -H : (H * 2.0f);
+    CGFloat ctrlY = isUpper ? (lidY + bendH) : (lidY - bendH);
+
+    CGAffineTransform xf = CGAffineTransformMakeTranslation(cx, cy);
+    xf = CGAffineTransformRotate(xf, rotRad);
+    xf = CGAffineTransformTranslate(xf, -cx, -cy);
+
+    // Outer universe rect + rotated lid polygon in even-odd rule excludes only the eyelid area
+    CGPathAddRect(eoPath, NULL, CGRectMake(-W * 2.0f, -H * 2.0f, W * 5.0f, H * 5.0f));
+    CGPathMoveToPoint(eoPath, &xf, -W, edgeY);
+    CGPathAddLineToPoint(eoPath, &xf, W * 2.0f, edgeY);
+    CGPathAddLineToPoint(eoPath, &xf, W * 2.0f, lidY);
+    if (fabsf(bend) > 0.01f) {
+        CGPathAddQuadCurveToPoint(eoPath, &xf, cx, ctrlY, -W, lidY);
+    } else {
+        CGPathAddLineToPoint(eoPath, &xf, -W, lidY);
+    }
+    CGPathCloseSubpath(eoPath);
+
+    CGContextAddPath(ctx, eoPath);
+    CGContextEOClip(ctx);
+    CGPathRelease(eoPath);
+    return YES;
+}
+
 - (void)drawRect:(CGRect)rect {
     CGContextRef ctx = UIGraphicsGetCurrentContext();
     if (!ctx) return;
@@ -415,91 +456,29 @@ static NSArray *ProceduralEyeConfigToArray(ProceduralEyeConfig c) {
     [eyePath addArcWithCenter:CGPointMake(rTL, rTL) radius:rTL startAngle:(CGFloat)M_PI endAngle:(CGFloat)(1.5 * M_PI) clockwise:YES];
     [eyePath closePath];
 
-    // Clip to the base squircle eye shape
+    // Clip to the base squircle eye shape; outer SaveGState restores all clips and CTM at end of drawRect
     CGContextSaveGState(ctx);
     [eyePath addClip];
 
-    // 2. Base Linear Gradient (Electric Cyber Cyan Body)
-    if (_irisGradient) {
-        CGContextDrawLinearGradient(ctx, _irisGradient, CGPointMake(0, 0), CGPointMake(0, H), 0);
-    }
+    // 2. Pre-Draw Even-Odd Eyelid Clips (fail closed if path creation fails so partial frames never leak)
+    BOOL clippedOK = ApplyEyelidEOClip(ctx, W, H, _config.upperLidY, _config.upperLidAngle, _config.upperLidBend, YES, _isLeftEye) &&
+                     ApplyEyelidEOClip(ctx, W, H, _config.lowerLidY, _config.lowerLidAngle, _config.lowerLidBend, NO, _isLeftEye);
 
-    // 3. Luminous Radial HotSpot (Radiant glowing white-cyan core)
-    CGFloat pupilDx = ClampF(_config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.25f);
-    CGFloat pupilDy = ClampF(_config.hotSpotCenterY, -1.0f, 1.0f) * (H * 0.25f);
-    CGPoint hotSpotCenter = CGPointMake(W * 0.5f + pupilDx, H * 0.5f + pupilDy);
-    CGFloat glowR = (W * 0.55f) * ClampF(_config.glowSize, 0.4f, 2.5f);
-
-    if (_hotSpotGradient) {
-        CGContextDrawRadialGradient(ctx, _hotSpotGradient, hotSpotCenter, 0.0f, hotSpotCenter, glowR, kCGGradientDrawsAfterEndLocation);
-    }
-
-    // 4. Upper Eyelid Mask (Black Cutout with Rotation and Parabolic Bend)
-    if (_config.upperLidY > 0.001f) {
-        CGContextSaveGState(ctx);
-        CGFloat cx = W * 0.5f;
-        CGFloat cy = H * 0.5f;
-        CGFloat rotSign = _isLeftEye ? 1.0f : -1.0f;
-        CGFloat rotRad = _config.upperLidAngle * rotSign * (CGFloat)(M_PI / 180.0);
-
-        CGContextTranslateCTM(ctx, cx, cy);
-        CGContextRotateCTM(ctx, rotRad);
-        CGContextTranslateCTM(ctx, -cx, -cy);
-
-        CGFloat lidY = ClampF(_config.upperLidY, 0.0f, 1.0f) * H;
-        CGFloat bendH = H * (1.0f - ClampF(_config.upperLidY, 0.0f, 1.0f)) * _config.upperLidBend;
-
-        UIBezierPath *upperLid = [UIBezierPath bezierPath];
-        [upperLid moveToPoint:CGPointMake(-W, -H)];
-        [upperLid addLineToPoint:CGPointMake(W * 2.0f, -H)];
-        [upperLid addLineToPoint:CGPointMake(W * 2.0f, lidY)];
-
-        if (fabsf(_config.upperLidBend) > 0.01f) {
-            [upperLid addQuadCurveToPoint:CGPointMake(-W, lidY) controlPoint:CGPointMake(cx, lidY + bendH)];
-        } else {
-            [upperLid addLineToPoint:CGPointMake(-W, lidY)];
+    if (clippedOK) {
+        // 3. Base Linear Gradient (Electric Cyber Cyan Body)
+        if (_irisGradient) {
+            CGContextDrawLinearGradient(ctx, _irisGradient, CGPointMake(0, 0), CGPointMake(0, H), 0);
         }
-        [upperLid closePath];
 
-        CGContextSetBlendMode(ctx, kCGBlendModeClear);
-        [upperLid fill];
-        CGContextSetBlendMode(ctx, kCGBlendModeNormal);
+        // 4. Luminous Radial HotSpot (Radiant glowing white-cyan core)
+        CGFloat pupilDx = ClampF(_config.hotSpotCenterX, -1.0f, 1.0f) * (W * 0.25f);
+        CGFloat pupilDy = ClampF(_config.hotSpotCenterY, -1.0f, 1.0f) * (H * 0.25f);
+        CGPoint hotSpotCenter = CGPointMake(W * 0.5f + pupilDx, H * 0.5f + pupilDy);
+        CGFloat glowR = (W * 0.55f) * ClampF(_config.glowSize, 0.4f, 2.5f);
 
-        CGContextRestoreGState(ctx);
-    }
-
-    // 5. Lower Eyelid Mask (Black Cutout with Rotation and Parabolic Bend)
-    if (_config.lowerLidY > 0.001f) {
-        CGContextSaveGState(ctx);
-        CGFloat cx = W * 0.5f;
-        CGFloat cy = H * 0.5f;
-        CGFloat rotSign = _isLeftEye ? 1.0f : -1.0f;
-        CGFloat rotRad = _config.lowerLidAngle * rotSign * (CGFloat)(M_PI / 180.0);
-
-        CGContextTranslateCTM(ctx, cx, cy);
-        CGContextRotateCTM(ctx, rotRad);
-        CGContextTranslateCTM(ctx, -cx, -cy);
-
-        CGFloat lidY = H - ClampF(_config.lowerLidY, 0.0f, 1.0f) * H;
-        CGFloat bendH = H * (1.0f - ClampF(_config.lowerLidY, 0.0f, 1.0f)) * _config.lowerLidBend;
-
-        UIBezierPath *lowerLid = [UIBezierPath bezierPath];
-        [lowerLid moveToPoint:CGPointMake(-W, H * 2.0f)];
-        [lowerLid addLineToPoint:CGPointMake(W * 2.0f, H * 2.0f)];
-        [lowerLid addLineToPoint:CGPointMake(W * 2.0f, lidY)];
-
-        if (fabsf(_config.lowerLidBend) > 0.01f) {
-            [lowerLid addQuadCurveToPoint:CGPointMake(-W, lidY) controlPoint:CGPointMake(cx, lidY - bendH)];
-        } else {
-            [lowerLid addLineToPoint:CGPointMake(-W, lidY)];
+        if (_hotSpotGradient) {
+            CGContextDrawRadialGradient(ctx, _hotSpotGradient, hotSpotCenter, 0.0f, hotSpotCenter, glowR, kCGGradientDrawsAfterEndLocation);
         }
-        [lowerLid closePath];
-
-        CGContextSetBlendMode(ctx, kCGBlendModeClear);
-        [lowerLid fill];
-        CGContextSetBlendMode(ctx, kCGBlendModeNormal);
-
-        CGContextRestoreGState(ctx);
     }
 
     CGContextRestoreGState(ctx);
@@ -999,6 +978,109 @@ static void PruneOldTmpArtifacts(void) {
 @class DeskCompanionViewController;
 static DeskCompanionViewController *g_viewController = nil;
 
+typedef NS_ENUM(NSInteger, MonolithPowerState) {
+    MonolithPowerStateActive = 0,
+    MonolithPowerStateAmbientIdle = 1,
+    MonolithPowerStateObsidianStandby = 2
+};
+
+typedef struct {
+    void *handle;
+    void (*setScreenBlanked)(BOOL);
+    void (*willUnblank)(void);
+    void (*setBacklightFactorWithFade)(float, float);
+    void (*requestProximityMode)(int);
+    BOOL (*getObjectWithinProximity)(void);
+    BOOL (*isDetectionActive)(void);
+    BOOL loaded;
+} BKSProximityBridge;
+
+static BKSProximityBridge s_bridge = {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NO};
+
+static BKSProximityBridge GetBKSProximityBridge(void) {
+    static dispatch_once_t s_once;
+    dispatch_once(&s_once, ^{
+        void *handle = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_NOW);
+        if (handle) {
+            s_bridge.handle = handle;
+            s_bridge.setScreenBlanked = (void (*)(BOOL))dlsym(handle, "BKSDisplayServicesSetScreenBlanked");
+            s_bridge.willUnblank = (void (*)(void))dlsym(handle, "BKSDisplayServicesWillUnblank");
+            s_bridge.setBacklightFactorWithFade = (void (*)(float, float))dlsym(handle, "BKSHIDServicesSetBacklightFactorWithFadeDuration");
+            s_bridge.requestProximityMode = (void (*)(int))dlsym(handle, "BKSHIDServicesRequestProximityDetectionMode");
+            s_bridge.getObjectWithinProximity = (BOOL (*)(void))dlsym(handle, "BKSHIDServicesGetObjectWithinProximity");
+            if (!s_bridge.getObjectWithinProximity) {
+                s_bridge.getObjectWithinProximity = (BOOL (*)(void))dlsym(handle, "_BKSHIDGetObjectWithinProximity");
+            }
+            s_bridge.isDetectionActive = (BOOL (*)(void))dlsym(handle, "BKSHIDServicesProximityDetectionActive");
+            if (!s_bridge.isDetectionActive) {
+                s_bridge.isDetectionActive = (BOOL (*)(void))dlsym(handle, "_BKSHIDGetProximityDetectionActive");
+            }
+            s_bridge.loaded = YES;
+        }
+    });
+    return s_bridge;
+}
+
+static void UnloadBKSProximityBridge(void) {
+    if (s_bridge.handle) {
+        dlclose(s_bridge.handle);
+        s_bridge.handle = NULL;
+        s_bridge.loaded = NO;
+    }
+}
+
+static float s_activeBrightnessFallback = 0.85f;
+
+static void ApplyDisplayBacklightFactor(float factor, float duration) {
+    BKSProximityBridge bridge = GetBKSProximityBridge();
+    float clamped = ClampF(factor, 0.01f, 1.0f);
+    if (bridge.setBacklightFactorWithFade) {
+        bridge.setBacklightFactorWithFade(clamped, MAX(0.0f, duration));
+    } else {
+        [UIScreen mainScreen].brightness = ClampF(s_activeBrightnessFallback * clamped, 0.01f, 1.0f);
+    }
+}
+
+static void SuppressSpringBoardProximityBlank(int notifyToken) {
+    if (notifyToken == 0) return;
+    uint64_t state = 0;
+    if (notify_get_state(notifyToken, &state) == 0 && state != 0) {
+        // Clear notify state and repost immediately so SpringBoard cancels its 0.5s setBacklightFactorToZeroAfterDelay
+        notify_set_state(notifyToken, 0);
+        notify_post("com.apple.backboard.proximity.changed");
+    }
+}
+
+static void ForceUnblankDisplay(float brightness) {
+    BKSProximityBridge bridge = GetBKSProximityBridge();
+    if (bridge.willUnblank) {
+        bridge.willUnblank();
+    }
+    if (bridge.setScreenBlanked) {
+        bridge.setScreenBlanked(NO);
+    }
+    if (bridge.setBacklightFactorWithFade) {
+        bridge.setBacklightFactorWithFade(1.0f, 0.0f);
+    }
+    if (brightness > 0.05f && [UIScreen mainScreen].brightness < brightness - 0.05f) {
+        [UIScreen mainScreen].brightness = brightness;
+    }
+}
+
+static void EnsureProximityModeOnly(int mode) {
+    BKSProximityBridge bridge = GetBKSProximityBridge();
+    if (bridge.requestProximityMode) {
+        bridge.requestProximityMode(mode);
+    }
+}
+
+static void EnsurePassiveProximityMode(int mode, float brightness) {
+    ForceUnblankDisplay(brightness);
+    EnsureProximityModeOnly(mode);
+}
+
+static volatile int32_t s_activeProximityGen = 0;
+
 @interface DeskCompanionViewController : UIViewController <UIGestureRecognizerDelegate, AVAudioRecorderDelegate, AVAudioPlayerDelegate> {
     // Canvas Background
     RadialGradientBackgroundView *_bgView;
@@ -1078,10 +1160,51 @@ static DeskCompanionViewController *g_viewController = nil;
     NSOperationQueue *_motionQueue;
     NSTimeInterval _lastShakeTime;
     CMAcceleration _lastAccel;
+    double _prevAccelMag;
     UIInterfaceOrientation _currentOrientation;
     UIInterfaceOrientation _pendingOrientation;
     BOOL _isTransitioningOrientation;
     NSTimeInterval _lastOrientationChangeTime;
+
+    // Monolith Power & Proximity State Machine
+    MonolithPowerState _powerState;
+    NSTimeInterval _lastActivityTime;
+    NSTimeInterval _idleTimeoutSeconds;
+    NSTimeInterval _standbyTimeoutSeconds;
+    float _activeBrightness;
+    float _currentBacklightFactor;
+    NSTimer *_standbyWatchdogTimer;
+    NSTimer *_antiBlankTimer;
+    NSTimer *_proximityPollTimer;
+    NSString *_lastWakeReason;
+    BOOL _lastProximityNear;
+    BOOL _pollHasSampled;
+    BOOL _didPlayTouchDownFeedback;
+    int _proximityNotifyToken;
+    int _blankNotifyToken;
+    int _proximityMode;
+    float _filteredAx;
+    float _filteredAy;
+    float _filteredAz;
+    UIInterfaceOrientation _candidateOrient;
+    int _candidateOrientCount;
+    BOOL _isForegroundActive;
+    NSUInteger _lifecycleGen;
+
+    // Phase 3.2: Dual-Camera Annoyance & Obstruction Reflex
+    BOOL _isCameraBusy;
+    BOOL _obstructionActive;
+    NSUInteger _obstructionCount;
+    NSUInteger _proximityEpisodeGen;
+    int _obstructionRetryCount;
+    int _rearFlipRetryCount;
+    NSTimeInterval _lastObstructionTime;
+    float _lastFrontLuminance;
+    float _lastRearLuminance;
+    NSString *_activeCamera;
+    NSString *_lastRearSnapshotPath;
+    NSTimer *_obstructionTimer;
+    NSTimer *_rearFlipTimer;
 }
 
 - (void)setupProceduralEngine;
@@ -1099,6 +1222,18 @@ static DeskCompanionViewController *g_viewController = nil;
 - (void)playSoundNamed:(NSString *)name;
 - (BOOL)playAudioFilePath:(NSString *)path;
 - (void)handleProximityChange:(NSNotification *)notification;
+- (void)processProximityNear:(BOOL)isNear;
+- (void)startProximityMonitor;
+- (void)stopProximityMonitor;
+- (void)pollProximitySensor:(NSTimer *)timer;
+- (void)triggerAmbientBlink;
+- (void)registerUserActivityWithReason:(NSString *)reason;
+- (void)transitionToPowerState:(MonolithPowerState)newState reason:(NSString *)reason;
+- (void)checkStandbyWatchdog:(NSTimer *)timer;
+- (void)configureStandbyIdleTimeout:(NSTimeInterval)idleSec standbyTimeout:(NSTimeInterval)standbySec;
+- (void)setActiveBrightness:(float)level;
+- (void)setProximityMode:(int)mode;
+- (void)enforceUnblankTick:(NSTimer *)timer;
 - (void)handleDeviceOrientationChange:(NSNotification *)notification;
 - (void)handleMotionData:(CMAcceleration)accel;
 - (void)setAppOrientation:(UIInterfaceOrientation)orientation;
@@ -1302,12 +1437,28 @@ static DeskCompanionViewController *g_viewController = nil;
     longPress.minimumPressDuration = 0.5;
     [self.view addGestureRecognizer:longPress];
 
-    // Timers & Observers
+    // Timers & Observers (invalidate any prior instances if viewDidLoad is re-entered)
+    if (_observersAdded) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self];
+        _observersAdded = NO;
+    }
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleAudioInterruption:)
                                                  name:AVAudioSessionInterruptionNotification
                                                object:nil];
     _observersAdded = YES;
+
+    if (_clockTimer) { [_clockTimer invalidate]; _clockTimer = nil; }
+    if (_blinkTimer) { [_blinkTimer invalidate]; _blinkTimer = nil; }
+    if (_saccadeTimer) { [_saccadeTimer invalidate]; _saccadeTimer = nil; }
+    if (_pruneTimer) { [_pruneTimer invalidate]; _pruneTimer = nil; }
+    [self stopProximityMonitor];
+    if (_standbyWatchdogTimer) { [_standbyWatchdogTimer invalidate]; _standbyWatchdogTimer = nil; }
+    if (_antiBlankTimer) { [_antiBlankTimer invalidate]; _antiBlankTimer = nil; }
+    if (_obstructionTimer) { [_obstructionTimer invalidate]; _obstructionTimer = nil; }
+    if (_rearFlipTimer) { [_rearFlipTimer invalidate]; _rearFlipTimer = nil; }
+    if (_reactionTimer) { [_reactionTimer invalidate]; _reactionTimer = nil; }
+    if (_waveTimer) { [_waveTimer invalidate]; _waveTimer = nil; }
 
     [self updateClock];
     _clockTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(updateClock) userInfo:nil repeats:YES];
@@ -1317,30 +1468,66 @@ static DeskCompanionViewController *g_viewController = nil;
 
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
-    [UIScreen mainScreen].brightness = 0.70f; // Mitigate IPS LCD backlight bleed on pitch black canvas
+    float sysBright = [UIScreen mainScreen].brightness;
+    _activeBrightness = (sysBright >= 0.45f && sysBright <= 1.0f) ? sysBright : 0.85f;
+    s_activeBrightnessFallback = _activeBrightness;
+    _currentBacklightFactor = 1.0f;
+    [UIScreen mainScreen].brightness = _activeBrightness;
+    _isForegroundActive = YES;
+    _lifecycleGen = 1;
 
     // ========================================================
-    // 7. HARDWARE SENSORS: PROXIMITY & COREMOTION ACCELEROMETER
+    // 7. HARDWARE SENSORS: PROXIMITY, STANDBY & COREMOTION ACCELEROMETER
     // ========================================================
     _lastAccel = (CMAcceleration){0.0, 0.0, -1.0};
+    _filteredAx = 0.0f;
+    _filteredAy = -1.0f;
+    _filteredAz = 0.0f;
+    _candidateOrient = UIInterfaceOrientationPortrait;
+    _candidateOrientCount = 0;
+    _prevAccelMag = 1.0;
     _lastShakeTime = 0.0;
+    _powerState = MonolithPowerStateActive;
+    _lastActivityTime = CACurrentMediaTime();
+    _idleTimeoutSeconds = 180.0;
+    _standbyTimeoutSeconds = 360.0;
+    if (_lastWakeReason) {
+        [_lastWakeReason release];
+        _lastWakeReason = nil;
+    }
+    _lastWakeReason = [@"boot" copy];
+    _lastProximityNear = NO;
+    _proximityMode = 3; // Mode 3 activates IR proximity hardware while UIDevice monitoring stays OFF
+    _isCameraBusy = NO;
+    _obstructionActive = NO;
+    _obstructionCount = 0;
+    _proximityEpisodeGen = 0;
+    _obstructionRetryCount = 0;
+    _rearFlipRetryCount = 0;
+    _lastObstructionTime = 0.0;
+    _lastFrontLuminance = -1.0f;
+    _lastRearLuminance = -1.0f;
+    if (_activeCamera) {
+        [_activeCamera release];
+        _activeCamera = nil;
+    }
+    _activeCamera = [@"front" copy];
+    if (_lastRearSnapshotPath) {
+        [_lastRearSnapshotPath release];
+        _lastRearSnapshotPath = nil;
+    }
 
-    // Enable hardware proximity monitoring for hand hover reactions
-    [UIDevice currentDevice].proximityMonitoringEnabled = YES;
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleProximityChange:)
-                                                 name:UIDeviceProximityStateDidChangeNotification
-                                               object:nil];
+    // Keep UIDevice telephony proximity OFF so SpringBoard never runs call-blanking or landscape suppression
+    [UIDevice currentDevice].proximityMonitoringEnabled = NO;
+    EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
+    [self startProximityMonitor];
 
-    // Enable hardware orientation change notifications from UIDevice
+    _standbyWatchdogTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(checkStandbyWatchdog:) userInfo:nil repeats:YES];
+
+    // Single authoritative orientation tracking via filtered CoreMotion accelerometer (no UIKit rotation conflict)
     _currentOrientation = UIInterfaceOrientationPortrait;
     _isTransitioningOrientation = NO;
     _lastOrientationChangeTime = 0.0;
-    [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleDeviceOrientationChange:)
-                                                 name:UIDeviceOrientationDidChangeNotification
-                                               object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleAppDidEnterBackground:)
                                                  name:UIApplicationDidEnterBackgroundNotification
@@ -1368,22 +1555,38 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)handleDeviceOrientationChange:(NSNotification *)notification {
-    UIDeviceOrientation devOrient = [UIDevice currentDevice].orientation;
-    UIInterfaceOrientation target = _currentOrientation;
-    if (devOrient == UIDeviceOrientationPortrait) target = UIInterfaceOrientationPortrait;
-    else if (devOrient == UIDeviceOrientationPortraitUpsideDown) target = UIInterfaceOrientationPortraitUpsideDown;
-    else if (devOrient == UIDeviceOrientationLandscapeLeft) target = UIInterfaceOrientationLandscapeRight;
-    else if (devOrient == UIDeviceOrientationLandscapeRight) target = UIInterfaceOrientationLandscapeLeft;
-
-    if (target != _currentOrientation) {
-        [self transitionToOrientation:target animated:YES duration:0.38];
-    }
+    // Handled authoritatively by filtered CoreMotion accelerometer
 }
 
 - (void)handleAppDidEnterBackground:(NSNotification *)notification {
     if (_motionManager && [_motionManager isAccelerometerActive]) {
         [_motionManager stopAccelerometerUpdates];
     }
+    [self stopProximityMonitor];
+    if (_standbyWatchdogTimer) {
+        [_standbyWatchdogTimer invalidate];
+        _standbyWatchdogTimer = nil;
+    }
+    if (_antiBlankTimer) {
+        [_antiBlankTimer invalidate];
+        _antiBlankTimer = nil;
+    }
+    if (_obstructionTimer) {
+        [_obstructionTimer invalidate];
+        _obstructionTimer = nil;
+    }
+    if (_rearFlipTimer) {
+        [_rearFlipTimer invalidate];
+        _rearFlipTimer = nil;
+    }
+    _obstructionActive = NO;
+    _obstructionRetryCount = 0;
+    _rearFlipRetryCount = 0;
+    _proximityEpisodeGen++;
+    _isForegroundActive = NO;
+    _lifecycleGen++;
+    EnsureProximityModeOnly(0);
+    ApplyDisplayBacklightFactor(1.0f, 0.0f);
     _isTransitioningOrientation = NO;
     _pendingOrientation = 0;
     [self.view.layer removeAllAnimations];
@@ -1391,6 +1594,14 @@ static DeskCompanionViewController *g_viewController = nil;
 }
 
 - (void)handleAppWillEnterForeground:(NSNotification *)notification {
+    _isForegroundActive = YES;
+    _lifecycleGen++;
+    EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
+    [self registerUserActivityWithReason:@"foreground"];
+    [self startProximityMonitor];
+    if (!_standbyWatchdogTimer) {
+        _standbyWatchdogTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(checkStandbyWatchdog:) userInfo:nil repeats:YES];
+    }
     if (_motionManager && [_motionManager isAccelerometerAvailable] && ![_motionManager isAccelerometerActive]) {
         if (!_motionQueue) {
             _motionQueue = [[NSOperationQueue alloc] init];
@@ -1445,6 +1656,7 @@ static DeskCompanionViewController *g_viewController = nil;
         } completion:^(BOOL finished) {
             if (!blockSelf) return;
             blockSelf->_isTransitioningOrientation = NO;
+            EnsureProximityModeOnly(blockSelf->_proximityMode);
             [blockSelf->_leftEye setNeedsDisplay];
             [blockSelf->_rightEye setNeedsDisplay];
             [blockSelf->_scanlineOverlay setNeedsDisplay];
@@ -1472,26 +1684,17 @@ static DeskCompanionViewController *g_viewController = nil;
     [super viewDidLayoutSubviews];
 }
 
+// System autorotation is disabled so DeskCompanionViewController manages all 4 orientations via self.view.transform
 - (BOOL)shouldAutorotate {
-    return YES;
+    return NO;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskAll;
+    return UIInterfaceOrientationMaskPortrait;
 }
 
 - (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)interfaceOrientation {
-    return YES;
-}
-
-- (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
-    _currentOrientation = toInterfaceOrientation;
-    [self updateLayoutForOrientation:_currentOrientation];
-}
-
-- (void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)fromInterfaceOrientation {
-    _currentOrientation = self.interfaceOrientation;
-    [self updateLayoutForOrientation:_currentOrientation];
+    return (interfaceOrientation == UIInterfaceOrientationPortrait);
 }
 
 - (void)updateLayout {
@@ -1792,6 +1995,12 @@ static DeskCompanionViewController *g_viewController = nil;
     }
 }
 
+- (void)triggerAmbientBlink {
+    if (_powerState == MonolithPowerStateAmbientIdle && !_isBlinking && !_isSpeaking && !_isPanning) {
+        [self blink];
+    }
+}
+
 // Authentic PyCozmo blink: organic vertical squircle squash into razor-thin glowing slit
 - (void)blink {
     if (_isPanning || _isBlinking) return;
@@ -1893,15 +2102,28 @@ static DeskCompanionViewController *g_viewController = nil;
 // ========================================================
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
     [super touchesBegan:touches withEvent:event];
+    BOOL wasStandby = (_powerState == MonolithPowerStateObsidianStandby);
+    [self registerUserActivityWithReason:@"screen_touch"];
+    if (!wasStandby) {
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        [self playSoundNamed:@"tock"];
+        _didPlayTouchDownFeedback = YES;
+    } else {
+        // Obsidian wake transition already plays wake vibration and tock
+        _didPlayTouchDownFeedback = YES;
+    }
 }
 
 - (void)revertToNeutral {
     _reactionTimer = nil;
+    if (_powerState != MonolithPowerStateActive) return;
     [self setExpression:@"neutral"];
     [self lookAtX:0.0f y:0.0f duration:0.25];
 }
 
 - (void)handleTwoFingerTap:(UITapGestureRecognizer *)gesture {
+    _didPlayTouchDownFeedback = NO;
+    [self registerUserActivityWithReason:@"screen_touch"];
     [self toggleZenMode];
 }
 
@@ -1909,12 +2131,16 @@ static const CGFloat kEyeLookSensitivityX = 10.0f;
 static const CGFloat kEyeLookSensitivityY = 8.0f;
 
 - (void)handleSingleTap:(UITapGestureRecognizer *)gesture {
+    [self registerUserActivityWithReason:@"screen_touch"];
     CGPoint pt = [gesture locationInView:self.view];
     CGFloat screenW = self.view.bounds.size.width;
     CGFloat screenH = self.view.bounds.size.height;
 
-    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
-    [self playSoundNamed:@"tock"];
+    if (!_didPlayTouchDownFeedback) {
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        [self playSoundNamed:@"tock"];
+    }
+    _didPlayTouchDownFeedback = NO;
 
     if (_reactionTimer) {
         [_reactionTimer invalidate];
@@ -2155,77 +2381,237 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     return NO;
 }
 
+static dispatch_queue_t GetCameraSessionQueue(void) {
+    static dispatch_queue_t s_camQueue = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        s_camQueue = dispatch_queue_create("com.antigravity.deskcompanion.camera", DISPATCH_QUEUE_SERIAL);
+    });
+    return s_camQueue;
+}
+
+static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
+    if (!jpegData || [jpegData length] == 0) return -1.0f;
+    UIImage *img = [[UIImage alloc] initWithData:jpegData];
+    CGImageRef cgImg = img ? img.CGImage : NULL;
+    if (!cgImg) {
+        [img release];
+        return -1.0f;
+    }
+    size_t srcW = CGImageGetWidth(cgImg);
+    size_t srcH = CGImageGetHeight(cgImg);
+    if (srcW == 0 || srcH == 0) {
+        [img release];
+        return -1.0f;
+    }
+    const size_t w = (srcW < 16) ? srcW : 16;
+    const size_t h = (srcH < 16) ? srcH : 16;
+    uint8_t pixels[16 * 16 * 4];
+    memset(pixels, 0, sizeof(pixels));
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    if (!cs) {
+        [img release];
+        return -1.0f;
+    }
+    // CGContextDrawImage downsamples the full source CGImage into a normalized 8-bit RGBA buffer
+    CGContextRef ctx = CGBitmapContextCreate(pixels, w, h, 8, w * 4, cs,
+                                             kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) {
+        [img release];
+        return -1.0f;
+    }
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationLow);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)w, (CGFloat)h), cgImg);
+    CGContextRelease(ctx);
+    [img release];
+
+    double sumLuma = 0.0;
+    for (size_t i = 0; i < w * h; i++) {
+        uint8_t r = pixels[i * 4 + 0];
+        uint8_t g = pixels[i * 4 + 1];
+        uint8_t b = pixels[i * 4 + 2];
+        sumLuma += (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
+    }
+    return (float)(sumLuma / (double)(w * h));
+}
+
 // Dual-Camera Perception: Front (VGA selfie/desk) and Back (8MP macro scanner)
-- (void)takeSnapshot:(NSString *)cameraPosition completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
-    AVCaptureDevicePosition pos = [cameraPosition isEqualToString:@"front"] ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
-
-    AVCaptureSession *session = [[[AVCaptureSession alloc] init] autorelease];
-    session.sessionPreset = AVCaptureSessionPreset640x480;
-
-    AVCaptureDevice *chosenDevice = nil;
-    NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
-    for (AVCaptureDevice *dev in devices) {
-        if (dev.position == pos) {
-            chosenDevice = dev;
-            break;
+- (void)captureFrameAndMeasureLuminanceForCamera:(NSString *)cameraPosition saveFile:(BOOL)saveFile completion:(void (^)(NSString *path, NSUInteger size, float meanLuminance, NSError *err))completion {
+    if (_isCameraBusy) {
+        if (completion) {
+            NSError *busyErr = [NSError errorWithDomain:@"DeskCompanionCamera" code:-10 userInfo:@{NSLocalizedDescriptionKey: @"Camera capture already in progress"}];
+            completion(nil, 0, -1.0f, busyErr);
         }
-    }
-    if (!chosenDevice) chosenDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
-
-    NSError *inputErr = nil;
-    AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:chosenDevice error:&inputErr];
-    if (!input || ![session canAddInput:input]) {
-        if (completion) completion(nil, 0, inputErr ? inputErr : [NSError errorWithDomain:@"DeskCompanion" code:-1 userInfo:nil]);
         return;
     }
-    [session addInput:input];
+    _isCameraBusy = YES;
+    BOOL isFront = [cameraPosition isEqualToString:@"front"];
+    AVCaptureDevicePosition pos = isFront ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
+    // Note on MRC (Manual Reference Counting):
+    // PhysicalAgent is compiled with -fno-objc-arc targeting iOS 6.1.3 ARMv7.
+    // Under MRC, __weak is not supported by Clang. To guarantee zero use-after-free,
+    // we explicitly retain self for the duration of the async capture and release
+    // inside the terminal main-queue completion dispatch.
+    [self retain];
+    __block DeskCompanionViewController *blockSelf = self;
+    void (^copiedCompletion)(NSString *, NSUInteger, float, NSError *) = [completion copy];
+    dispatch_queue_t camQueue = GetCameraSessionQueue();
 
-    AVCaptureStillImageOutput *output = [[[AVCaptureStillImageOutput alloc] init] autorelease];
-    output.outputSettings = @{ AVVideoCodecKey : AVVideoCodecJPEG };
-    if (![session canAddOutput:output]) {
-        if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanion" code:-2 userInfo:nil]);
-        return;
-    }
-    [session addOutput:output];
+    dispatch_async(camQueue, ^{
+        @autoreleasepool {
+            AVCaptureSession *session = [[AVCaptureSession alloc] init];
+            session.sessionPreset = AVCaptureSessionPreset640x480;
 
-    [session startRunning];
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        AVCaptureConnection *videoConn = nil;
-        for (AVCaptureConnection *conn in output.connections) {
-            for (AVCaptureInputPort *port in [conn inputPorts]) {
-                if ([[port mediaType] isEqual:AVMediaTypeVideo]) {
-                    videoConn = conn;
+            AVCaptureDevice *chosenDevice = nil;
+            NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+            for (AVCaptureDevice *dev in devices) {
+                if (dev.position == pos) {
+                    chosenDevice = dev;
                     break;
                 }
             }
-            if (videoConn) break;
-        }
+            if (!chosenDevice) chosenDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
 
-        if (!videoConn) {
-            [session stopRunning];
-            if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanion" code:-3 userInfo:nil]);
-            return;
-        }
-
-        [output captureStillImageAsynchronouslyFromConnection:videoConn completionHandler:^(CMSampleBufferRef sbuf, NSError *err) {
-            [session stopRunning];
-            if (err || !sbuf) {
-                if (completion) completion(nil, 0, err);
+            NSError *inputErr = nil;
+            AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:chosenDevice error:&inputErr];
+            if (!input || ![session canAddInput:input]) {
+                [session release];
+                NSError *errCopy = inputErr ? [inputErr copy] : [[NSError errorWithDomain:@"DeskCompanion" code:-1 userInfo:nil] retain];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (blockSelf) blockSelf->_isCameraBusy = NO;
+                    if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, errCopy);
+                    [copiedCompletion release];
+                    [errCopy release];
+                    [blockSelf release];
+                });
                 return;
             }
-            NSData *jpeg = [AVCaptureStillImageOutput jpegStillImageNSDataRepresentation:sbuf];
-            NSString *snapId = [[NSProcessInfo processInfo] globallyUniqueString];
-            NSString *savePath = [NSString stringWithFormat:@"/tmp/companion_snapshot_%@.jpg", snapId];
-            BOOL written = [jpeg writeToFile:savePath atomically:YES];
-            [self playSoundNamed:@"shutter"];
-            if (written) {
-                if (completion) completion(savePath, [jpeg length], nil);
-            } else {
-                if (completion) completion(nil, 0, [NSError errorWithDomain:@"DeskCompanion" code:-4 userInfo:nil]);
+            [session addInput:input];
+
+            AVCaptureStillImageOutput *output = [[AVCaptureStillImageOutput alloc] init];
+            output.outputSettings = @{ AVVideoCodecKey : AVVideoCodecJPEG };
+            if (![session canAddOutput:output]) {
+                [output release];
+                [session release];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (blockSelf) blockSelf->_isCameraBusy = NO;
+                    if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, [NSError errorWithDomain:@"DeskCompanion" code:-2 userInfo:nil]);
+                    [copiedCompletion release];
+                    [blockSelf release];
+                });
+                return;
             }
-        }];
+            [session addOutput:output];
+
+            [session startRunning];
+
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), camQueue, ^{
+                @autoreleasepool {
+                    AVCaptureConnection *videoConn = nil;
+                    for (AVCaptureConnection *conn in output.connections) {
+                        for (AVCaptureInputPort *port in [conn inputPorts]) {
+                            if ([[port mediaType] isEqual:AVMediaTypeVideo]) {
+                                videoConn = conn;
+                                break;
+                            }
+                        }
+                        if (videoConn) break;
+                    }
+
+                    if (!videoConn) {
+                        [session stopRunning];
+                        [output release];
+                        [session release];
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (blockSelf) blockSelf->_isCameraBusy = NO;
+                            if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, [NSError errorWithDomain:@"DeskCompanion" code:-3 userInfo:nil]);
+                            [copiedCompletion release];
+                            [blockSelf release];
+                        });
+                        return;
+                    }
+
+                    [output captureStillImageAsynchronouslyFromConnection:videoConn completionHandler:^(CMSampleBufferRef sbuf, NSError *err) {
+                        NSData *jpegCopy = nil;
+                        if (!err && sbuf) {
+                            NSData *jpeg = [AVCaptureStillImageOutput jpegStillImageNSDataRepresentation:sbuf];
+                            if (jpeg) jpegCopy = [jpeg copy];
+                        }
+                        NSError *errCopy = err ? [err copy] : nil;
+
+                        dispatch_async(camQueue, ^{
+                            @autoreleasepool {
+                                [session stopRunning];
+                                [output release];
+                                [session release];
+
+                                if (errCopy || !jpegCopy) {
+                                    dispatch_async(dispatch_get_main_queue(), ^{
+                                        if (blockSelf) blockSelf->_isCameraBusy = NO;
+                                        if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, errCopy);
+                                        [copiedCompletion release];
+                                        [errCopy release];
+                                        if (jpegCopy) [jpegCopy release];
+                                        [blockSelf release];
+                                    });
+                                    return;
+                                }
+
+                                float luma = ComputeMeanLuminanceFromJPEGData(jpegCopy);
+                                NSUInteger jpegLen = [jpegCopy length];
+                                NSString *savePathCopy = nil;
+                                BOOL written = NO;
+                                if (saveFile) {
+                                    NSString *snapId = [[NSProcessInfo processInfo] globallyUniqueString];
+                                    NSString *savePath = [NSString stringWithFormat:@"/tmp/companion_snapshot_%@.jpg", snapId];
+                                    written = [jpegCopy writeToFile:savePath atomically:YES];
+                                    if (written) savePathCopy = [savePath copy];
+                                }
+                                [jpegCopy release];
+
+                                dispatch_async(dispatch_get_main_queue(), ^{
+                                    if (blockSelf) {
+                                        blockSelf->_isCameraBusy = NO;
+                                        if (luma >= 0.0f) {
+                                            if (isFront) {
+                                                blockSelf->_lastFrontLuminance = luma;
+                                            } else {
+                                                blockSelf->_lastRearLuminance = luma;
+                                            }
+                                        }
+                                    }
+                                    if (!saveFile) {
+                                        if (copiedCompletion) copiedCompletion(nil, jpegLen, luma, nil);
+                                    } else {
+                                        if (blockSelf) [blockSelf playSoundNamed:@"shutter"];
+                                        if (written && savePathCopy) {
+                                            if (copiedCompletion) copiedCompletion(savePathCopy, jpegLen, luma, nil);
+                                        } else {
+                                            if (copiedCompletion) copiedCompletion(nil, 0, luma, [NSError errorWithDomain:@"DeskCompanion" code:-4 userInfo:nil]);
+                                        }
+                                    }
+                                    if (savePathCopy) [savePathCopy release];
+                                    [copiedCompletion release];
+                                    [blockSelf release];
+                                });
+                            }
+                        });
+                    }];
+                }
+            });
+        }
     });
+}
+
+- (void)takeSnapshot:(NSString *)cameraPosition completion:(void (^)(NSString *path, NSUInteger size, NSError *err))completion {
+    void (^copied)(NSString *, NSUInteger, NSError *) = [completion copy];
+    [self captureFrameAndMeasureLuminanceForCamera:cameraPosition saveFile:YES completion:^(NSString *path, NSUInteger size, float meanLuminance, NSError *err) {
+        if (copied) {
+            copied(path, size, err);
+            [copied release];
+        }
+    }];
 }
 
 // Microphone Perception: Record linear PCM 16kHz mono audio on iPhone 4S
@@ -2456,24 +2842,136 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
 
 - (void)handleProximityChange:(NSNotification *)notification {
     BOOL isNear = [UIDevice currentDevice].proximityState;
-    if (isNear) {
-        // Prevent iOS telephony screen blanking: force screen unblanked via BackBoardServices
-        static void (*s_BKSSetScreenBlanked)(BOOL) = NULL;
-        static dispatch_once_t s_bksOnce;
-        dispatch_once(&s_bksOnce, ^{
-            void *handle = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_NOW);
-            if (handle) {
-                s_BKSSetScreenBlanked = (void (*)(BOOL))dlsym(handle, "BKSDisplayServicesSetScreenBlanked");
-            }
-        });
-        if (s_BKSSetScreenBlanked) {
-            s_BKSSetScreenBlanked(NO);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                s_BKSSetScreenBlanked(NO);
-            });
-        }
+    BKSProximityBridge bridge = GetBKSProximityBridge();
+    if (bridge.getObjectWithinProximity) {
+        isNear = isNear || bridge.getObjectWithinProximity();
+    }
+    [self processProximityNear:isNear];
+}
 
-        // Hand hover detected above iPhone 4S top bezel: surprise reaction and glance upward
+- (void)startProximityMonitor {
+    [self stopProximityMonitor];
+
+    int32_t gen = OSAtomicIncrement32(&s_activeProximityGen);
+    _pollHasSampled = NO;
+
+    notify_register_dispatch("com.apple.backboard.proximity.changed", &_proximityNotifyToken, dispatch_get_main_queue(), ^(int token) {
+        if (!g_viewController || s_activeProximityGen != gen) return;
+        uint64_t state = 0;
+        notify_get_state(token, &state);
+        BKSProximityBridge bridge = GetBKSProximityBridge();
+        if (bridge.getObjectWithinProximity) {
+            if (state != 0) {
+                SuppressSpringBoardProximityBlank(token);
+            }
+            BOOL isNear = bridge.getObjectWithinProximity();
+            [g_viewController processProximityNear:isNear];
+        } else {
+            BOOL isNear = (state != 0);
+            [g_viewController processProximityNear:isNear];
+        }
+    });
+
+    notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &_blankNotifyToken, dispatch_get_main_queue(), ^(int token) {
+        if (!g_viewController || s_activeProximityGen != gen) return;
+        if (g_viewController->_lastProximityNear && g_viewController->_powerState == MonolithPowerStateActive) {
+            SuppressSpringBoardProximityBlank(g_viewController->_proximityNotifyToken);
+            ForceUnblankDisplay(g_viewController->_activeBrightness);
+        }
+    });
+
+    // Main-thread 2.0 Hz (0.50s) fallback poll: private BackBoardServices calls remain strictly on main thread
+    _proximityPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.50 target:self selector:@selector(pollProximitySensor:) userInfo:nil repeats:YES];
+    [self pollProximitySensor:nil];
+}
+
+- (void)pollProximitySensor:(NSTimer *)timer {
+    BKSProximityBridge bridge = GetBKSProximityBridge();
+    if (!bridge.getObjectWithinProximity) return;
+    SuppressSpringBoardProximityBlank(_proximityNotifyToken);
+    BOOL isNear = bridge.getObjectWithinProximity();
+    if (!_pollHasSampled || isNear != _lastProximityNear) {
+        _pollHasSampled = YES;
+        [self processProximityNear:isNear];
+    }
+}
+
+- (void)stopProximityMonitor {
+    OSAtomicIncrement32(&s_activeProximityGen);
+    if (_proximityPollTimer) {
+        [_proximityPollTimer invalidate];
+        _proximityPollTimer = nil;
+    }
+    if (_proximityNotifyToken != 0) {
+        notify_cancel(_proximityNotifyToken);
+        _proximityNotifyToken = 0;
+    }
+    if (_blankNotifyToken != 0) {
+        notify_cancel(_blankNotifyToken);
+        _blankNotifyToken = 0;
+    }
+}
+
+- (void)setProximityMode:(int)mode {
+    if (mode < 0 || mode > 3) mode = 3;
+    _proximityMode = mode;
+    [UIDevice currentDevice].proximityMonitoringEnabled = NO;
+    EnsureProximityModeOnly(_proximityMode);
+}
+
+- (void)enforceUnblankTick:(NSTimer *)timer {
+    if (!_lastProximityNear || _powerState != MonolithPowerStateActive) {
+        if (_antiBlankTimer) {
+            [_antiBlankTimer invalidate];
+            _antiBlankTimer = nil;
+        }
+        return;
+    }
+    SuppressSpringBoardProximityBlank(_proximityNotifyToken);
+    ForceUnblankDisplay(_activeBrightness);
+}
+
+- (void)processProximityNear:(BOOL)isNear {
+    if (isNear == _lastProximityNear) {
+        if (isNear && _powerState == MonolithPowerStateActive) {
+            ForceUnblankDisplay(_activeBrightness);
+        }
+        return;
+    }
+    _lastProximityNear = isNear;
+    _proximityEpisodeGen++;
+    _obstructionRetryCount = 0;
+    _rearFlipRetryCount = 0;
+
+    if (!isNear && _powerState != MonolithPowerStateActive) {
+        // Departing hand while asleep should sync state quietly without lighting or animating standby
+        if (_antiBlankTimer) {
+            [_antiBlankTimer invalidate];
+            _antiBlankTimer = nil;
+        }
+        if (_obstructionTimer) {
+            [_obstructionTimer invalidate];
+            _obstructionTimer = nil;
+        }
+        if (_rearFlipTimer) {
+            [_rearFlipTimer invalidate];
+            _rearFlipTimer = nil;
+        }
+        _obstructionActive = NO;
+        return;
+    }
+
+    if (isNear) {
+        SuppressSpringBoardProximityBlank(_proximityNotifyToken);
+        [self registerUserActivityWithReason:@"proximity_hover"];
+        EnsurePassiveProximityMode(_proximityMode, _activeBrightness);
+        if (_antiBlankTimer) {
+            [_antiBlankTimer invalidate];
+            _antiBlankTimer = nil;
+        }
+        _antiBlankTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(enforceUnblankTick:) userInfo:nil repeats:YES];
+
+        // Hand hover detected above physical earpiece bezel: look directly toward the sensor edge in any orientation
         if (_reactionTimer) {
             [_reactionTimer invalidate];
             _reactionTimer = nil;
@@ -2481,16 +2979,313 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
         [self playSoundNamed:@"chirp"];
         [self setExpression:@"surprised" duration:0.18];
-        [self lookAtX:0.0f y:-0.75f duration:0.16];
-        [self setStatusTitle:@"PROXIMITY ALERT //" subtitle:@"Object detected near top bezel"];
+        CGFloat lookX = 0.0f;
+        CGFloat lookY = -0.75f;
+        if (_currentOrientation == UIInterfaceOrientationLandscapeRight) {
+            lookX = -0.75f;
+            lookY = 0.0f;
+        } else if (_currentOrientation == UIInterfaceOrientationLandscapeLeft) {
+            lookX = 0.75f;
+            lookY = 0.0f;
+        } else if (_currentOrientation == UIInterfaceOrientationPortraitUpsideDown) {
+            lookX = 0.0f;
+            lookY = 0.75f;
+        }
+        [self lookAtX:lookX y:lookY duration:0.16];
+        [self setStatusTitle:@"PROXIMITY ALERT //" subtitle:@"Object detected near bezel sensor"];
+
+        if (_obstructionTimer) {
+            [_obstructionTimer invalidate];
+            _obstructionTimer = nil;
+        }
+        if (_rearFlipTimer) {
+            [_rearFlipTimer invalidate];
+            _rearFlipTimer = nil;
+        }
+        _obstructionTimer = [NSTimer scheduledTimerWithTimeInterval:0.75 target:self selector:@selector(evaluateFrontObstruction:) userInfo:nil repeats:NO];
     } else {
-        // Hand removed: grateful cheerful wink and return to neutral
+        if (_antiBlankTimer) {
+            [_antiBlankTimer invalidate];
+            _antiBlankTimer = nil;
+        }
+        if (_obstructionTimer) {
+            [_obstructionTimer invalidate];
+            _obstructionTimer = nil;
+        }
+        if (_rearFlipTimer) {
+            [_rearFlipTimer invalidate];
+            _rearFlipTimer = nil;
+        }
+        _obstructionActive = NO;
+        if (_activeCamera) {
+            [_activeCamera release];
+        }
+        _activeCamera = [@"front" copy];
+        ForceUnblankDisplay(_activeBrightness);
+        // Hand removed: grateful happy expression and smooth return to neutral
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
         [self playSoundNamed:@"tock"];
         [self setExpression:@"happy" duration:0.20];
-        [self blink];
-        [self setStatusTitle:@"PHYSICAL AGENT // ONLINE" subtitle:@"Desk companion active"];
+        [self setStatusTitle:@"TARS // ONLINE" subtitle:@"Desk companion active"];
+        if (_reactionTimer) {
+            [_reactionTimer invalidate];
+            _reactionTimer = nil;
+        }
         _reactionTimer = [NSTimer scheduledTimerWithTimeInterval:1.6 target:self selector:@selector(revertToNeutral) userInfo:nil repeats:NO];
+    }
+}
+
+- (void)evaluateFrontObstruction:(NSTimer *)timer {
+    _obstructionTimer = nil;
+    if (!_lastProximityNear || !_isForegroundActive || _powerState != MonolithPowerStateActive) {
+        return;
+    }
+    if (_isCameraBusy || _isRecording) {
+        if (_obstructionRetryCount < 5) {
+            _obstructionRetryCount++;
+            _obstructionTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(evaluateFrontObstruction:) userInfo:nil repeats:NO];
+        }
+        return;
+    }
+    _obstructionRetryCount = 0;
+    NSTimeInterval now = CACurrentMediaTime();
+    if (_lastObstructionTime > 0.0 && (now - _lastObstructionTime) < 8.0) {
+        return;
+    }
+    NSUInteger gen = _lifecycleGen;
+    NSUInteger episodeGen = _proximityEpisodeGen;
+    [self retain];
+    __block DeskCompanionViewController *blockSelf = self;
+    [self captureFrameAndMeasureLuminanceForCamera:@"front" saveFile:NO completion:^(NSString *path, NSUInteger size, float meanLuminance, NSError *err) {
+        if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive || !blockSelf->_lastProximityNear || blockSelf->_powerState != MonolithPowerStateActive) {
+            [blockSelf release];
+            return;
+        }
+        if (!err && meanLuminance >= 0.0f && meanLuminance <= 0.12f) {
+            blockSelf->_obstructionActive = YES;
+            blockSelf->_obstructionCount++;
+            blockSelf->_rearFlipRetryCount = 0;
+            blockSelf->_lastObstructionTime = CACurrentMediaTime();
+            if (blockSelf->_activeCamera) {
+                [blockSelf->_activeCamera release];
+            }
+            blockSelf->_activeCamera = [@"back" copy];
+
+            [blockSelf setExpression:@"annoyed" duration:0.22];
+            [blockSelf lookAtX:0.0f y:0.0f duration:0.18];
+            [blockSelf setStatusTitle:@"OPTICAL OBSTRUCTION //" subtitle:@"Switching to rear 8MP sensor"];
+
+            // Double mechanical ERM haptic pulse + crisp acoustic cue
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+            [blockSelf playSoundNamed:@"beep"];
+            [blockSelf retain];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.24 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (blockSelf && blockSelf->_lifecycleGen == gen && blockSelf->_proximityEpisodeGen == episodeGen && blockSelf->_isForegroundActive) {
+                    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+                }
+                [blockSelf release];
+            });
+
+            if (blockSelf->_rearFlipTimer) {
+                [blockSelf->_rearFlipTimer invalidate];
+                blockSelf->_rearFlipTimer = nil;
+            }
+            // 1.0s mediaserverd ISP settle delay before switching to rear 8MP sensor
+            blockSelf->_rearFlipTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:blockSelf selector:@selector(performRearMacroInspection:) userInfo:nil repeats:NO];
+        }
+        [blockSelf release];
+    }];
+}
+
+- (void)performRearMacroInspection:(NSTimer *)timer {
+    _rearFlipTimer = nil;
+    if (!_isForegroundActive || _powerState != MonolithPowerStateActive || !_obstructionActive || !_lastProximityNear) {
+        return;
+    }
+    if (_isCameraBusy || _isRecording) {
+        if (_rearFlipRetryCount < 5) {
+            _rearFlipRetryCount++;
+            _rearFlipTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(performRearMacroInspection:) userInfo:nil repeats:NO];
+        }
+        return;
+    }
+    _rearFlipRetryCount = 0;
+    NSUInteger gen = _lifecycleGen;
+    NSUInteger episodeGen = _proximityEpisodeGen;
+    [self retain];
+    __block DeskCompanionViewController *blockSelf = self;
+    [self captureFrameAndMeasureLuminanceForCamera:@"back" saveFile:YES completion:^(NSString *path, NSUInteger size, float meanLuminance, NSError *err) {
+        if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive || !blockSelf->_obstructionActive || blockSelf->_powerState != MonolithPowerStateActive) {
+            [blockSelf release];
+            return;
+        }
+        if (path) {
+            if (blockSelf->_lastRearSnapshotPath) {
+                [blockSelf->_lastRearSnapshotPath release];
+            }
+            blockSelf->_lastRearSnapshotPath = [path copy];
+        }
+        if (!err && meanLuminance >= 0.0f) {
+            if (meanLuminance < 0.12f) {
+                [blockSelf setStatusTitle:@"REAR MACRO // TORCH" subtitle:[NSString stringWithFormat:@"Low light (%.0f%%): pulsing LED", meanLuminance * 100.0f]];
+                [blockSelf setTorch:YES];
+                [blockSelf retain];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (blockSelf && blockSelf->_powerState == MonolithPowerStateActive) {
+                        [blockSelf setTorch:NO];
+                    }
+                    [blockSelf release];
+                });
+            } else {
+                [blockSelf setStatusTitle:@"REAR 8MP // ACTIVE" subtitle:[NSString stringWithFormat:@"Rear scene luminance: %.0f%%", meanLuminance * 100.0f]];
+            }
+        }
+        [blockSelf release];
+    }];
+}
+
+- (void)registerUserActivityWithReason:(NSString *)reason {
+    _lastActivityTime = CACurrentMediaTime();
+    if (_powerState != MonolithPowerStateActive) {
+        [self transitionToPowerState:MonolithPowerStateActive reason:(reason ? reason : @"activity")];
+    }
+}
+
+- (void)configureStandbyIdleTimeout:(NSTimeInterval)idleSec standbyTimeout:(NSTimeInterval)standbySec {
+    if (isnan(idleSec) || isinf(idleSec) || idleSec < 5.0) idleSec = 5.0;
+    if (isnan(standbySec) || isinf(standbySec) || standbySec < idleSec + 5.0) standbySec = idleSec + 5.0;
+    _idleTimeoutSeconds = idleSec;
+    _standbyTimeoutSeconds = standbySec;
+    _lastActivityTime = CACurrentMediaTime();
+}
+
+- (void)setActiveBrightness:(float)level {
+    if (isnan(level) || isinf(level)) level = 0.85f;
+    level = ClampF(level, 0.0f, 1.0f);
+    _activeBrightness = level;
+    s_activeBrightnessFallback = level;
+    _currentBacklightFactor = 1.0f;
+    [self registerUserActivityWithReason:@"remote_brightness"];
+    [UIScreen mainScreen].brightness = level;
+    ApplyDisplayBacklightFactor(1.0f, 0.0f);
+}
+
+- (void)checkStandbyWatchdog:(NSTimer *)timer {
+    if (_isRecording || _isSpeaking || (_audioPlayer && [_audioPlayer isPlaying])) {
+        _lastActivityTime = CACurrentMediaTime();
+        return;
+    }
+    NSTimeInterval idleElapsed = CACurrentMediaTime() - _lastActivityTime;
+    if (_powerState == MonolithPowerStateActive && idleElapsed >= _idleTimeoutSeconds) {
+        [self transitionToPowerState:MonolithPowerStateAmbientIdle reason:@"inactivity_idle"];
+    } else if (_powerState == MonolithPowerStateAmbientIdle && idleElapsed >= _standbyTimeoutSeconds) {
+        [self transitionToPowerState:MonolithPowerStateObsidianStandby reason:@"inactivity_standby"];
+    }
+}
+
+- (void)transitionToPowerState:(MonolithPowerState)newState reason:(NSString *)reason {
+    if (_powerState == newState) return;
+    MonolithPowerState prevState = _powerState;
+    _powerState = newState;
+
+    NSString *reasonStr = reason ? reason : @"system";
+    if (newState == MonolithPowerStateActive) {
+        [_lastWakeReason release];
+        _lastWakeReason = [reasonStr copy];
+        _lastActivityTime = CACurrentMediaTime();
+
+        _currentBacklightFactor = 1.0f;
+        ForceUnblankDisplay(_activeBrightness);
+        if (_proceduralDisplayLink) {
+            _proceduralDisplayLink.paused = NO;
+        }
+        if (!_blinkTimer || ![_blinkTimer isValid]) {
+            _blinkTimer = [NSTimer scheduledTimerWithTimeInterval:3.8 target:self selector:@selector(triggerRandomBlink) userInfo:nil repeats:YES];
+        }
+        if (!_saccadeTimer || ![_saccadeTimer isValid]) {
+            _saccadeTimer = [NSTimer scheduledTimerWithTimeInterval:5.5 target:self selector:@selector(triggerMicroSaccade) userInfo:nil repeats:YES];
+        }
+
+        __block DeskCompanionViewController *blockSelf = self;
+        [UIView animateWithDuration:0.18 delay:0.0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+            if (!blockSelf) return;
+            blockSelf->_eyeContainer.alpha = 1.0f;
+            blockSelf->_scanlineOverlay.alpha = 1.0f;
+            if (!blockSelf->_zenMode) {
+                blockSelf->_statusBarPill.alpha = 1.0f;
+                blockSelf->_thoughtCard.alpha = 1.0f;
+            }
+        } completion:nil];
+
+        if (prevState == MonolithPowerStateObsidianStandby) {
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+            [self playSoundNamed:@"tock"];
+        }
+        [self setExpression:@"neutral" duration:0.22];
+        [self lookAtX:0.0f y:0.0f duration:0.20];
+        [self setStatusTitle:@"TARS // ONLINE" subtitle:[NSString stringWithFormat:@"Wake: %@", reasonStr]];
+    } else if (newState == MonolithPowerStateAmbientIdle) {
+        _currentBacklightFactor = ClampF(0.15f / MAX(0.30f, _activeBrightness), 0.12f, 0.35f);
+        ApplyDisplayBacklightFactor(_currentBacklightFactor, 0.35f);
+        if (_proceduralDisplayLink) {
+            _proceduralDisplayLink.paused = NO;
+        }
+        if (_saccadeTimer) {
+            [_saccadeTimer invalidate];
+            _saccadeTimer = nil;
+        }
+        if (_blinkTimer) {
+            [_blinkTimer invalidate];
+            _blinkTimer = nil;
+        }
+        _blinkTimer = [NSTimer scheduledTimerWithTimeInterval:12.0 target:self selector:@selector(triggerAmbientBlink) userInfo:nil repeats:YES];
+
+        __block DeskCompanionViewController *blockSelf = self;
+        [UIView animateWithDuration:0.25 delay:0.0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+            if (!blockSelf) return;
+            blockSelf->_eyeContainer.alpha = 1.0f;
+            blockSelf->_scanlineOverlay.alpha = 1.0f;
+            CGFloat hudAlpha = blockSelf->_zenMode ? 0.0f : 1.0f;
+            blockSelf->_statusBarPill.alpha = hudAlpha;
+            blockSelf->_thoughtCard.alpha = hudAlpha;
+        } completion:nil];
+
+        [self setExpression:@"sleepy" duration:0.45];
+        [self lookAtX:0.0f y:0.0f duration:0.35];
+        [self setStatusTitle:@"STANDBY // AMBIENT IDLE" subtitle:@"Awaiting desk activity"];
+    } else if (newState == MonolithPowerStateObsidianStandby) {
+        if (_blinkTimer) {
+            [_blinkTimer invalidate];
+            _blinkTimer = nil;
+        }
+        if (_saccadeTimer) {
+            [_saccadeTimer invalidate];
+            _saccadeTimer = nil;
+        }
+        if (_reactionTimer) {
+            [_reactionTimer invalidate];
+            _reactionTimer = nil;
+        }
+        [self setStatusTitle:@"STANDBY // OBSIDIAN" subtitle:@"Pitch-black monolith sleep"];
+        NSUInteger currentGen = _lifecycleGen;
+        __block DeskCompanionViewController *blockSelf = self;
+        [UIView animateWithDuration:0.45 delay:0.0 options:UIViewAnimationOptionCurveEaseIn animations:^{
+            if (!blockSelf) return;
+            blockSelf->_eyeContainer.alpha = 0.0f;
+            blockSelf->_scanlineOverlay.alpha = 0.0f;
+            blockSelf->_thoughtCard.alpha = 0.0f;
+            blockSelf->_waveformContainer.alpha = 0.0f;
+            blockSelf->_statusBarPill.alpha = 0.0f;
+        } completion:^(BOOL finished) {
+            if (!blockSelf) return;
+            if (blockSelf->_lifecycleGen == currentGen && blockSelf->_isForegroundActive && blockSelf->_powerState == MonolithPowerStateObsidianStandby) {
+                blockSelf->_currentBacklightFactor = 0.01f;
+                ApplyDisplayBacklightFactor(0.01f, 0.25f);
+                if (blockSelf->_proceduralDisplayLink) {
+                    blockSelf->_proceduralDisplayLink.paused = YES;
+                }
+            }
+        }];
     }
 }
 
@@ -2498,33 +3293,60 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     _lastAccel = accel;
     NSTimeInterval now = CACurrentMediaTime();
 
-    // Physical orientation tracking from hardware accelerometer (functions autonomously even if SpringBoard is locked)
-    UIInterfaceOrientation detectedOrient = 0;
-    float ax = (float)accel.x;
-    float ay = (float)accel.y;
-    float az = (float)accel.z;
-    float absX = fabsf(ax);
-    float absY = fabsf(ay);
-    float absZ = fabsf(az);
+    // Low-pass filter accelerometer on _motionQueue (alpha=0.28) to suppress rotational jerk spikes
+    const float alpha = 0.28f;
+    _filteredAx = _filteredAx + alpha * ((float)accel.x - _filteredAx);
+    _filteredAy = _filteredAy + alpha * ((float)accel.y - _filteredAy);
+    _filteredAz = _filteredAz + alpha * ((float)accel.z - _filteredAz);
 
-    // Only update orientation when device is tilted up from desk (absZ < 0.90) and dominant axis is clear
-    if (absZ < 0.90f) {
-        if (absX > absY + 0.20f && absX > 0.35f) {
-            detectedOrient = (ax > 0.0f) ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationLandscapeLeft;
-        } else if (absY > absX + 0.20f && absY > 0.35f) {
-            detectedOrient = (ay < 0.0f) ? UIInterfaceOrientationPortrait : UIInterfaceOrientationPortraitUpsideDown;
+    // Physical orientation tracking from filtered accelerometer with 3-sample hysteresis confirmation
+    UIInterfaceOrientation detectedOrient = 0;
+    float absX = fabsf(_filteredAx);
+    float absY = fabsf(_filteredAy);
+    float absZ = fabsf(_filteredAz);
+
+    if (absZ < 0.85f) {
+        if (absX > absY + 0.26f && absX > 0.44f) {
+            // Counter-clockwise turn (Home on right = LandscapeRight): gravity pulls toward -X hardware axis
+            // Clockwise turn (Home on left = LandscapeLeft): gravity pulls toward +X hardware axis
+            detectedOrient = (_filteredAx < 0.0f) ? UIInterfaceOrientationLandscapeRight : UIInterfaceOrientationLandscapeLeft;
+        } else if (absY > absX + 0.26f && absY > 0.44f) {
+            detectedOrient = (_filteredAy < 0.0f) ? UIInterfaceOrientationPortrait : UIInterfaceOrientationPortraitUpsideDown;
         }
     }
     if (detectedOrient != 0) {
+        if (detectedOrient == _candidateOrient) {
+            _candidateOrientCount++;
+        } else {
+            _candidateOrient = detectedOrient;
+            _candidateOrientCount = 1;
+        }
+        if (_candidateOrientCount >= 3) {
+            UIInterfaceOrientation confirmedOrient = detectedOrient;
+            __block DeskCompanionViewController *blockSelf = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!blockSelf) return;
+                [blockSelf transitionToOrientation:confirmedOrient animated:YES duration:0.38];
+            });
+        }
+    } else {
+        _candidateOrientCount = 0;
+    }
+
+    // Detect sudden desk knocks or device shake
+    double mag = sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
+    double deltaMag = fabs(mag - _prevAccelMag);
+    _prevAccelMag = mag;
+
+    if (deltaMag > 0.28 && (now - _lastShakeTime > 0.8)) {
         __block DeskCompanionViewController *blockSelf = self;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!blockSelf) return;
-            [blockSelf transitionToOrientation:detectedOrient animated:YES duration:0.38];
+            if (blockSelf->_powerState != MonolithPowerStateActive) {
+                [blockSelf registerUserActivityWithReason:@"desk_knock"];
+            }
         });
     }
-
-    // Detect sudden desk bumps or device shake (accel magnitude > 2.2g)
-    double mag = sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
 
     if (mag > 2.2 || fabsf((float)accel.x) > 1.4f || fabsf((float)accel.y) > 1.6f) {
         if (now - _lastShakeTime > 1.8) {
@@ -2532,6 +3354,7 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
             __block DeskCompanionViewController *blockSelf = self;
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (!blockSelf) return;
+                [blockSelf registerUserActivityWithReason:@"motion_shake"];
                 AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
                 [blockSelf playSoundNamed:@"beep"];
 
@@ -2757,13 +3580,31 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         freeMemMB = (int)((vm_stat.free_count * pagesize) / (1024 * 1024));
     }
 
+    NSString *powerStr = @"active";
+    if (_powerState == MonolithPowerStateAmbientIdle) powerStr = @"ambient_idle";
+    else if (_powerState == MonolithPowerStateObsidianStandby) powerStr = @"obsidian_standby";
+    NSTimeInterval idleElapsed = MAX(0.0, CACurrentMediaTime() - _lastActivityTime);
+    BKSProximityBridge bksBridge = GetBKSProximityBridge();
+
     CGAffineTransform vt = self.view.transform;
     return @{
         @"device": @"iPhone 4S (N94AP)",
         @"os": @"iOS 6.1.3 (10B329)",
         @"battery_percent": @((int)batt),
         @"battery_state": stateStr,
-        @"screen_brightness": @([UIScreen mainScreen].brightness),
+        @"screen_brightness": @(_powerState == MonolithPowerStateActive ? [UIScreen mainScreen].brightness : (_activeBrightness * _currentBacklightFactor)),
+        @"active_brightness": @(_activeBrightness),
+        @"backlight_factor": @(_currentBacklightFactor),
+        @"power_state": powerStr,
+        @"idle_seconds": @((int)idleElapsed),
+        @"idle_timeout": @(_idleTimeoutSeconds),
+        @"standby_timeout": @(_standbyTimeoutSeconds),
+        @"last_wake_reason": (_lastWakeReason ? _lastWakeReason : @"boot"),
+        @"passive_proximity_supported": @(bksBridge.requestProximityMode != NULL),
+        @"bks_detection_active": @(bksBridge.isDetectionActive ? bksBridge.isDetectionActive() : NO),
+        @"bks_prox_read_supported": @(bksBridge.getObjectWithinProximity != NULL),
+        @"bks_prox_near": @(_lastProximityNear),
+        @"bks_prox_mode": @(_proximityMode),
         @"free_memory_mb": @(freeMemMB),
         @"expression": (_currentExpression ? _currentExpression : @"neutral"),
         @"zen_mode": @(_zenMode),
@@ -2790,6 +3631,12 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
         @"is_recording": @(_isRecording),
         @"is_playing_audio": @(_audioPlayer != nil && [_audioPlayer isPlaying]),
         @"camera_available": @(YES),
+        @"active_camera": (_activeCamera ? _activeCamera : @"front"),
+        @"obstruction_detected": @(_obstructionActive),
+        @"obstruction_count": @(_obstructionCount),
+        @"last_front_luminance": @(_lastFrontLuminance),
+        @"last_rear_luminance": @(_lastRearLuminance),
+        @"last_rear_snapshot": (_lastRearSnapshotPath ? _lastRearSnapshotPath : @""),
         @"torch_available": @(YES),
         @"speaker_available": @(YES),
         @"microphone_available": @(YES),
@@ -2798,10 +3645,33 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     };
 }
 
+- (void)viewDidUnload {
+    if (_clockTimer) { [_clockTimer invalidate]; _clockTimer = nil; }
+    if (_blinkTimer) { [_blinkTimer invalidate]; _blinkTimer = nil; }
+    if (_saccadeTimer) { [_saccadeTimer invalidate]; _saccadeTimer = nil; }
+    if (_waveTimer) { [_waveTimer invalidate]; _waveTimer = nil; }
+    if (_pruneTimer) { [_pruneTimer invalidate]; _pruneTimer = nil; }
+    if (_reactionTimer) { [_reactionTimer invalidate]; _reactionTimer = nil; }
+    if (_standbyWatchdogTimer) { [_standbyWatchdogTimer invalidate]; _standbyWatchdogTimer = nil; }
+    if (_antiBlankTimer) { [_antiBlankTimer invalidate]; _antiBlankTimer = nil; }
+    if (_obstructionTimer) { [_obstructionTimer invalidate]; _obstructionTimer = nil; }
+    if (_rearFlipTimer) { [_rearFlipTimer invalidate]; _rearFlipTimer = nil; }
+    _obstructionActive = NO;
+    _obstructionRetryCount = 0;
+    _rearFlipRetryCount = 0;
+    _proximityEpisodeGen++;
+    [self stopProximityMonitor];
+    [super viewDidUnload];
+}
+
 - (void)dealloc {
-    [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
+    BOOL wasActiveController = (g_viewController == self);
+    if (wasActiveController) {
+        g_viewController = nil;
+    }
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     _observersAdded = NO;
+    [self stopProximityMonitor];
 
     if (_micMeterTimer) {
         [_micMeterTimer invalidate];
@@ -2853,6 +3723,38 @@ static const CGFloat kEyeLookSensitivityY = 8.0f;
     [_saccadeTimer invalidate];
     [_waveTimer invalidate];
     [_pruneTimer invalidate];
+    if (_reactionTimer) {
+        [_reactionTimer invalidate];
+        _reactionTimer = nil;
+    }
+    if (_standbyWatchdogTimer) {
+        [_standbyWatchdogTimer invalidate];
+        _standbyWatchdogTimer = nil;
+    }
+    if (_antiBlankTimer) {
+        [_antiBlankTimer invalidate];
+        _antiBlankTimer = nil;
+    }
+    if (_obstructionTimer) {
+        [_obstructionTimer invalidate];
+        _obstructionTimer = nil;
+    }
+    if (_rearFlipTimer) {
+        [_rearFlipTimer invalidate];
+        _rearFlipTimer = nil;
+    }
+    _obstructionActive = NO;
+    [self stopProximityMonitor];
+    if (wasActiveController || !g_viewController) {
+        EnsureProximityModeOnly(0);
+        ApplyDisplayBacklightFactor(1.0f, 0.0f);
+    }
+    [_lastWakeReason release];
+    _lastWakeReason = nil;
+    [_activeCamera release];
+    _activeCamera = nil;
+    [_lastRearSnapshotPath release];
+    _lastRearSnapshotPath = nil;
     if (_audioTimeoutTimer) {
         [_audioTimeoutTimer invalidate];
         _audioTimeoutTimer = nil;
@@ -3037,12 +3939,18 @@ static void *SocketServerThread(void *arg) {
                         [response setObject:@"pong" forKey:@"status"];
                         if (g_viewController) [response addEntriesFromDictionary:[g_viewController getTelemetry]];
                     } else if ([command isEqualToString:@"vibrate"]) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (g_viewController) [g_viewController registerUserActivityWithReason:@"remote_command"];
+                        });
                         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
                         [response setObject:@"vibrated" forKey:@"status"];
                     } else if ([command isEqualToString:@"sound"]) {
                         NSString *soundName = [cmdDict objectForKey:@"name"];
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController playSoundNamed:soundName];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController playSoundNamed:soundName];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:(soundName ? soundName : @"") forKey:@"sound"];
@@ -3051,14 +3959,20 @@ static void *SocketServerThread(void *arg) {
                         NSString *soundName = [cmdDict objectForKey:@"name"];
                         if (soundName && !audioPath) {
                             dispatch_async(dispatch_get_main_queue(), ^{
-                                if (g_viewController) [g_viewController playSoundNamed:soundName];
+                                if (g_viewController) {
+                                    [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                    [g_viewController playSoundNamed:soundName];
+                                }
                             });
                             [response setObject:@"ok" forKey:@"status"];
                             [response setObject:soundName forKey:@"sound"];
                         } else if (audioPath) {
                             __block BOOL started = NO;
                             dispatch_sync(dispatch_get_main_queue(), ^{
-                                if (g_viewController) started = [g_viewController playAudioFilePath:audioPath];
+                                if (g_viewController) {
+                                    started = [g_viewController playAudioFilePath:audioPath];
+                                    if (started) [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                }
                             });
                             if (started) {
                                 [response setObject:@"ok" forKey:@"status"];
@@ -3076,7 +3990,10 @@ static void *SocketServerThread(void *arg) {
                         id durObj = [cmdDict objectForKey:@"duration"];
                         NSTimeInterval dur = (durObj && [durObj respondsToSelector:@selector(doubleValue)]) ? [durObj doubleValue] : 0.28;
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setExpression:exp duration:dur];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController setExpression:exp duration:dur];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:(exp ? exp : @"") forKey:@"expression"];
@@ -3094,7 +4011,10 @@ static void *SocketServerThread(void *arg) {
                         if (isnan(dur) || isinf(dur) || dur < 0.0) dur = 0.22;
                         dur = fmin(dur, 60.0);
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController lookAtX:x y:y duration:dur];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController lookAtX:x y:y duration:dur];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:@(x) forKey:@"x"];
@@ -3107,7 +4027,10 @@ static void *SocketServerThread(void *arg) {
                         if (isnan(dur) || isinf(dur) || dur < 0.0) dur = 0.28;
                         dur = fmin(dur, 60.0);
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setProceduralParamsLeft:leftArr right:rightArr duration:dur];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController setProceduralParamsLeft:leftArr right:rightArr duration:dur];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"scanlines"]) {
@@ -3116,7 +4039,10 @@ static void *SocketServerThread(void *arg) {
                         if (isnan(op) || isinf(op)) op = 0.12f;
                         op = ClampF(op, 0.0f, 0.40f);
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setScanlineOpacity:op];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController setScanlineOpacity:op];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:@(op) forKey:@"scanlines"];
@@ -3127,7 +4053,10 @@ static void *SocketServerThread(void *arg) {
                             title = [cmdDict objectForKey:@"text"];
                         }
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController setStatusTitle:title subtitle:subtitle];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController setStatusTitle:title subtitle:subtitle];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"speaking"]) {
@@ -3138,13 +4067,19 @@ static void *SocketServerThread(void *arg) {
                         } else {
                             BOOL isSpk = [en boolValue];
                             dispatch_async(dispatch_get_main_queue(), ^{
-                                if (g_viewController) [g_viewController setSpeaking:isSpk];
+                                if (g_viewController) {
+                                    [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                    [g_viewController setSpeaking:isSpk];
+                                }
                             });
                             [response setObject:@"ok" forKey:@"status"];
                         }
                     } else if ([command isEqualToString:@"zen"]) {
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController toggleZenMode];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController toggleZenMode];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"orientation"]) {
@@ -3157,6 +4092,7 @@ static void *SocketServerThread(void *arg) {
                             else targetOrient = UIInterfaceOrientationPortrait;
 
                             if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
                                 [g_viewController setAppOrientation:targetOrient];
                             }
                         });
@@ -3170,14 +4106,20 @@ static void *SocketServerThread(void *arg) {
                         } else {
                             BOOL red = [en boolValue];
                             dispatch_async(dispatch_get_main_queue(), ^{
-                                if (g_viewController) [g_viewController setReducedMotion:red];
+                                if (g_viewController) {
+                                    [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                    [g_viewController setReducedMotion:red];
+                                }
                             });
                             [response setObject:@"ok" forKey:@"status"];
                             [response setObject:@(red) forKey:@"reduced_motion"];
                         }
                     } else if ([command isEqualToString:@"blink"]) {
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (g_viewController) [g_viewController blink];
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController blink];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                     } else if ([command isEqualToString:@"torch"]) {
@@ -3189,7 +4131,10 @@ static void *SocketServerThread(void *arg) {
                             BOOL torchOn = [en boolValue];
                             __block BOOL ok = NO;
                             dispatch_sync(dispatch_get_main_queue(), ^{
-                                if (g_viewController) ok = [g_viewController setTorch:torchOn];
+                                if (g_viewController) {
+                                    [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                    ok = [g_viewController setTorch:torchOn];
+                                }
                             });
                             if (ok) {
                                 [response setObject:@"ok" forKey:@"status"];
@@ -3202,11 +4147,69 @@ static void *SocketServerThread(void *arg) {
                     } else if ([command isEqualToString:@"brightness"]) {
                         id lvl = [cmdDict objectForKey:@"level"];
                         float level = [lvl respondsToSelector:@selector(floatValue)] ? [lvl floatValue] : 0.5f;
+                        if (isnan(level) || isinf(level)) level = 0.7f;
+                        level = ClampF(level, 0.0f, 1.0f);
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            [UIScreen mainScreen].brightness = level;
+                            if (g_viewController) {
+                                [g_viewController setActiveBrightness:level];
+                            }
                         });
                         [response setObject:@"ok" forKey:@"status"];
                         [response setObject:@(level) forKey:@"brightness"];
+                    } else if ([command isEqualToString:@"wake"]) {
+                        NSString *reason = [cmdDict objectForKey:@"reason"];
+                        if (!reason || ![reason isKindOfClass:[NSString class]]) reason = @"remote_wake";
+                        __block BOOL applied = NO;
+                        dispatch_sync(dispatch_get_main_queue(), ^{
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:reason];
+                                applied = YES;
+                            }
+                        });
+                        if (applied) {
+                            [response setObject:@"ok" forKey:@"status"];
+                            [response setObject:@"active" forKey:@"power_state"];
+                        } else {
+                            [response setObject:@"failed" forKey:@"status"];
+                            [response setObject:@"controller_unavailable" forKey:@"error"];
+                        }
+                    } else if ([command isEqualToString:@"sleep"]) {
+                        NSString *mode = [cmdDict objectForKey:@"mode"];
+                        MonolithPowerState targetState = ([mode isKindOfClass:[NSString class]] && [mode isEqualToString:@"ambient"])
+                            ? MonolithPowerStateAmbientIdle
+                            : MonolithPowerStateObsidianStandby;
+                        __block BOOL applied = NO;
+                        dispatch_sync(dispatch_get_main_queue(), ^{
+                            if (g_viewController) {
+                                [g_viewController transitionToPowerState:targetState reason:@"remote_sleep"];
+                                applied = YES;
+                            }
+                        });
+                        if (applied) {
+                            [response setObject:@"ok" forKey:@"status"];
+                            [response setObject:(targetState == MonolithPowerStateAmbientIdle ? @"ambient_idle" : @"obsidian_standby") forKey:@"power_state"];
+                        } else {
+                            [response setObject:@"failed" forKey:@"status"];
+                            [response setObject:@"controller_unavailable" forKey:@"error"];
+                        }
+                    } else if ([command isEqualToString:@"standby_config"]) {
+                        id idleObj = [cmdDict objectForKey:@"idle_timeout"];
+                        id standbyObj = [cmdDict objectForKey:@"standby_timeout"];
+                        NSTimeInterval idleSec = (idleObj && [idleObj respondsToSelector:@selector(doubleValue)]) ? [idleObj doubleValue] : 60.0;
+                        NSTimeInterval standbySec = (standbyObj && [standbyObj respondsToSelector:@selector(doubleValue)]) ? [standbyObj doubleValue] : 180.0;
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (g_viewController) [g_viewController configureStandbyIdleTimeout:idleSec standbyTimeout:standbySec];
+                        });
+                        [response setObject:@"ok" forKey:@"status"];
+                    } else if ([command isEqualToString:@"set_proximity_mode"]) {
+                        id modeObj = [cmdDict objectForKey:@"mode"];
+                        int mode = (modeObj && [modeObj respondsToSelector:@selector(intValue)]) ? [modeObj intValue] : 3;
+                        if (mode < 0 || mode > 3) mode = 3;
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (g_viewController) [g_viewController setProximityMode:mode];
+                        });
+                        [response setObject:@"ok" forKey:@"status"];
+                        [response setObject:@(mode) forKey:@"mode"];
                     } else if ([command isEqualToString:@"snapshot"]) {
                         handledAsynchronously = YES;
                         NSString *cam = [cmdDict objectForKey:@"camera"];
@@ -3215,6 +4218,7 @@ static void *SocketServerThread(void *arg) {
                         [ctx retain];
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
                                 [g_viewController takeSnapshot:cam completion:^(NSString *path, NSUInteger size, NSError *err) {
                                     NSMutableDictionary *resp = [NSMutableDictionary dictionary];
                                     if (path) {
@@ -3222,6 +4226,43 @@ static void *SocketServerThread(void *arg) {
                                         [resp setObject:path forKey:@"path"];
                                         [resp setObject:@(size) forKey:@"size"];
                                         [resp setObject:cam forKey:@"camera"];
+                                    } else {
+                                        [resp setObject:@"failed" forKey:@"status"];
+                                        if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
+                                    }
+                                    NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+                                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                        SafeSendAndClose(ctx, data);
+                                        [ctx release];
+                                    });
+                                }];
+                            } else {
+                                NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObject:@"controller_unavailable" forKey:@"error"];
+                                NSData *data = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+                                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                    SafeSendAndClose(ctx, data);
+                                    [ctx release];
+                                });
+                            }
+                        });
+                    } else if ([command isEqualToString:@"probe_luminance"]) {
+                        handledAsynchronously = YES;
+                        NSString *cam = [cmdDict objectForKey:@"camera"];
+                        if (!cam || ![cam isKindOfClass:[NSString class]] || (![cam isEqualToString:@"front"] && ![cam isEqualToString:@"back"])) {
+                            cam = @"front";
+                        }
+
+                        [ctx retain];
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
+                                [g_viewController captureFrameAndMeasureLuminanceForCamera:cam saveFile:NO completion:^(NSString *path, NSUInteger size, float meanLuminance, NSError *err) {
+                                    NSMutableDictionary *resp = [NSMutableDictionary dictionary];
+                                    if (!err && meanLuminance >= 0.0f) {
+                                        [resp setObject:@"ok" forKey:@"status"];
+                                        [resp setObject:cam forKey:@"camera"];
+                                        [resp setObject:@(meanLuminance) forKey:@"luminance"];
+                                        [resp setObject:@(meanLuminance <= 0.12f) forKey:@"obstructed"];
                                     } else {
                                         [resp setObject:@"failed" forKey:@"status"];
                                         if (err) [resp setObject:[err localizedDescription] forKey:@"error"];
@@ -3255,6 +4296,7 @@ static void *SocketServerThread(void *arg) {
                         [ctx retain];
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_viewController) {
+                                [g_viewController registerUserActivityWithReason:@"remote_command"];
                                 [g_viewController recordAudioDuration:duration completion:^(NSString *path, NSUInteger size, NSError *err) {
                                     NSMutableDictionary *resp = [NSMutableDictionary dictionary];
                                     if (path) {
@@ -3369,7 +4411,12 @@ static void *SocketServerThread(void *arg) {
     return UIInterfaceOrientationMaskAll;
 }
 
+- (void)applicationWillTerminate:(UIApplication *)application {
+    UnloadBKSProximityBridge();
+}
+
 - (void)dealloc {
+    UnloadBKSProximityBridge();
     [_window release];
     [_viewController release];
     [super dealloc];

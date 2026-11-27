@@ -11,8 +11,11 @@ import time
 import os
 import sys
 import re
+import math
 import uuid
 import shlex
+import shutil
+from tars_cloud_brain import TarsCloudBrain, load_dotenv
 
 # Strict repository standard: verify virtual environment isolation
 def is_in_venv():
@@ -20,7 +23,7 @@ def is_in_venv():
     repo_venv = os.path.realpath(os.path.join(os.path.dirname(__file__), ".venv"))
     curr_prefix = os.path.realpath(sys.prefix)
     curr_exec = os.path.realpath(sys.executable)
-    return curr_prefix.startswith(repo_venv) or curr_exec.startswith(repo_venv)
+    return curr_prefix == repo_venv or curr_exec.startswith(repo_venv + os.sep)
 
 SAFE_PATH_REGEX = re.compile(r"^/tmp/companion_[a-zA-Z0-9_-]+\.(jpg|wav|png)$")
 
@@ -34,8 +37,36 @@ WIFI_PORT = 5000
 SSH_PORT = 2222
 WIFI_SSH_PORT = 22
 
+# Canonical expressions supported by PhysicalAgent Procedural Eye Engine:
+# neutral, blink_high, happy, glee, blink_low, sad_down, sad_up,
+# worried, focused, annoyed, surprised, skeptic, frustrated,
+# unimpressed, sleepy, suspicious, squint, angry, furious,
+# scared, awe, disgust, curious, thinking, alert, asleep, confused,
+# glance_left, glance_right.
+EXPRESSION_ALIASES = {
+    "skeptical": "skeptic",
+    "skepticism": "skeptic",
+    "joy": "glee",
+    "excited": "glee",
+    "unhappy": "sad_down",
+    "down": "sad_down",
+    "sad": "sad_down",
+    "fear": "scared",
+    "afraid": "scared",
+    "amazed": "awe",
+    "amazement": "awe",
+    "sleep": "sleepy",
+    "tired": "sleepy",
+    "anger": "angry",
+    "fury": "furious",
+    "mad": "angry",
+    "determined": "focused",
+    "bored": "frustrated",
+}
+
 class DeskCompanion:
     def __init__(self, host=None, port=None, ssh_port=None, ssh_key=None, strict_host_key_checking=None, known_hosts=None, auth_token=None):
+        load_dotenv()
         self.host = host
         self.port = port
         self.ssh_port = ssh_port
@@ -49,6 +80,7 @@ class DeskCompanion:
         self._active_host = None
         self._active_port = None
         self._active_ssh_port = None
+        self.brain = TarsCloudBrain()
 
     def _get_connection_target(self):
         """Auto-detects whether USB or Wi-Fi is reachable (cached)."""
@@ -197,7 +229,10 @@ class DeskCompanion:
                     self._active_host, self._active_port, self._active_ssh_port = None, None, None
                     return {"error": "empty_response"}
                 line = buffer.split(b"\n", 1)[0]
-                return json.loads(line.decode("utf-8"))
+                res = json.loads(line.decode("utf-8"))
+                if not isinstance(res, dict):
+                    return {"status": "error", "error": "malformed_response", "raw": str(res)}
+                return res
             except Exception as e:
                 self._active_host, self._active_port, self._active_ssh_port = None, None, None
                 return {"error": str(e)}
@@ -218,7 +253,15 @@ class DeskCompanion:
         Also supports: curious, thinking, alert, asleep, confused,
           glance_left, glance_right.
         """
-        return self._send_cmd({"command": "expression", "name": expression_name, "duration": float(duration)})
+        exp = str(expression_name).lower().strip()
+        exp = EXPRESSION_ALIASES.get(exp, exp)
+        try:
+            dur = float(duration)
+            if math.isnan(dur) or math.isinf(dur) or dur <= 0.0:
+                dur = 0.28
+        except (ValueError, TypeError):
+            dur = 0.28
+        return self._send_cmd({"command": "expression", "name": exp, "duration": dur})
 
     def look_at(self, x=0.0, y=0.0, duration=0.22):
         """Sets companion gaze direction using normalized coordinates [-1.0, 1.0]."""
@@ -265,12 +308,39 @@ class DeskCompanion:
     def set_torch(self, enable=True):
         return self._send_cmd({"command": "torch", "enable": bool(enable)})
 
+    def probe_luminance(self, camera="front"):
+        """Samples mean scene luminance [0.0, 1.0] from the specified camera ('front' or 'back')."""
+        cam = camera if camera in ("front", "back") else "front"
+        return self._send_cmd({"command": "probe_luminance", "camera": cam}, timeout=15.0)
+
     def set_brightness(self, level=1.0):
         level = max(0.0, min(1.0, float(level)))
         return self._send_cmd({"command": "brightness", "level": level})
 
     def set_reduced_motion(self, enable=True):
         return self._send_cmd({"command": "reduced_motion", "enable": bool(enable)})
+
+    def wake(self, reason="remote_wake"):
+        return self._send_cmd({"command": "wake", "reason": str(reason)})
+
+    def sleep(self, mode="obsidian"):
+        """Transitions companion into 'obsidian' (pitch-black) or 'ambient' standby."""
+        return self._send_cmd({"command": "sleep", "mode": str(mode)})
+
+    def set_standby_config(self, idle_timeout=180.0, standby_timeout=360.0):
+        """Configures inactivity timeouts in seconds."""
+        try:
+            idle_val = float(idle_timeout)
+            standby_val = float(standby_timeout)
+        except (ValueError, TypeError):
+            return {"error": "invalid_parameter", "details": "Timeouts must be numeric"}
+        if not (math.isfinite(idle_val) and math.isfinite(standby_val)):
+            return {"error": "invalid_parameter", "details": "Timeouts must be finite numbers"}
+        return self._send_cmd({
+            "command": "standby_config",
+            "idle_timeout": idle_val,
+            "standby_timeout": standby_val,
+        })
 
     def snapshot(self, camera="back", save_to=None):
         """Captures a photo via iPhone 4S camera ('back' or 'front') and retrieves it."""
@@ -312,7 +382,7 @@ class DeskCompanion:
         """Records physical microphone audio on iPhone 4S and retrieves linear PCM WAV."""
         try:
             dur = float(duration)
-            if not (dur > 0.0) or dur != dur:
+            if math.isnan(dur) or math.isinf(dur) or dur <= 0.0:
                 dur = 3.0
             dur = max(0.1, min(dur, 30.0))
         except (ValueError, TypeError):
@@ -346,17 +416,165 @@ class DeskCompanion:
             return dl_res
         return res
 
+    def _speak_text(self, text, voice="Samantha", timeout=15.0):
+        """Cross-platform text-to-speech with explicit timeout and fallbacks."""
+        if shutil.which("say"):
+            proc = subprocess.run(["say", "-v", voice, text], timeout=timeout, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(f"say exited with code {proc.returncode}: {proc.stderr.strip()}")
+        elif shutil.which("espeak"):
+            proc = subprocess.run(["espeak", text], timeout=timeout, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(f"espeak exited with code {proc.returncode}: {proc.stderr.strip()}")
+        else:
+            print(f"[AUDIO TTS] {text}")
+
     def say(self, text, voice="Samantha"):
-        """Speaks text using Mac speech synthesizer while animating companion eyes and spectrum waveform."""
+        """Speaks text using system speech synthesizer while animating companion eyes and spectrum waveform."""
         self.set_expression("thinking")
         self.set_status("AGENT SPEAKING //", text[:40])
         self.set_speaking(True)
         self.play_sound("begin")
         time.sleep(0.2)
-        subprocess.run(["say", "-v", voice, text])
-        self.set_speaking(False)
-        self.set_expression("neutral")
-        self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting multimodal input")
+        try:
+            self._speak_text(text, voice=voice)
+        except Exception as e:
+            print(f"[TARS Speech] say command error: {e}")
+        finally:
+            self.set_speaking(False)
+            self.set_expression("neutral")
+            self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting multimodal input")
+
+    def brain_status(self):
+        """Returns the readiness and configured tiers of the multi-cloud TARS brain."""
+        return self.brain.get_status()
+
+    def listen_and_think(self, duration=3.0, with_vision=False):
+        """Records physical audio from iPhone 4S mic, executes multi-cloud TARS cognition,
+        and triggers synchronized physical action and speech output."""
+        print(f"\n[TARS] Recording {duration:.1f}s audio from physical iPhone 4S mic...")
+        self.set_status("TARS // LISTENING", "Recording microphone audio")
+        rec_res = self.record_audio(duration=duration)
+        if rec_res.get("status") != "ok" or "local_file" not in rec_res:
+            print("[TARS] Failed to capture audio:", rec_res)
+            self.set_expression("skeptical")
+            self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
+            return {"status": "error", "error": "audio_recording_failed", "details": rec_res, "transcript": ""}
+
+        audio_path = rec_res["local_file"]
+        try:
+            transcript = self.brain.transcribe_audio(audio_path)
+            print(f"[TARS Hearing] Transcript: '{transcript}'")
+        except Exception as e:
+            print(f"[TARS Hearing] Transcription error: {e}")
+            if not with_vision:
+                self.set_expression("skeptical")
+                self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
+                return {"status": "error", "error": "transcription_failed", "details": str(e), "transcript": ""}
+            transcript = ""
+
+        if not transcript and not with_vision:
+            print("[TARS] No audible speech detected.")
+            self.set_expression("neutral")
+            self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
+            return {"status": "silent", "transcript": ""}
+
+        return self._run_tars_turn(prompt=transcript, with_vision=with_vision)
+
+    def interact(self, prompt, with_vision=False):
+        """Executes a direct text reasoning turn with multi-cloud TARS brain without audio recording."""
+        return self._run_tars_turn(prompt=prompt, with_vision=with_vision)
+
+    def _run_tars_turn(self, prompt, with_vision=False):
+        """Shared cognitive execution pipeline for voice and text turns."""
+        front_path = None
+        if with_vision:
+            print("[TARS] Capturing front camera snapshot for visual context...")
+            snap_res = self.snapshot("front")
+            if not isinstance(snap_res, dict) or snap_res.get("status") != "ok" or "local_file" not in snap_res:
+                err_msg = snap_res.get("error", "snapshot_unavailable") if isinstance(snap_res, dict) else "invalid_snapshot_response"
+                print(f"[TARS Error] Front camera capture failed: {err_msg}")
+                self.set_expression("skeptic")
+                self.set_status("PHYSICAL AGENT // ONLINE", "Vision capture failed")
+                return {"status": "error", "error": "vision_capture_failed", "details": snap_res, "transcript": prompt}
+            front_path = snap_res["local_file"]
+
+        print("[TARS] Setting expression to 'thinking' and processing cloud cascade...")
+        self.set_expression("thinking")
+        self.set_status("TARS // THINKING", prompt[:30] if prompt else "Visual scene")
+
+        action = self.brain.think_and_act(transcript=prompt, front_image_path=front_path)
+        if action.get("_fallback"):
+            action["status"] = "fallback"
+        else:
+            action.setdefault("status", "ok")
+        action.setdefault("transcript", prompt)
+        print(f"[TARS Cognition] Action plan: {json.dumps(action, indent=2)}")
+        return self._execute_tars_action(action)
+
+    def _execute_tars_action(self, action):
+        """Applies TarsAction dictionary to physical iPhone 4S hardware."""
+        device_errors = []
+        # 1. Haptics
+        haptic = action.get("haptic")
+        if haptic == "double":
+            res1 = self.vibrate()
+            if not isinstance(res1, dict) or res1.get("status") not in ("ok", "vibrated"):
+                err = res1.get("error", "unconfirmed") if isinstance(res1, dict) else "invalid_response"
+                device_errors.append(f"vibrate_1: {err}")
+            time.sleep(0.08)
+            res2 = self.vibrate()
+            if not isinstance(res2, dict) or res2.get("status") not in ("ok", "vibrated"):
+                err = res2.get("error", "unconfirmed") if isinstance(res2, dict) else "invalid_response"
+                device_errors.append(f"vibrate_2: {err}")
+        elif haptic == "pulse":
+            res = self.vibrate()
+            if not isinstance(res, dict) or res.get("status") not in ("ok", "vibrated"):
+                err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
+                device_errors.append(f"vibrate: {err}")
+
+        # 2. Expression Framing (set expression preset before applying fine gaze offset)
+        expression = action.get("expression", "neutral")
+        self.set_expression(expression)
+
+        # 3. Look at target (applies gaze target on top of the established expression)
+        look_at = action.get("look_at")
+        if look_at and isinstance(look_at, (list, tuple)) and len(look_at) == 2:
+            res = self.look_at(look_at[0], look_at[1])
+            if not isinstance(res, dict) or res.get("status") != "ok":
+                err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
+                device_errors.append(f"look_at: {err}")
+
+        # 4. Torch
+        torch = action.get("torch")
+        if torch is not None:
+            res = self.set_torch(bool(torch))
+            if not isinstance(res, dict) or res.get("status") != "ok":
+                err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
+                device_errors.append(f"torch: {err}")
+
+        # 5. Speech & Spectrum Synchronization
+        speech = action.get("speech", "")
+        if speech:
+            self.set_status("TARS // SPEAKING", speech[:40])
+            self.set_speaking(True)
+            voice = os.environ.get("TARS_DEFAULT_VOICE", "Samantha")
+            try:
+                self._speak_text(speech, voice=voice)
+            except Exception as e:
+                print(f"[TARS Speech] Playback error: {e}")
+                device_errors.append(f"speech: {e}")
+            finally:
+                self.set_speaking(False)
+                self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
+        else:
+            self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
+
+        if device_errors:
+            action["_device_errors"] = device_errors
+            print(f"[TARS Hardware Warning] Some hardware actions could not be confirmed: {', '.join(device_errors)}")
+
+        return action
 
     def run_demo(self):
         print("\n>>> STARTING EMBODIED COMPANION DEMO SEQUENCE <<<")
@@ -424,6 +642,7 @@ def interactive_cli():
     print("  sound <name>        Play acoustic sound (confirm, begin, cancel, shutter, tweet, mail, tink, beep)")
     print("  torch <on|off>      Toggle rear camera LED flashlight")
     print("  photo [front|back]  Capture camera photo and save locally")
+    print("  luma [front|back]   Probe camera scene luminance [0.0, 1.0]")
     print("  inspect             Capture both front (desk) and rear (macro) angles")
     print("  listen [duration]   Record audio from iPhone 4S mic and save WAV")
     print("  screenshot          Capture pixel-exact Retina display PNG")
@@ -432,6 +651,10 @@ def interactive_cli():
     print("  wave <on|off>       Toggle audio spectrum waveform visualizer")
     print("  zen                 Toggle Zen mode (dim HUD cards for night ambiance)")
     print("  telemetry           Display battery, memory, brightness")
+    print("  brain               Inspect multi-cloud TARS brain readiness and tiers")
+    print("  tars <prompt>       Direct conversation turn with TARS cloud brain")
+    print("  tars_listen [sec]   Record iPhone 4S mic and process via TARS brain")
+    print("  tars_see [prompt]   Capture front desk photo and process via TARS vision")
     print("  demo                Run full interactive presentation demo")
     print("  exit / quit         Exit CLI")
     print("=" * 60)
@@ -479,6 +702,10 @@ def interactive_cli():
                 cam = arg if arg in ("front", "back") else "back"
                 res = companion.snapshot(cam)
                 print("Result:", res)
+            elif cmd == "luma":
+                cam = arg if arg in ("front", "back") else "front"
+                res = companion.probe_luminance(cam)
+                print("Result:", res)
             elif cmd == "inspect":
                 res = companion.inspect_environment()
                 print("Result:", res)
@@ -510,6 +737,17 @@ def interactive_cli():
                 print("Result:", res)
             elif cmd == "telemetry":
                 print(json.dumps(companion.telemetry(), indent=2))
+            elif cmd == "brain":
+                print(json.dumps(companion.brain_status(), indent=2))
+            elif cmd == "tars":
+                prompt = arg if arg else "Status report, TARS."
+                companion.interact(prompt, with_vision=False)
+            elif cmd == "tars_listen":
+                dur = float(arg) if arg else 3.0
+                companion.listen_and_think(duration=dur, with_vision=False)
+            elif cmd == "tars_see":
+                prompt = arg if arg else "What do you see on my desk?"
+                companion.interact(prompt, with_vision=True)
             elif cmd == "demo":
                 companion.run_demo()
             else:

@@ -73,7 +73,7 @@ clang -target armv7-apple-ios6.0 \
   -marm -fno-objc-arc \
   -framework UIKit -framework Foundation -framework CoreGraphics \
   -framework QuartzCore -framework AVFoundation -framework AudioToolbox \
-  -framework CoreMedia -framework CoreVideo \
+  -framework CoreMedia -framework CoreVideo -framework CoreMotion \
   -Wl,-e,_start \
   test_native/start.s PhysicalAgent/main.m \
   -o PhysicalAgent/PhysicalAgent_raw
@@ -81,9 +81,10 @@ clang -target armv7-apple-ios6.0 \
 # 2. Patch Mach-O header (LC_MAIN -> LC_UNIXTHREAD)
 .venv/bin/python3 tools/fix_macho_ios6.py PhysicalAgent/PhysicalAgent_raw PhysicalAgent/PhysicalAgent
 
-# 3. Deploy, sign, and launch on device
+# 3. Deploy, sign with BackBoard entitlements, and launch on device
 scp -i ~/.ssh/id_rsa_iphone -P 2222 PhysicalAgent/PhysicalAgent root@127.0.0.1:/Applications/PhysicalAgent.app/PhysicalAgent
-ssh iphone "chmod +x /Applications/PhysicalAgent.app/PhysicalAgent && ldid -S /Applications/PhysicalAgent.app/PhysicalAgent && killall PhysicalAgent 2>/dev/null; sleep 1; uiopen physicalagent://"
+scp -i ~/.ssh/id_rsa_iphone -P 2222 PhysicalAgent/entitlements.xml root@127.0.0.1:/tmp/pa_entitlements.xml
+ssh iphone "chmod +x /Applications/PhysicalAgent.app/PhysicalAgent && ldid -S/tmp/pa_entitlements.xml /Applications/PhysicalAgent.app/PhysicalAgent && rm -f /tmp/pa_entitlements.xml && killall PhysicalAgent 2>/dev/null; sleep 1; uiopen physicalagent://"
 ```
 
 ---
