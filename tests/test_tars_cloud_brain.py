@@ -38,7 +38,12 @@ class TestTarsCloudBrain(unittest.TestCase):
     def setUp(self):
         # Isolate test fixture from ambient environment overrides
         self._saved_env = {}
-        for key in ("TARS_HUMOR_PERCENT", "TARS_HONESTY_PERCENT"):
+        for key in (
+            "TARS_HUMOR_PERCENT", "TARS_HONESTY_PERCENT",
+            "OPENROUTER_VISION_MODEL", "GEMINI_API_KEY",
+            "GROQ_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID",
+            "OPENROUTER_API_KEY"
+        ):
             if key in os.environ:
                 self._saved_env[key] = os.environ.pop(key)
 
@@ -50,10 +55,16 @@ class TestTarsCloudBrain(unittest.TestCase):
             gemini_api_key="mock_gemini_key",
             humor_percent=80,
             honesty_percent=95,
+            dotenv_path="/dev/null",
         )
 
     def tearDown(self):
-        for key in ("TARS_HUMOR_PERCENT", "TARS_HONESTY_PERCENT"):
+        for key in (
+            "TARS_HUMOR_PERCENT", "TARS_HONESTY_PERCENT",
+            "OPENROUTER_VISION_MODEL", "GEMINI_API_KEY",
+            "GROQ_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID",
+            "OPENROUTER_API_KEY"
+        ):
             if key in os.environ:
                 del os.environ[key]
         for key, val in self._saved_env.items():
@@ -598,7 +609,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         action = self.brain._parse_action_json(raw_json)
         self.assertIsNotNone(action)
         self.assertNotIn(chr(0x2014), action["speech"])
-        self.assertIn(":", action["speech"])
+        self.assertIn("complete:initiating spin", action["speech"])
 
     def test_transcribe_audio_file_bounded_read(self):
         import tempfile
@@ -865,10 +876,10 @@ class TestTarsCloudBrain(unittest.TestCase):
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         checked_count = 0
         for root, dirs, files in os.walk(repo_root):
-            # Exclude git, virtual environments, build artifacts, and external research repos
-            dirs[:] = [d for d in dirs if d not in (".git", ".venv", "research_repos", "__pycache__", "build", "dist")]
+            # Exclude git, virtual environments, external SDKs, toolchains, build artifacts, and external research repos
+            dirs[:] = [d for d in dirs if d not in (".git", ".venv", "sdks", "toolchain", "research_repos", "__pycache__", "build", "dist")]
             for file in files:
-                if file.endswith((".py", ".md", ".json", ".yaml", ".yml")):
+                if file.endswith((".py", ".md", ".json", ".yaml", ".yml", ".m", ".h", ".mjs")):
                     full_path = os.path.join(root, file)
                     rel_path = os.path.relpath(full_path, repo_root)
                     with open(full_path, "r", encoding="utf-8", errors="ignore") as f:

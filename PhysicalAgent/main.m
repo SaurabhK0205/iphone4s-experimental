@@ -3115,7 +3115,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
     [self retain];
     __block DeskCompanionViewController *blockSelf = self;
     [self captureFrameAndMeasureLuminanceForCamera:@"back" saveFile:YES completion:^(NSString *path, NSUInteger size, float meanLuminance, NSError *err) {
-        if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive || !blockSelf->_obstructionActive) {
+        if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive || !blockSelf->_obstructionActive || blockSelf->_powerState != MonolithPowerStateActive) {
             [blockSelf release];
             return;
         }
@@ -3131,7 +3131,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
                 [blockSelf setTorch:YES];
                 [blockSelf retain];
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (blockSelf) {
+                    if (blockSelf && blockSelf->_powerState == MonolithPowerStateActive) {
                         [blockSelf setTorch:NO];
                     }
                     [blockSelf release];
