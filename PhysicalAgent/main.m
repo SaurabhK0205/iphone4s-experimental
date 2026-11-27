@@ -2437,6 +2437,12 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
     _isCameraBusy = YES;
     BOOL isFront = [cameraPosition isEqualToString:@"front"];
     AVCaptureDevicePosition pos = isFront ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
+    // Note on MRC (Manual Reference Counting):
+    // PhysicalAgent is compiled with -fno-objc-arc targeting iOS 6.1.3 ARMv7.
+    // Under MRC, __weak is not supported by Clang. To guarantee zero use-after-free,
+    // we explicitly retain self for the duration of the async capture and release
+    // inside the terminal main-queue completion dispatch.
+    [self retain];
     __block DeskCompanionViewController *blockSelf = self;
     void (^copiedCompletion)(NSString *, NSUInteger, float, NSError *) = [completion copy];
     dispatch_queue_t camQueue = GetCameraSessionQueue();
@@ -2466,6 +2472,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
                     if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, errCopy);
                     [copiedCompletion release];
                     [errCopy release];
+                    [blockSelf release];
                 });
                 return;
             }
@@ -2480,6 +2487,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
                     if (blockSelf) blockSelf->_isCameraBusy = NO;
                     if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, [NSError errorWithDomain:@"DeskCompanion" code:-2 userInfo:nil]);
                     [copiedCompletion release];
+                    [blockSelf release];
                 });
                 return;
             }
@@ -2508,6 +2516,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
                             if (blockSelf) blockSelf->_isCameraBusy = NO;
                             if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, [NSError errorWithDomain:@"DeskCompanion" code:-3 userInfo:nil]);
                             [copiedCompletion release];
+                            [blockSelf release];
                         });
                         return;
                     }
@@ -2532,7 +2541,8 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
                                         if (copiedCompletion) copiedCompletion(nil, 0, -1.0f, errCopy);
                                         [copiedCompletion release];
                                         [errCopy release];
-                                        [jpegCopy release];
+                                        if (jpegCopy) [jpegCopy release];
+                                        [blockSelf release];
                                     });
                                     return;
                                 }
@@ -2570,8 +2580,9 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
                                             if (copiedCompletion) copiedCompletion(nil, 0, luma, [NSError errorWithDomain:@"DeskCompanion" code:-4 userInfo:nil]);
                                         }
                                     }
-                                    [savePathCopy release];
+                                    if (savePathCopy) [savePathCopy release];
                                     [copiedCompletion release];
+                                    [blockSelf release];
                                 });
                             }
                         });
@@ -2858,8 +2869,8 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
         }
     });
 
-    // Main-thread ~6.7 Hz (0.15s) fallback poll: private BackBoardServices calls remain strictly on main thread
-    _proximityPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.15 target:self selector:@selector(pollProximitySensor:) userInfo:nil repeats:YES];
+    // Main-thread 2.0 Hz (0.50s) fallback poll: private BackBoardServices calls remain strictly on main thread
+    _proximityPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.50 target:self selector:@selector(pollProximitySensor:) userInfo:nil repeats:YES];
     [self pollProximitySensor:nil];
 }
 
@@ -3032,9 +3043,11 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
     }
     NSUInteger gen = _lifecycleGen;
     NSUInteger episodeGen = _proximityEpisodeGen;
+    [self retain];
     __block DeskCompanionViewController *blockSelf = self;
     [self captureFrameAndMeasureLuminanceForCamera:@"front" saveFile:NO completion:^(NSString *path, NSUInteger size, float meanLuminance, NSError *err) {
         if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive || !blockSelf->_lastProximityNear || blockSelf->_powerState != MonolithPowerStateActive) {
+            [blockSelf release];
             return;
         }
         if (!err && meanLuminance >= 0.0f && meanLuminance <= 0.12f) {
@@ -3054,9 +3067,12 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
             // Double mechanical ERM haptic pulse + crisp acoustic cue
             AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
             [blockSelf playSoundNamed:@"beep"];
+            [blockSelf retain];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.24 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive) return;
-                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+                if (blockSelf && blockSelf->_lifecycleGen == gen && blockSelf->_proximityEpisodeGen == episodeGen && blockSelf->_isForegroundActive) {
+                    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+                }
+                [blockSelf release];
             });
 
             if (blockSelf->_rearFlipTimer) {
@@ -3066,6 +3082,7 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
             // 1.0s mediaserverd ISP settle delay before switching to rear 8MP sensor
             blockSelf->_rearFlipTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:blockSelf selector:@selector(performRearMacroInspection:) userInfo:nil repeats:NO];
         }
+        [blockSelf release];
     }];
 }
 
@@ -3084,9 +3101,11 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
     _rearFlipRetryCount = 0;
     NSUInteger gen = _lifecycleGen;
     NSUInteger episodeGen = _proximityEpisodeGen;
+    [self retain];
     __block DeskCompanionViewController *blockSelf = self;
     [self captureFrameAndMeasureLuminanceForCamera:@"back" saveFile:YES completion:^(NSString *path, NSUInteger size, float meanLuminance, NSError *err) {
         if (!blockSelf || blockSelf->_lifecycleGen != gen || blockSelf->_proximityEpisodeGen != episodeGen || !blockSelf->_isForegroundActive || !blockSelf->_obstructionActive) {
+            [blockSelf release];
             return;
         }
         if (path) {
@@ -3099,15 +3118,18 @@ static float ComputeMeanLuminanceFromJPEGData(NSData *jpegData) {
             if (meanLuminance < 0.12f) {
                 [blockSelf setStatusTitle:@"REAR MACRO // TORCH" subtitle:[NSString stringWithFormat:@"Low light (%.0f%%): pulsing LED", meanLuminance * 100.0f]];
                 [blockSelf setTorch:YES];
+                [blockSelf retain];
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     if (blockSelf) {
                         [blockSelf setTorch:NO];
                     }
+                    [blockSelf release];
                 });
             } else {
                 [blockSelf setStatusTitle:@"REAR 8MP // ACTIVE" subtitle:[NSString stringWithFormat:@"Rear scene luminance: %.0f%%", meanLuminance * 100.0f]];
             }
         }
+        [blockSelf release];
     }];
 }
 
