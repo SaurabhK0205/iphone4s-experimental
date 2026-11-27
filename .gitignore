@@ -39,5 +39,10 @@ ARCHITECTURE_REFERENCE.md
 # macOS
 .DS_Store
 
+# Environment & API keys
+.env
+.env.*
+!.env.example
+
 # Research repositories
 research_repos/
