@@ -37,6 +37,34 @@ WIFI_PORT = 5000
 SSH_PORT = 2222
 WIFI_SSH_PORT = 22
 
+# Canonical expressions supported by PhysicalAgent Procedural Eye Engine:
+# neutral, blink_high, happy, glee, blink_low, sad_down, sad_up,
+# worried, focused, annoyed, surprised, skeptic, frustrated,
+# unimpressed, sleepy, suspicious, squint, angry, furious,
+# scared, awe, disgust, curious, thinking, alert, asleep, confused,
+# glance_left, glance_right.
+EXPRESSION_ALIASES = {
+    "skeptical": "skeptic",
+    "skepticism": "skeptic",
+    "joy": "glee",
+    "excited": "glee",
+    "unhappy": "sad_down",
+    "down": "sad_down",
+    "sad": "sad_down",
+    "fear": "scared",
+    "afraid": "scared",
+    "amazed": "awe",
+    "amazement": "awe",
+    "sleep": "sleepy",
+    "tired": "sleepy",
+    "asleep": "sleepy",
+    "anger": "angry",
+    "fury": "furious",
+    "mad": "angry",
+    "determined": "focused",
+    "bored": "frustrated",
+}
+
 class DeskCompanion:
     def __init__(self, host=None, port=None, ssh_port=None, ssh_key=None, strict_host_key_checking=None, known_hosts=None, auth_token=None):
         load_dotenv()
@@ -202,7 +230,10 @@ class DeskCompanion:
                     self._active_host, self._active_port, self._active_ssh_port = None, None, None
                     return {"error": "empty_response"}
                 line = buffer.split(b"\n", 1)[0]
-                return json.loads(line.decode("utf-8"))
+                res = json.loads(line.decode("utf-8"))
+                if not isinstance(res, dict):
+                    return {"status": "error", "error": "malformed_response", "raw": str(res)}
+                return res
             except Exception as e:
                 self._active_host, self._active_port, self._active_ssh_port = None, None, None
                 return {"error": str(e)}
@@ -223,7 +254,15 @@ class DeskCompanion:
         Also supports: curious, thinking, alert, asleep, confused,
           glance_left, glance_right.
         """
-        return self._send_cmd({"command": "expression", "name": expression_name, "duration": float(duration)})
+        exp = str(expression_name).lower().strip()
+        exp = EXPRESSION_ALIASES.get(exp, exp)
+        try:
+            dur = float(duration)
+            if math.isnan(dur) or math.isinf(dur) or dur <= 0.0:
+                dur = 0.28
+        except (ValueError, TypeError):
+            dur = 0.28
+        return self._send_cmd({"command": "expression", "name": exp, "duration": dur})
 
     def look_at(self, x=0.0, y=0.0, duration=0.22):
         """Sets companion gaze direction using normalized coordinates [-1.0, 1.0]."""
@@ -344,7 +383,7 @@ class DeskCompanion:
         """Records physical microphone audio on iPhone 4S and retrieves linear PCM WAV."""
         try:
             dur = float(duration)
-            if not (dur > 0.0) or dur != dur:
+            if math.isnan(dur) or math.isinf(dur) or dur <= 0.0:
                 dur = 3.0
             dur = max(0.1, min(dur, 30.0))
         except (ValueError, TypeError):
@@ -454,8 +493,13 @@ class DeskCompanion:
         if with_vision:
             print("[TARS] Capturing front camera snapshot for visual context...")
             snap_res = self.snapshot("front")
-            if snap_res.get("status") == "ok" and "local_file" in snap_res:
-                front_path = snap_res["local_file"]
+            if not isinstance(snap_res, dict) or snap_res.get("status") != "ok" or "local_file" not in snap_res:
+                err_msg = snap_res.get("error", "snapshot_unavailable") if isinstance(snap_res, dict) else "invalid_snapshot_response"
+                print(f"[TARS Error] Front camera capture failed: {err_msg}")
+                self.set_expression("skeptic")
+                self.set_status("PHYSICAL AGENT // ONLINE", "Vision capture failed")
+                return {"status": "error", "error": "vision_capture_failed", "details": snap_res, "transcript": prompt}
+            front_path = snap_res["local_file"]
 
         print("[TARS] Setting expression to 'thinking' and processing cloud cascade...")
         self.set_expression("thinking")
@@ -472,24 +516,40 @@ class DeskCompanion:
 
     def _execute_tars_action(self, action):
         """Applies TarsAction dictionary to physical iPhone 4S hardware."""
+        device_errors = []
         # 1. Haptics
         haptic = action.get("haptic")
         if haptic == "double":
-            self.vibrate()
+            res1 = self.vibrate()
+            if not isinstance(res1, dict) or res1.get("status") not in ("ok", "vibrated"):
+                err = res1.get("error", "unconfirmed") if isinstance(res1, dict) else "invalid_response"
+                device_errors.append(f"vibrate_1: {err}")
             time.sleep(0.08)
-            self.vibrate()
+            res2 = self.vibrate()
+            if not isinstance(res2, dict) or res2.get("status") not in ("ok", "vibrated"):
+                err = res2.get("error", "unconfirmed") if isinstance(res2, dict) else "invalid_response"
+                device_errors.append(f"vibrate_2: {err}")
         elif haptic == "pulse":
-            self.vibrate()
+            res = self.vibrate()
+            if not isinstance(res, dict) or res.get("status") not in ("ok", "vibrated"):
+                err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
+                device_errors.append(f"vibrate: {err}")
 
         # 2. Look at target
         look_at = action.get("look_at")
         if look_at and isinstance(look_at, (list, tuple)) and len(look_at) == 2:
-            self.look_at(look_at[0], look_at[1])
+            res = self.look_at(look_at[0], look_at[1])
+            if not isinstance(res, dict) or res.get("status") != "ok":
+                err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
+                device_errors.append(f"look_at: {err}")
 
         # 3. Torch
         torch = action.get("torch")
         if torch is not None:
-            self.set_torch(bool(torch))
+            res = self.set_torch(bool(torch))
+            if not isinstance(res, dict) or res.get("status") != "ok":
+                err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
+                device_errors.append(f"torch: {err}")
 
         # 4. Speech & Spectrum Synchronization
         speech = action.get("speech", "")
@@ -503,12 +563,17 @@ class DeskCompanion:
                 self._speak_text(speech, voice=voice)
             except Exception as e:
                 print(f"[TARS Speech] Playback error: {e}")
+                device_errors.append(f"speech: {e}")
             finally:
                 self.set_speaking(False)
                 self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
         else:
             self.set_expression(expression)
             self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
+
+        if device_errors:
+            action["_device_errors"] = device_errors
+            print(f"[TARS Hardware Warning] Some hardware actions could not be confirmed: {', '.join(device_errors)}")
 
         return action
 

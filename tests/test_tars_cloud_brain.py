@@ -234,6 +234,33 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(action["expression"], "alert")
 
     @patch("urllib.request.OpenerDirector.open")
+    def test_think_and_act_groq_invalid_json_cascades_to_cloudflare(self, mock_urlopen):
+        # Groq returns raw conversational prose without JSON format
+        groq_prose = make_mock_response({
+            "choices": [{
+                "message": {"content": "I am unable to format this as a JSON object."},
+                "finish_reason": "stop"
+            }]
+        })
+        cf_response = make_mock_response({
+            "result": {
+                "response": json.dumps({
+                    "speech": "Recovered via Cloudflare tier.",
+                    "expression": "happy",
+                    "look_at": [0.0, 0.0],
+                    "torch": False,
+                    "haptic": "pulse"
+                })
+            }
+        })
+        mock_urlopen.side_effect = [groq_prose, cf_response]
+
+        action = self.brain.think_and_act("Status report")
+        self.assertEqual(action["speech"], "Recovered via Cloudflare tier.")
+        self.assertEqual(action["expression"], "happy")
+        self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch("urllib.request.OpenerDirector.open")
     def test_stt_whisper_groq_empty_transcript_preservation(self, mock_urlopen):
         # A successful STT call returning empty text must return "" without triggering failover
         groq_empty_response = make_mock_response({"text": ""})
@@ -388,7 +415,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         try:
             req = urllib.request.Request("http://127.0.0.1:9")
             with self.assertRaises(TimeoutError) as ctx:
-                self.brain._urlopen_with_backoff(req, timeout=5.0, deadline=time.monotonic() + 5.0)
+                self.brain._urlopen_with_backoff(req, timeout=5.0, deadline=time.monotonic() + 2.0)
             self.assertIn("admission limit reached", str(ctx.exception))
         finally:
             for _ in acquired_slots:
@@ -600,18 +627,21 @@ class TestTarsCloudBrain(unittest.TestCase):
         )
         self.assertIsNone(action)
 
-    def test_openrouter_dual_camera_skips_to_gemini(self):
+    @patch("urllib.request.OpenerDirector.open")
+    def test_openrouter_dual_camera_skips_to_gemini(self, mock_urlopen):
         # OpenRouter free tier models may not reliably support multi-image inputs.
         # When both front and back images are supplied and default openrouter/free is used,
         # it must return None so execution cascades to Gemini which natively supports multiple images.
-        action = self.brain._think_openrouter(
-            transcript="Describe both views",
-            system_prompt="System prompt",
-            front_b64="bW9ja19mcm9udA==",
-            back_b64="bW9ja19iYWNr",
-            history=[]
-        )
-        self.assertIsNone(action)
+        with patch.dict(os.environ, {"OPENROUTER_VISION_MODEL": "openrouter/free"}):
+            action = self.brain._think_openrouter(
+                transcript="Describe both views",
+                system_prompt="System prompt",
+                front_b64="bW9ja19mcm9udA==",
+                back_b64="bW9ja19iYWNr",
+                history=[]
+            )
+            self.assertIsNone(action)
+            mock_urlopen.assert_not_called()
 
     @patch("urllib.request.OpenerDirector.open")
     def test_openrouter_dual_camera_honors_model_override(self, mock_urlopen):
@@ -671,17 +701,20 @@ class TestTarsCloudBrain(unittest.TestCase):
 
         brain_no_gemini = TarsCloudBrain(
             openrouter_api_key="mock_openrouter_key",
-            gemini_api_key=""
+            gemini_api_key="",
+            dotenv_path="/dev/null"
         )
-        action = brain_no_gemini._think_openrouter(
-            transcript="Describe both views",
-            system_prompt="System prompt",
-            front_b64="bW9ja19mcm9udA==",
-            back_b64="bW9ja19iYWNr",
-            history=[]
-        )
-        self.assertIsNotNone(action)
-        self.assertEqual(action["speech"], "Dual camera processed by OpenRouter fallback.")
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "", "OPENROUTER_VISION_MODEL": "openrouter/free"}):
+            action = brain_no_gemini._think_openrouter(
+                transcript="Describe both views",
+                system_prompt="System prompt",
+                front_b64="bW9ja19mcm9udA==",
+                back_b64="bW9ja19iYWNr",
+                history=[]
+            )
+            self.assertIsNotNone(action)
+            self.assertEqual(action["speech"], "Dual camera processed by OpenRouter fallback.")
+            self.assertEqual(mock_urlopen.call_count, 1)
 
     @patch("urllib.request.OpenerDirector.open")
     def test_cloudflare_single_camera_data_uri(self, mock_urlopen):
@@ -729,6 +762,103 @@ class TestTarsCloudBrain(unittest.TestCase):
         req = urllib.request.Request("https://api.groq.com/mock")
         res_bytes = self.brain._urlopen_with_backoff(req, timeout=5.0)
         self.assertIn(b"Recovered", res_bytes)
+
+    @patch("urllib.request.OpenerDirector.open")
+    def test_gemini_raw_prose_fallback_succeeds(self, mock_urlopen):
+        # When Gemini returns conversational text instead of strict JSON,
+        # allow_raw_fallback=True extracts the speech text rather than failing
+        gemini_prose = make_mock_response({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": "All desk systems are nominal and ready for commands."
+                    }]
+                }
+            }]
+        })
+        mock_urlopen.return_value = gemini_prose
+
+        action = self.brain._think_gemini(
+            transcript="Check desk systems",
+            system_prompt="System prompt",
+            front_b64=None,
+            back_b64=None,
+            history=[]
+        )
+        self.assertIsNotNone(action)
+        self.assertEqual(action["speech"], "All desk systems are nominal and ready for commands.")
+        self.assertEqual(action["expression"], "neutral")
+
+    @patch("urllib.request.OpenerDirector.open")
+    def test_admission_timeout_tight_deadline_succeeds(self, mock_urlopen):
+        # Verifies that when remaining deadline is tight (e.g. 0.3s),
+        # HTTP worker admission succeeds without premature TimeoutError
+        mock_resp = make_mock_response({"status": "ok"})
+        mock_urlopen.return_value = mock_resp
+
+        req = urllib.request.Request("https://api.groq.com/mock")
+        deadline = time.monotonic() + 0.3
+        res = self.brain._fetch_with_deadline(req, timeout=0.2, deadline=deadline)
+        self.assertIn(b"ok", res)
+
+    def test_expression_aliases_and_duration_validation(self):
+        from desk_companion import DeskCompanion
+        companion = DeskCompanion()
+        companion._send_cmd = MagicMock(return_value={"status": "ok"})
+
+        # Test alias mapping
+        companion.set_expression("skeptical")
+        companion._send_cmd.assert_called_with({"command": "expression", "name": "skeptic", "duration": 0.28})
+
+        companion.set_expression("joy")
+        companion._send_cmd.assert_called_with({"command": "expression", "name": "glee", "duration": 0.28})
+
+        companion.set_expression("sad")
+        companion._send_cmd.assert_called_with({"command": "expression", "name": "sad_down", "duration": 0.28})
+
+        # Test duration validation against NaN and non-positive values
+        companion.set_expression("neutral", duration=float("nan"))
+        companion._send_cmd.assert_called_with({"command": "expression", "name": "neutral", "duration": 0.28})
+
+        companion.set_expression("neutral", duration=-1.0)
+        companion._send_cmd.assert_called_with({"command": "expression", "name": "neutral", "duration": 0.28})
+
+    def test_execute_tars_action_hardware_status_and_errors(self):
+        from desk_companion import DeskCompanion
+        companion = DeskCompanion()
+        # Mock hardware commands
+        companion.vibrate = MagicMock(return_value={"status": "vibrated"})
+        companion.look_at = MagicMock(return_value={"status": "ok", "x": 0.1, "y": -0.2})
+        companion.set_torch = MagicMock(return_value={"status": "failed", "error": "hardware_unavailable"})
+        companion.set_expression = MagicMock()
+        companion.set_status = MagicMock()
+        companion.set_speaking = MagicMock()
+
+        action = {
+            "speech": "",
+            "expression": "neutral",
+            "look_at": [0.1, -0.2],
+            "torch": True,
+            "haptic": "pulse"
+        }
+        res = companion._execute_tars_action(action)
+        # vibrate returned 'vibrated' which is considered valid, not an error
+        # torch returned 'failed' which is recorded in _device_errors
+        self.assertIn("_device_errors", res)
+        self.assertEqual(len(res["_device_errors"]), 1)
+        self.assertIn("torch: hardware_unavailable", res["_device_errors"][0])
+
+    def test_run_tars_turn_vision_failure_structured_error(self):
+        from desk_companion import DeskCompanion
+        companion = DeskCompanion()
+        companion.snapshot = MagicMock(return_value={"status": "error", "error": "camera_busy"})
+        companion.set_expression = MagicMock()
+        companion.set_status = MagicMock()
+
+        result = companion._run_tars_turn("Describe the desk", with_vision=True)
+        self.assertEqual(result.get("status"), "error")
+        self.assertEqual(result.get("error"), "vision_capture_failed")
+        self.assertNotIn("vision_status", result)
 
     def test_repository_zero_em_dashes(self):
         """Strict repository-wide verification of anti-AI-slop rule across all project files."""
