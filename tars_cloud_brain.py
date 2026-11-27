@@ -427,7 +427,8 @@ class TarsCloudBrain:
                 # Cloudflare Workers AI schema supports only a single image.
                 # Skip to subsequent tiers (OpenRouter/Gemini) that natively support dual-camera views.
                 return None
-            payload["image"] = front_b64 or back_b64
+            target_b64 = front_b64 or back_b64
+            payload["image"] = f"data:image/jpeg;base64,{target_b64}"
 
         data_bytes = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data_bytes, method="POST")

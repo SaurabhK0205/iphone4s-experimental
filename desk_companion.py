@@ -415,7 +415,7 @@ class DeskCompanion:
             print("[TARS] Failed to capture audio:", rec_res)
             self.set_expression("skeptical")
             self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
-            return {"error": "audio_recording_failed", "details": rec_res}
+            return {"status": "error", "error": "audio_recording_failed", "details": rec_res, "transcript": ""}
 
         audio_path = rec_res["local_file"]
         try:
@@ -423,6 +423,10 @@ class DeskCompanion:
             print(f"[TARS Hearing] Transcript: '{transcript}'")
         except Exception as e:
             print(f"[TARS Hearing] Transcription error: {e}")
+            if not with_vision:
+                self.set_expression("skeptical")
+                self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting input")
+                return {"status": "error", "error": "transcription_failed", "details": str(e), "transcript": ""}
             transcript = ""
 
         if not transcript and not with_vision:
@@ -451,6 +455,11 @@ class DeskCompanion:
         self.set_status("TARS // THINKING", prompt[:30] if prompt else "Visual scene")
 
         action = self.brain.think_and_act(transcript=prompt, front_image_path=front_path)
+        if action.get("_fallback"):
+            action["status"] = "fallback"
+        else:
+            action.setdefault("status", "ok")
+        action.setdefault("transcript", prompt)
         print(f"[TARS Cognition] Action plan: {json.dumps(action, indent=2)}")
         return self._execute_tars_action(action)
 

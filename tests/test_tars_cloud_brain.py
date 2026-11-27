@@ -51,6 +51,9 @@ class TestTarsCloudBrain(unittest.TestCase):
         )
 
     def tearDown(self):
+        for key in ("TARS_HUMOR_PERCENT", "TARS_HONESTY_PERCENT"):
+            if key in os.environ:
+                del os.environ[key]
         for key, val in self._saved_env.items():
             os.environ[key] = val
 
@@ -131,11 +134,10 @@ class TestTarsCloudBrain(unittest.TestCase):
 
     def test_env_personality_fallback(self):
         # When constructor arguments are omitted, env vars should take effect
-        os.environ["TARS_HUMOR_PERCENT"] = "65"
-        os.environ["TARS_HONESTY_PERCENT"] = "85"
-        brain = TarsCloudBrain()
-        self.assertEqual(brain.humor_percent, 65)
-        self.assertEqual(brain.honesty_percent, 85)
+        with patch.dict(os.environ, {"TARS_HUMOR_PERCENT": "65", "TARS_HONESTY_PERCENT": "85"}):
+            brain = TarsCloudBrain()
+            self.assertEqual(brain.humor_percent, 65)
+            self.assertEqual(brain.honesty_percent, 85)
 
     def test_parse_action_json_multiple_code_blocks(self):
         # Multiple code blocks (e.g. reasoning block + JSON action block)
@@ -307,6 +309,36 @@ class TestTarsCloudBrain(unittest.TestCase):
             history=[]
         )
         self.assertIsNone(action)
+
+    @patch("tars_cloud_brain.urllib.request.urlopen")
+    def test_cloudflare_single_camera_data_uri(self, mock_urlopen):
+        cf_response = make_mock_response({
+            "result": {
+                "response": json.dumps({
+                    "speech": "Front camera view analyzed.",
+                    "expression": "focused",
+                    "look_at": [0.0, 0.0],
+                    "torch": False,
+                    "haptic": "pulse"
+                })
+            }
+        })
+        mock_urlopen.return_value = cf_response
+
+        action = self.brain._think_cloudflare(
+            transcript="Describe scene",
+            system_prompt="System prompt",
+            front_b64="bW9ja19mcm9udA==",
+            back_b64=None,
+            history=[]
+        )
+        self.assertIsNotNone(action)
+        self.assertEqual(action["speech"], "Front camera view analyzed.")
+
+        call_args = mock_urlopen.call_args[0]
+        req = call_args[0]
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload["image"], "data:image/jpeg;base64,bW9ja19mcm9udA==")
 
     def test_repository_zero_em_dashes(self):
         """Strict verification of anti-AI-slop rule across all modified and new files."""
