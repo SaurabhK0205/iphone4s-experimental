@@ -850,7 +850,7 @@ class TarsCloudBrain:
         """Extracts and validates TARS action JSON object from raw LLM output."""
         if not raw_text or not raw_text.strip():
             raise ValueError("Cannot parse action from empty LLM text")
-        text = raw_text.strip().replace("\u2014", ":").replace("\u2013", "-")
+        text = raw_text.strip().replace(chr(0x2014), ":").replace(chr(0x2013), "-")
         # Extract markdown code blocks if present; search from last block backwards
         if "```" in text:
             matches = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", text)

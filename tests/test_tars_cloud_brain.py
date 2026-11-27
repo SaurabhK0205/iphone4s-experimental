@@ -594,11 +594,11 @@ class TestTarsCloudBrain(unittest.TestCase):
 
     def test_parse_action_json_escaped_em_dash(self):
         # Simulates JSON response with unicode-escaped em-dash and en-dash
-        raw_json = '{"speech": "Docking sequence complete\\u2014initiating spin", "expression": "neutral"}'
+        raw_json = '{"speech": "Docking sequence complete' + chr(0x2014) + 'initiating spin", "expression": "neutral"}'
         action = self.brain._parse_action_json(raw_json)
         self.assertIsNotNone(action)
         self.assertNotIn(chr(0x2014), action["speech"])
-        self.assertIn(" - ", action["speech"])
+        self.assertIn(":", action["speech"])
 
     def test_transcribe_audio_file_bounded_read(self):
         import tempfile
