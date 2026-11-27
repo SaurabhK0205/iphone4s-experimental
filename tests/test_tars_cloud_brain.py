@@ -340,21 +340,39 @@ class TestTarsCloudBrain(unittest.TestCase):
         payload = json.loads(req.data.decode("utf-8"))
         self.assertEqual(payload["image"], "data:image/jpeg;base64,bW9ja19mcm9udA==")
 
+    def test_think_and_act_aggregate_timeout(self):
+        # When aggregate timeout budget is exhausted, cascade immediately returns offline fallback
+        action = self.brain.think_and_act("Status report", timeout=0.001)
+        self.assertTrue(action.get("_fallback"))
+        self.assertIn("autonomous backup reflexes", action["speech"])
+
+    @patch("tars_cloud_brain.urllib.request.urlopen")
+    def test_urlopen_with_backoff_url_error_retry(self, mock_urlopen):
+        # Transient network error (URLError) on first try, success on retry
+        url_err = urllib.error.URLError("Temporary failure in name resolution")
+        success_resp = make_mock_response({"choices": [{"message": {"content": '{"speech": "Recovered from transient error", "expression": "neutral"}'}}]})
+        mock_urlopen.side_effect = [url_err, success_resp]
+
+        req = urllib.request.Request("https://api.groq.com/mock")
+        res_bytes = self.brain._urlopen_with_backoff(req, timeout=5.0)
+        self.assertIn(b"Recovered", res_bytes)
+
     def test_repository_zero_em_dashes(self):
-        """Strict verification of anti-AI-slop rule across all modified and new files."""
+        """Strict repository-wide verification of anti-AI-slop rule across all project files."""
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        files_to_check = [
-            "tars_cloud_brain.py",
-            "desk_companion.py",
-            ".env.example",
-            "tests/test_tars_cloud_brain.py"
-        ]
-        for rel_path in files_to_check:
-            full_path = os.path.join(repo_root, rel_path)
-            self.assertTrue(os.path.isfile(full_path), f"File {rel_path} must exist at {full_path}")
-            with open(full_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            self.assertNotIn("\u2014", content, f"Found prohibited em-dash in {rel_path}")
+        checked_count = 0
+        for root, dirs, files in os.walk(repo_root):
+            # Exclude git, virtual environments, build artifacts, and external research repos
+            dirs[:] = [d for d in dirs if d not in (".git", ".venv", "research_repos", "__pycache__", "build", "dist")]
+            for file in files:
+                if file.endswith((".py", ".md", ".json", ".yaml", ".yml")):
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, repo_root)
+                    with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    self.assertNotIn(chr(0x2014), content, f"Found prohibited em-dash in {rel_path}")
+                    checked_count += 1
+        self.assertGreater(checked_count, 5, "Should verify multiple repository files")
 
 
 if __name__ == "__main__":

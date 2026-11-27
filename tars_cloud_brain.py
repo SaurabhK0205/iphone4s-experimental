@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -195,14 +196,14 @@ class TarsCloudBrain:
         raise RuntimeError("All configured speech-to-text tiers failed to transcribe audio")
 
     def _urlopen_with_backoff(self, req: urllib.request.Request, timeout: float = 15.0) -> bytes:
-        """Executes HTTP request with transient retry on 429 / 503 before cascading."""
+        """Executes HTTP request with transient retry on 429 / 5xx, network errors, or timeouts before cascading."""
         max_attempts = 2
         for attempt in range(max_attempts):
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     return resp.read()
             except urllib.error.HTTPError as e:
-                if e.code in (429, 502, 503, 504) and attempt < max_attempts - 1:
+                if e.code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
                     retry_after = e.headers.get("Retry-After") if e.headers else None
                     delay = 0.5
                     if retry_after and retry_after.isdigit():
@@ -210,8 +211,13 @@ class TarsCloudBrain:
                     time.sleep(delay)
                     continue
                 raise
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
+                if attempt < max_attempts - 1:
+                    time.sleep(0.5)
+                    continue
+                raise
 
-    def _transcribe_groq(self, audio_bytes: bytes, filename: str) -> str:
+    def _transcribe_groq(self, audio_bytes: bytes, filename: str, timeout: float = 15.0) -> str:
         """Transcribes audio using Groq Whisper endpoint."""
         url = "https://api.groq.com/openai/v1/audio/transcriptions"
         fields = {
@@ -228,18 +234,18 @@ class TarsCloudBrain:
         req.add_header("Authorization", f"Bearer {self.groq_api_key}")
         req.add_header("Content-Type", content_type)
 
-        resp_bytes = self._urlopen_with_backoff(req, timeout=15.0)
+        resp_bytes = self._urlopen_with_backoff(req, timeout=timeout)
         data = json.loads(resp_bytes.decode("utf-8"))
         return data.get("text", "").strip()
 
-    def _transcribe_cloudflare(self, audio_bytes: bytes) -> str:
+    def _transcribe_cloudflare(self, audio_bytes: bytes, timeout: float = 20.0) -> str:
         """Transcribes audio using Cloudflare Workers AI @cf/openai/whisper."""
         url = f"https://api.cloudflare.com/client/v4/accounts/{self.cf_account_id}/ai/run/@cf/openai/whisper"
         req = urllib.request.Request(url, data=audio_bytes, method="POST")
         req.add_header("Authorization", f"Bearer {self.cf_api_token}")
         req.add_header("Content-Type", "application/octet-stream")
 
-        resp_bytes = self._urlopen_with_backoff(req, timeout=20.0)
+        resp_bytes = self._urlopen_with_backoff(req, timeout=timeout)
         data = json.loads(resp_bytes.decode("utf-8"))
         result = data.get("result", {})
         return result.get("text", "").strip()
@@ -276,6 +282,7 @@ class TarsCloudBrain:
         front_image_path: Optional[str] = None,
         back_image_path: Optional[str] = None,
         history: Optional[List[Dict[str, Any]]] = None,
+        timeout: float = 25.0,
     ) -> Dict[str, Any]:
         """Executes a cognitive turn through the multi-cloud cascade.
 
@@ -291,11 +298,19 @@ class TarsCloudBrain:
         back_b64 = self._read_image_b64(back_image_path) if back_image_path else None
 
         active_history = history if history is not None else self.conversation_history
+        start_time = time.time()
+
+        def remaining_timeout(cap: float) -> Optional[float]:
+            rem = timeout - (time.time() - start_time)
+            if rem <= 1.0:
+                return None
+            return min(rem, cap)
 
         # Tier 1: Groq Cloud
-        if self.groq_api_key:
+        tier_timeout = remaining_timeout(10.0)
+        if self.groq_api_key and tier_timeout is not None:
             try:
-                action = self._think_groq(transcript, system_prompt, front_b64, back_b64, active_history)
+                action = self._think_groq(transcript, system_prompt, front_b64, back_b64, active_history, timeout=tier_timeout)
                 if action:
                     self._record_turn(active_history, transcript, action.get("speech", ""))
                     return action
@@ -303,9 +318,10 @@ class TarsCloudBrain:
                 logger.warning(f"Tier 1 (Groq) failed with: {e}. Falling back to Tier 2.")
 
         # Tier 2: Cloudflare Workers AI
-        if self.cf_api_token and self.cf_account_id:
+        tier_timeout = remaining_timeout(10.0)
+        if self.cf_api_token and self.cf_account_id and tier_timeout is not None:
             try:
-                action = self._think_cloudflare(transcript, system_prompt, front_b64, back_b64, active_history)
+                action = self._think_cloudflare(transcript, system_prompt, front_b64, back_b64, active_history, timeout=tier_timeout)
                 if action:
                     self._record_turn(active_history, transcript, action.get("speech", ""))
                     return action
@@ -313,9 +329,10 @@ class TarsCloudBrain:
                 logger.warning(f"Tier 2 (Cloudflare) failed with: {e}. Falling back to Tier 3.")
 
         # Tier 3: OpenRouter Free Pool
-        if self.openrouter_api_key:
+        tier_timeout = remaining_timeout(10.0)
+        if self.openrouter_api_key and tier_timeout is not None:
             try:
-                action = self._think_openrouter(transcript, system_prompt, front_b64, back_b64, active_history)
+                action = self._think_openrouter(transcript, system_prompt, front_b64, back_b64, active_history, timeout=tier_timeout)
                 if action:
                     self._record_turn(active_history, transcript, action.get("speech", ""))
                     return action
@@ -323,9 +340,10 @@ class TarsCloudBrain:
                 logger.warning(f"Tier 3 (OpenRouter) failed with: {e}. Falling back to Tier 4.")
 
         # Tier 4: Google Gemini API
-        if self.gemini_api_key:
+        tier_timeout = remaining_timeout(10.0)
+        if self.gemini_api_key and tier_timeout is not None:
             try:
-                action = self._think_gemini(transcript, system_prompt, front_b64, back_b64, active_history)
+                action = self._think_gemini(transcript, system_prompt, front_b64, back_b64, active_history, timeout=tier_timeout)
                 if action:
                     self._record_turn(active_history, transcript, action.get("speech", ""))
                     return action
@@ -350,11 +368,12 @@ class TarsCloudBrain:
         front_b64: Optional[str],
         back_b64: Optional[str],
         history: List[Dict[str, Any]],
+        timeout: float = 15.0,
     ) -> Optional[Dict[str, Any]]:
         """Queries Groq Cloud with vision or text models."""
         url = "https://api.groq.com/openai/v1/chat/completions"
         has_vision = bool(front_b64 or back_b64)
-        vision_model = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
+        vision_model = os.environ.get("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
         text_model = os.environ.get("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
         model = vision_model if has_vision else text_model
 
@@ -393,7 +412,7 @@ class TarsCloudBrain:
         req.add_header("Authorization", f"Bearer {self.groq_api_key}")
         req.add_header("Content-Type", "application/json")
 
-        resp_bytes = self._urlopen_with_backoff(req, timeout=15.0)
+        resp_bytes = self._urlopen_with_backoff(req, timeout=timeout)
         data = json.loads(resp_bytes.decode("utf-8"))
         content = data["choices"][0]["message"]["content"]
         return self._parse_action_json(content)
@@ -405,6 +424,7 @@ class TarsCloudBrain:
         front_b64: Optional[str],
         back_b64: Optional[str],
         history: List[Dict[str, Any]],
+        timeout: float = 15.0,
     ) -> Optional[Dict[str, Any]]:
         """Queries Cloudflare Workers AI edge models."""
         has_vision = bool(front_b64 or back_b64)
@@ -435,7 +455,7 @@ class TarsCloudBrain:
         req.add_header("Authorization", f"Bearer {self.cf_api_token}")
         req.add_header("Content-Type", "application/json")
 
-        resp_bytes = self._urlopen_with_backoff(req, timeout=20.0)
+        resp_bytes = self._urlopen_with_backoff(req, timeout=timeout)
         data = json.loads(resp_bytes.decode("utf-8"))
         result = data.get("result", {})
         content = result.get("response", "")
@@ -448,6 +468,7 @@ class TarsCloudBrain:
         front_b64: Optional[str],
         back_b64: Optional[str],
         history: List[Dict[str, Any]],
+        timeout: float = 15.0,
     ) -> Optional[Dict[str, Any]]:
         """Queries OpenRouter free pooled models with multimodal vision support."""
         url = "https://openrouter.ai/api/v1/chat/completions"
@@ -484,7 +505,7 @@ class TarsCloudBrain:
         req.add_header("HTTP-Referer", "https://github.com/SaurabhK0205/iphone4s-experimental")
         req.add_header("X-Title", "PhysicalAgent TARS")
 
-        resp_bytes = self._urlopen_with_backoff(req, timeout=15.0)
+        resp_bytes = self._urlopen_with_backoff(req, timeout=timeout)
         data = json.loads(resp_bytes.decode("utf-8"))
         content = data["choices"][0]["message"]["content"]
         return self._parse_action_json(content)
@@ -496,6 +517,7 @@ class TarsCloudBrain:
         front_b64: Optional[str],
         back_b64: Optional[str],
         history: Optional[List[Dict[str, Any]]] = None,
+        timeout: float = 15.0,
     ) -> Optional[Dict[str, Any]]:
         """Queries Google Gemini API with multimodal payloads and conversational history."""
         model = "gemini-2.5-flash"
@@ -540,7 +562,7 @@ class TarsCloudBrain:
         req.add_header("x-goog-api-key", self.gemini_api_key)
         req.add_header("Content-Type", "application/json")
 
-        resp_bytes = self._urlopen_with_backoff(req, timeout=15.0)
+        resp_bytes = self._urlopen_with_backoff(req, timeout=timeout)
         data = json.loads(resp_bytes.decode("utf-8"))
         candidates = data.get("candidates", [])
         if candidates:
@@ -570,25 +592,21 @@ class TarsCloudBrain:
 
     def _parse_action_json(self, raw_text: str) -> Dict[str, Any]:
         """Extracts and validates TARS action JSON object from raw LLM output."""
-        text = raw_text.strip()
+        text = raw_text.strip().replace("\u2014", ":").replace("\u2013", "-")
         # Extract markdown code blocks if present; search from last block backwards
         if "```" in text:
             matches = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
             if matches:
                 for block in reversed(matches):
-                    sanitized_block = block.strip().replace("\u2014", ":").replace("\u2013", "-")
                     try:
-                        candidate = json.loads(sanitized_block)
+                        candidate = json.loads(block.strip())
                         if isinstance(candidate, dict) and ("speech" in candidate or "expression" in candidate):
-                            text = sanitized_block
+                            text = block.strip()
                             break
                     except Exception:
                         continue
                 else:
                     text = matches[-1].strip()
-
-        # Sanitize any accidental em-dashes
-        text = text.replace("\u2014", ":").replace("\u2013", "-")
 
         try:
             action = json.loads(text)

@@ -380,12 +380,17 @@ class DeskCompanion:
 
     def _speak_text(self, text, voice="Samantha", timeout=15.0):
         """Cross-platform text-to-speech with explicit timeout and fallbacks."""
-        if shutil.which("say"):
-            subprocess.run(["say", "-v", voice, text], timeout=timeout)
-        elif shutil.which("espeak"):
-            subprocess.run(["espeak", text], timeout=timeout)
-        else:
-            print(f"[AUDIO TTS] {text}")
+        try:
+            if shutil.which("say"):
+                subprocess.run(["say", "-v", voice, text], timeout=timeout)
+            elif shutil.which("espeak"):
+                subprocess.run(["espeak", text], timeout=timeout)
+            else:
+                print(f"[AUDIO TTS] {text}")
+        except subprocess.TimeoutExpired as e:
+            print(f"[TARS Speech] Speech synthesis timed out after {timeout}s: {e}")
+        except Exception as e:
+            print(f"[TARS Speech] Speech synthesis failed: {e}")
 
     def say(self, text, voice="Samantha"):
         """Speaks text using system speech synthesizer while animating companion eyes and spectrum waveform."""
@@ -396,6 +401,8 @@ class DeskCompanion:
         time.sleep(0.2)
         try:
             self._speak_text(text, voice=voice)
+        except Exception as e:
+            print(f"[TARS Speech] say command error: {e}")
         finally:
             self.set_speaking(False)
             self.set_expression("neutral")
