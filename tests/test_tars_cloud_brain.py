@@ -763,6 +763,103 @@ class TestTarsCloudBrain(unittest.TestCase):
         res_bytes = self.brain._urlopen_with_backoff(req, timeout=5.0)
         self.assertIn(b"Recovered", res_bytes)
 
+    @patch("urllib.request.OpenerDirector.open")
+    def test_gemini_raw_prose_fallback_succeeds(self, mock_urlopen):
+        # When Gemini returns conversational text instead of strict JSON,
+        # allow_raw_fallback=True extracts the speech text rather than failing
+        gemini_prose = make_mock_response({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": "All desk systems are nominal and ready for commands."
+                    }]
+                }
+            }]
+        })
+        mock_urlopen.return_value = gemini_prose
+
+        action = self.brain._think_gemini(
+            transcript="Check desk systems",
+            system_prompt="System prompt",
+            front_b64=None,
+            back_b64=None,
+            history=[]
+        )
+        self.assertIsNotNone(action)
+        self.assertEqual(action["speech"], "All desk systems are nominal and ready for commands.")
+        self.assertEqual(action["expression"], "neutral")
+
+    @patch("urllib.request.OpenerDirector.open")
+    def test_admission_timeout_tight_deadline_succeeds(self, mock_urlopen):
+        # Verifies that when remaining deadline is tight (e.g. 0.3s),
+        # HTTP worker admission succeeds without premature TimeoutError
+        mock_resp = make_mock_response({"status": "ok"})
+        mock_urlopen.return_value = mock_resp
+
+        req = urllib.request.Request("https://api.groq.com/mock")
+        deadline = time.monotonic() + 0.3
+        res = self.brain._fetch_with_deadline(req, timeout=0.2, deadline=deadline)
+        self.assertIn(b"ok", res)
+
+    def test_expression_aliases_and_duration_validation(self):
+        from desk_companion import DeskCompanion
+        companion = DeskCompanion()
+        companion._send_cmd = MagicMock(return_value={"status": "ok"})
+
+        # Test alias mapping
+        companion.set_expression("skeptical")
+        companion._send_cmd.assert_called_with({"command": "expression", "name": "skeptic", "duration": 0.28})
+
+        companion.set_expression("joy")
+        companion._send_cmd.assert_called_with({"command": "expression", "name": "glee", "duration": 0.28})
+
+        companion.set_expression("sad")
+        companion._send_cmd.assert_called_with({"command": "expression", "name": "sad_down", "duration": 0.28})
+
+        # Test duration validation against NaN and non-positive values
+        companion.set_expression("neutral", duration=float("nan"))
+        companion._send_cmd.assert_called_with({"command": "expression", "name": "neutral", "duration": 0.28})
+
+        companion.set_expression("neutral", duration=-1.0)
+        companion._send_cmd.assert_called_with({"command": "expression", "name": "neutral", "duration": 0.28})
+
+    def test_execute_tars_action_hardware_status_and_errors(self):
+        from desk_companion import DeskCompanion
+        companion = DeskCompanion()
+        # Mock hardware commands
+        companion.vibrate = MagicMock(return_value={"status": "vibrated"})
+        companion.look_at = MagicMock(return_value={"status": "ok", "x": 0.1, "y": -0.2})
+        companion.set_torch = MagicMock(return_value={"status": "failed", "error": "hardware_unavailable"})
+        companion.set_expression = MagicMock()
+        companion.set_status = MagicMock()
+        companion.set_speaking = MagicMock()
+
+        action = {
+            "speech": "",
+            "expression": "neutral",
+            "look_at": [0.1, -0.2],
+            "torch": True,
+            "haptic": "pulse"
+        }
+        res = companion._execute_tars_action(action)
+        # vibrate returned 'vibrated' which is considered valid, not an error
+        # torch returned 'failed' which is recorded in _device_errors
+        self.assertIn("_device_errors", res)
+        self.assertEqual(len(res["_device_errors"]), 1)
+        self.assertIn("torch: hardware_unavailable", res["_device_errors"][0])
+
+    def test_run_tars_turn_vision_failure_structured_error(self):
+        from desk_companion import DeskCompanion
+        companion = DeskCompanion()
+        companion.snapshot = MagicMock(return_value={"status": "error", "error": "camera_busy"})
+        companion.set_expression = MagicMock()
+        companion.set_status = MagicMock()
+
+        result = companion._run_tars_turn("Describe the desk", with_vision=True)
+        self.assertEqual(result.get("status"), "error")
+        self.assertEqual(result.get("error"), "vision_capture_failed")
+        self.assertNotIn("vision_status", result)
+
     def test_repository_zero_em_dashes(self):
         """Strict repository-wide verification of anti-AI-slop rule across all project files."""
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

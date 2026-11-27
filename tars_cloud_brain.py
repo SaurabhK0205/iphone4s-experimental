@@ -295,8 +295,8 @@ class TarsCloudBrain:
         deadline: float,
     ) -> bytes:
         """Executes a single HTTP transfer on an isolated daemon worker bounded by an absolute deadline."""
-        rem_admission = min(0.2, max(deadline - time.monotonic() - 0.5, 0.0))
-        if rem_admission <= 0.0 or not self._worker_semaphore.acquire(blocking=True, timeout=rem_admission):
+        rem_admission = max(deadline - time.monotonic(), 0.0)
+        if rem_admission <= 0.0 or not self._worker_semaphore.acquire(blocking=True, timeout=min(0.2, rem_admission)):
             raise TimeoutError("HTTP worker admission limit reached: system busy or network DNS blocked")
 
         ctx = _RequestContext()
@@ -824,7 +824,9 @@ class TarsCloudBrain:
         text = content_parts[0].get("text", "")
         if not text or not text.strip():
             raise ValueError("Gemini returned empty text")
-        return self._parse_action_json(text, allow_raw_fallback=False)
+        # Terminal cloud tier: allows conversational raw prose recovery (allow_raw_fallback=True)
+        # before falling back to offline deterministic reflexes.
+        return self._parse_action_json(text, allow_raw_fallback=True)
 
     # =========================================================================
     # 3. HELPER METHODS & VALIDATION

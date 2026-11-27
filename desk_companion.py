@@ -37,6 +37,34 @@ WIFI_PORT = 5000
 SSH_PORT = 2222
 WIFI_SSH_PORT = 22
 
+# Canonical expressions supported by PhysicalAgent Procedural Eye Engine:
+# neutral, blink_high, happy, glee, blink_low, sad_down, sad_up,
+# worried, focused, annoyed, surprised, skeptic, frustrated,
+# unimpressed, sleepy, suspicious, squint, angry, furious,
+# scared, awe, disgust, curious, thinking, alert, asleep, confused,
+# glance_left, glance_right.
+EXPRESSION_ALIASES = {
+    "skeptical": "skeptic",
+    "skepticism": "skeptic",
+    "joy": "glee",
+    "excited": "glee",
+    "unhappy": "sad_down",
+    "down": "sad_down",
+    "sad": "sad_down",
+    "fear": "scared",
+    "afraid": "scared",
+    "amazed": "awe",
+    "amazement": "awe",
+    "sleep": "sleepy",
+    "tired": "sleepy",
+    "asleep": "sleepy",
+    "anger": "angry",
+    "fury": "furious",
+    "mad": "angry",
+    "determined": "focused",
+    "bored": "frustrated",
+}
+
 class DeskCompanion:
     def __init__(self, host=None, port=None, ssh_port=None, ssh_key=None, strict_host_key_checking=None, known_hosts=None, auth_token=None):
         load_dotenv()
@@ -227,8 +255,7 @@ class DeskCompanion:
           glance_left, glance_right.
         """
         exp = str(expression_name).lower().strip()
-        if exp == "skeptical":
-            exp = "skeptic"
+        exp = EXPRESSION_ALIASES.get(exp, exp)
         try:
             dur = float(duration)
             if math.isnan(dur) or math.isinf(dur) or dur <= 0.0:
@@ -463,15 +490,16 @@ class DeskCompanion:
     def _run_tars_turn(self, prompt, with_vision=False):
         """Shared cognitive execution pipeline for voice and text turns."""
         front_path = None
-        snap_res = None
         if with_vision:
             print("[TARS] Capturing front camera snapshot for visual context...")
             snap_res = self.snapshot("front")
-            if snap_res.get("status") == "ok" and "local_file" in snap_res:
-                front_path = snap_res["local_file"]
-            else:
-                err_msg = snap_res.get("error", "snapshot_unavailable") if snap_res else "snapshot_unavailable"
-                print(f"[TARS Warning] Front camera capture failed: {err_msg}. Continuing with degraded text reasoning.")
+            if not isinstance(snap_res, dict) or snap_res.get("status") != "ok" or "local_file" not in snap_res:
+                err_msg = snap_res.get("error", "snapshot_unavailable") if isinstance(snap_res, dict) else "invalid_snapshot_response"
+                print(f"[TARS Error] Front camera capture failed: {err_msg}")
+                self.set_expression("skeptic")
+                self.set_status("PHYSICAL AGENT // ONLINE", "Vision capture failed")
+                return {"status": "error", "error": "vision_capture_failed", "details": snap_res, "transcript": prompt}
+            front_path = snap_res["local_file"]
 
         print("[TARS] Setting expression to 'thinking' and processing cloud cascade...")
         self.set_expression("thinking")
@@ -483,9 +511,6 @@ class DeskCompanion:
         else:
             action.setdefault("status", "ok")
         action.setdefault("transcript", prompt)
-        if with_vision and not front_path:
-            action["vision_status"] = "failed"
-            action["vision_error"] = snap_res.get("error", "snapshot_unavailable") if snap_res else "snapshot_unavailable"
         print(f"[TARS Cognition] Action plan: {json.dumps(action, indent=2)}")
         return self._execute_tars_action(action)
 
@@ -496,30 +521,35 @@ class DeskCompanion:
         haptic = action.get("haptic")
         if haptic == "double":
             res1 = self.vibrate()
-            if isinstance(res1, dict) and res1.get("status") != "ok" and "error" in res1:
-                device_errors.append(f"vibrate_1: {res1.get('error')}")
+            if not isinstance(res1, dict) or res1.get("status") not in ("ok", "vibrated"):
+                err = res1.get("error", "unconfirmed") if isinstance(res1, dict) else "invalid_response"
+                device_errors.append(f"vibrate_1: {err}")
             time.sleep(0.08)
             res2 = self.vibrate()
-            if isinstance(res2, dict) and res2.get("status") != "ok" and "error" in res2:
-                device_errors.append(f"vibrate_2: {res2.get('error')}")
+            if not isinstance(res2, dict) or res2.get("status") not in ("ok", "vibrated"):
+                err = res2.get("error", "unconfirmed") if isinstance(res2, dict) else "invalid_response"
+                device_errors.append(f"vibrate_2: {err}")
         elif haptic == "pulse":
             res = self.vibrate()
-            if isinstance(res, dict) and res.get("status") != "ok" and "error" in res:
-                device_errors.append(f"vibrate: {res.get('error')}")
+            if not isinstance(res, dict) or res.get("status") not in ("ok", "vibrated"):
+                err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
+                device_errors.append(f"vibrate: {err}")
 
         # 2. Look at target
         look_at = action.get("look_at")
         if look_at and isinstance(look_at, (list, tuple)) and len(look_at) == 2:
             res = self.look_at(look_at[0], look_at[1])
-            if isinstance(res, dict) and res.get("status") != "ok" and "error" in res:
-                device_errors.append(f"look_at: {res.get('error')}")
+            if not isinstance(res, dict) or res.get("status") != "ok":
+                err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
+                device_errors.append(f"look_at: {err}")
 
         # 3. Torch
         torch = action.get("torch")
         if torch is not None:
             res = self.set_torch(bool(torch))
-            if isinstance(res, dict) and res.get("status") != "ok" and "error" in res:
-                device_errors.append(f"torch: {res.get('error')}")
+            if not isinstance(res, dict) or res.get("status") != "ok":
+                err = res.get("error", "unconfirmed") if isinstance(res, dict) else "invalid_response"
+                device_errors.append(f"torch: {err}")
 
         # 4. Speech & Spectrum Synchronization
         speech = action.get("speech", "")
