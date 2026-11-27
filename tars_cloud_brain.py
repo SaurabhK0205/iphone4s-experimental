@@ -77,7 +77,9 @@ class TarsCloudBrain:
     """Orchestrates multi-cloud STT, multimodal vision, and TARS persona reflexes."""
 
     VALID_EXPRESSIONS = {
-        "neutral", "happy", "surprised", "skeptical", "angry", "sleep", "thinking"
+        "neutral", "happy", "surprised", "skeptical", "skeptic",
+        "angry", "sleep", "thinking", "focused", "annoyed",
+        "alert", "curious", "confused", "frustrated", "sad"
     }
 
     def __init__(
@@ -87,10 +89,9 @@ class TarsCloudBrain:
         cf_account_id: Optional[str] = None,
         openrouter_api_key: Optional[str] = None,
         gemini_api_key: Optional[str] = None,
-        humor_percent: int = 75,
-        honesty_percent: int = 90,
+        humor_percent: Optional[int] = None,
+        honesty_percent: Optional[int] = None,
     ):
-        load_dotenv()
         self.groq_api_key = groq_api_key or os.environ.get("GROQ_API_KEY", "").strip()
         self.cf_api_token = cf_api_token or os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
         self.cf_account_id = cf_account_id or os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
@@ -102,7 +103,10 @@ class TarsCloudBrain:
         if humor_percent is not None:
             self.humor_percent = int(humor_percent)
         elif env_humor:
-            self.humor_percent = int(env_humor)
+            try:
+                self.humor_percent = int(env_humor)
+            except ValueError:
+                self.humor_percent = 75
         else:
             self.humor_percent = 75
 
@@ -110,7 +114,10 @@ class TarsCloudBrain:
         if honesty_percent is not None:
             self.honesty_percent = int(honesty_percent)
         elif env_honesty:
-            self.honesty_percent = int(env_honesty)
+            try:
+                self.honesty_percent = int(env_honesty)
+            except ValueError:
+                self.honesty_percent = 90
         else:
             self.honesty_percent = 90
 
@@ -183,6 +190,23 @@ class TarsCloudBrain:
 
         raise RuntimeError("All configured speech-to-text tiers failed to transcribe audio")
 
+    def _urlopen_with_backoff(self, req: urllib.request.Request, timeout: float = 15.0) -> bytes:
+        """Executes HTTP request with transient retry on 429 / 503 before cascading."""
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return resp.read()
+            except urllib.error.HTTPError as e:
+                if e.code in (429, 502, 503, 504) and attempt < max_attempts - 1:
+                    retry_after = e.headers.get("Retry-After") if e.headers else None
+                    delay = 0.5
+                    if retry_after and retry_after.isdigit():
+                        delay = min(float(retry_after), 2.0)
+                    time.sleep(delay)
+                    continue
+                raise
+
     def _transcribe_groq(self, audio_bytes: bytes, filename: str) -> str:
         """Transcribes audio using Groq Whisper endpoint."""
         url = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -200,9 +224,9 @@ class TarsCloudBrain:
         req.add_header("Authorization", f"Bearer {self.groq_api_key}")
         req.add_header("Content-Type", content_type)
 
-        with urllib.request.urlopen(req, timeout=15.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data.get("text", "").strip()
+        resp_bytes = self._urlopen_with_backoff(req, timeout=15.0)
+        data = json.loads(resp_bytes.decode("utf-8"))
+        return data.get("text", "").strip()
 
     def _transcribe_cloudflare(self, audio_bytes: bytes) -> str:
         """Transcribes audio using Cloudflare Workers AI @cf/openai/whisper."""
@@ -211,10 +235,10 @@ class TarsCloudBrain:
         req.add_header("Authorization", f"Bearer {self.cf_api_token}")
         req.add_header("Content-Type", "application/octet-stream")
 
-        with urllib.request.urlopen(req, timeout=20.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            result = data.get("result", {})
-            return result.get("text", "").strip()
+        resp_bytes = self._urlopen_with_backoff(req, timeout=20.0)
+        data = json.loads(resp_bytes.decode("utf-8"))
+        result = data.get("result", {})
+        return result.get("text", "").strip()
 
     # =========================================================================
     # 2. MULTI-CLOUD COGNITION & VISION CASCADE (THINKING & SEEING)
@@ -363,10 +387,10 @@ class TarsCloudBrain:
         req.add_header("Authorization", f"Bearer {self.groq_api_key}")
         req.add_header("Content-Type", "application/json")
 
-        with urllib.request.urlopen(req, timeout=15.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
-            return self._parse_action_json(content)
+        resp_bytes = self._urlopen_with_backoff(req, timeout=15.0)
+        data = json.loads(resp_bytes.decode("utf-8"))
+        content = data["choices"][0]["message"]["content"]
+        return self._parse_action_json(content)
 
     def _think_cloudflare(
         self,
@@ -404,11 +428,11 @@ class TarsCloudBrain:
         req.add_header("Authorization", f"Bearer {self.cf_api_token}")
         req.add_header("Content-Type", "application/json")
 
-        with urllib.request.urlopen(req, timeout=20.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            result = data.get("result", {})
-            content = result.get("response", "")
-            return self._parse_action_json(content)
+        resp_bytes = self._urlopen_with_backoff(req, timeout=20.0)
+        data = json.loads(resp_bytes.decode("utf-8"))
+        result = data.get("result", {})
+        content = result.get("response", "")
+        return self._parse_action_json(content)
 
     def _think_openrouter(
         self,
@@ -446,10 +470,10 @@ class TarsCloudBrain:
         req.add_header("HTTP-Referer", "https://github.com/SaurabhK0205/iphone4s-experimental")
         req.add_header("X-Title", "PhysicalAgent TARS")
 
-        with urllib.request.urlopen(req, timeout=15.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
-            return self._parse_action_json(content)
+        resp_bytes = self._urlopen_with_backoff(req, timeout=15.0)
+        data = json.loads(resp_bytes.decode("utf-8"))
+        content = data["choices"][0]["message"]["content"]
+        return self._parse_action_json(content)
 
     def _think_gemini(
         self,
@@ -502,24 +526,14 @@ class TarsCloudBrain:
         req.add_header("x-goog-api-key", self.gemini_api_key)
         req.add_header("Content-Type", "application/json")
 
-        with urllib.request.urlopen(req, timeout=15.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            candidates = data.get("candidates", [])
-            if candidates:
-                content_parts = candidates[0].get("content", {}).get("parts", [])
-                if content_parts:
-                    text = content_parts[0].get("text", "")
-                    return self._parse_action_json(text)
-        return None
-
-        with urllib.request.urlopen(req, timeout=15.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            candidates = data.get("candidates", [])
-            if candidates:
-                content_parts = candidates[0].get("content", {}).get("parts", [])
-                if content_parts:
-                    text = content_parts[0].get("text", "")
-                    return self._parse_action_json(text)
+        resp_bytes = self._urlopen_with_backoff(req, timeout=15.0)
+        data = json.loads(resp_bytes.decode("utf-8"))
+        candidates = data.get("candidates", [])
+        if candidates:
+            content_parts = candidates[0].get("content", {}).get("parts", [])
+            if content_parts:
+                text = content_parts[0].get("text", "")
+                return self._parse_action_json(text)
         return None
 
     # =========================================================================
@@ -540,11 +554,21 @@ class TarsCloudBrain:
     def _parse_action_json(self, raw_text: str) -> Dict[str, Any]:
         """Extracts and validates TARS action JSON object from raw LLM output."""
         text = raw_text.strip()
-        # Remove markdown code block if present
+        # Extract markdown code blocks if present; search from last block backwards
         if "```" in text:
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
-            if match:
-                text = match.group(1).strip()
+            matches = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+            if matches:
+                for block in reversed(matches):
+                    sanitized_block = block.strip().replace("\u2014", ":").replace("\u2013", "-")
+                    try:
+                        candidate = json.loads(sanitized_block)
+                        if isinstance(candidate, dict) and ("speech" in candidate or "expression" in candidate):
+                            text = sanitized_block
+                            break
+                    except Exception:
+                        continue
+                else:
+                    text = matches[-1].strip()
 
         # Sanitize any accidental em-dashes
         text = text.replace("\u2014", ":").replace("\u2013", "-")

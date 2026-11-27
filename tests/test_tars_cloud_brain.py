@@ -129,6 +129,26 @@ class TestTarsCloudBrain(unittest.TestCase):
         self.assertEqual(action["look_at"], [0.0, 0.0])
         self.assertFalse(action["torch"])
 
+    def test_env_personality_fallback(self):
+        # When constructor arguments are omitted, env vars should take effect
+        os.environ["TARS_HUMOR_PERCENT"] = "65"
+        os.environ["TARS_HONESTY_PERCENT"] = "85"
+        brain = TarsCloudBrain()
+        self.assertEqual(brain.humor_percent, 65)
+        self.assertEqual(brain.honesty_percent, 85)
+
+    def test_parse_action_json_multiple_code_blocks(self):
+        # Multiple code blocks (e.g. reasoning block + JSON action block)
+        multi_block = (
+            "Here is my reasoning:\n"
+            "```text\nAnalyzing visual scene. Detection positive.\n```\n"
+            "Action plan:\n"
+            "```json\n{\n  \"speech\": \"Target identified.\",\n  \"expression\": \"focused\"\n}\n```\n"
+        )
+        action = self.brain._parse_action_json(multi_block)
+        self.assertEqual(action["speech"], "Target identified.")
+        self.assertEqual(action["expression"], "focused")
+
     @patch("tars_cloud_brain.urllib.request.urlopen")
     def test_groq_429_failover_to_cloudflare(self, mock_urlopen):
         error_429 = urllib.error.HTTPError(
@@ -151,7 +171,8 @@ class TestTarsCloudBrain(unittest.TestCase):
             }
         })
 
-        mock_urlopen.side_effect = [error_429, cf_response]
+        # Groq retries once on transient 429 before cascading to Cloudflare
+        mock_urlopen.side_effect = [error_429, error_429, cf_response]
 
         action = self.brain.think_and_act("Hello TARS")
         self.assertEqual(action["speech"], "Cloudflare edge fallback online.")
@@ -175,7 +196,8 @@ class TestTarsCloudBrain(unittest.TestCase):
             }]
         })
 
-        mock_urlopen.side_effect = [err1, err2, openrouter_response]
+        # Groq retries once, Cloudflare retries once, OpenRouter succeeds
+        mock_urlopen.side_effect = [err1, err1, err2, err2, openrouter_response]
 
         action = self.brain.think_and_act("Status report")
         self.assertEqual(action["speech"], "OpenRouter free pool activated.")
@@ -190,7 +212,7 @@ class TestTarsCloudBrain(unittest.TestCase):
             }
         })
 
-        mock_urlopen.side_effect = [err_groq, cf_response]
+        mock_urlopen.side_effect = [err_groq, err_groq, cf_response]
 
         transcript = self.brain.transcribe_audio(b"RIFFmockwavdata")
         self.assertEqual(transcript, "Initiating docking sequence.")
@@ -200,7 +222,7 @@ class TestTarsCloudBrain(unittest.TestCase):
         err_groq = urllib.error.HTTPError(url="", code=429, msg="Rate Limited", hdrs={}, fp=None)
         err_cf = urllib.error.HTTPError(url="", code=500, msg="Server Error", hdrs={}, fp=None)
 
-        mock_urlopen.side_effect = [err_groq, err_cf]
+        mock_urlopen.side_effect = [err_groq, err_groq, err_cf, err_cf]
 
         with self.assertRaises(RuntimeError) as ctx:
             self.brain.transcribe_audio(b"RIFFmockwavdata")
