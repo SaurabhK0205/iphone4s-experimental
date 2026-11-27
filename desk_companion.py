@@ -14,6 +14,7 @@ import re
 import math
 import uuid
 import shlex
+import shutil
 from tars_cloud_brain import TarsCloudBrain
 
 # Strict repository standard: verify virtual environment isolation
@@ -376,17 +377,28 @@ class DeskCompanion:
             return dl_res
         return res
 
+    def _speak_text(self, text, voice="Samantha", timeout=15.0):
+        """Cross-platform text-to-speech with explicit timeout and fallbacks."""
+        if shutil.which("say"):
+            subprocess.run(["say", "-v", voice, text], timeout=timeout)
+        elif shutil.which("espeak"):
+            subprocess.run(["espeak", text], timeout=timeout)
+        else:
+            print(f"[AUDIO TTS] {text}")
+
     def say(self, text, voice="Samantha"):
-        """Speaks text using Mac speech synthesizer while animating companion eyes and spectrum waveform."""
+        """Speaks text using system speech synthesizer while animating companion eyes and spectrum waveform."""
         self.set_expression("thinking")
         self.set_status("AGENT SPEAKING //", text[:40])
         self.set_speaking(True)
         self.play_sound("begin")
         time.sleep(0.2)
-        subprocess.run(["say", "-v", voice, text])
-        self.set_speaking(False)
-        self.set_expression("neutral")
-        self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting multimodal input")
+        try:
+            self._speak_text(text, voice=voice)
+        finally:
+            self.set_speaking(False)
+            self.set_expression("neutral")
+            self.set_status("PHYSICAL AGENT // ONLINE", "Awaiting multimodal input")
 
     def brain_status(self):
         """Returns the readiness and configured tiers of the multi-cloud TARS brain."""
@@ -480,8 +492,10 @@ class DeskCompanion:
             self.set_speaking(True)
             self.set_expression(expression)
             voice = os.environ.get("TARS_DEFAULT_VOICE", "Samantha")
-            subprocess.run(["say", "-v", voice, speech])
-            self.set_speaking(False)
+            try:
+                self._speak_text(speech, voice=voice)
+            finally:
+                self.set_speaking(False)
 
         # 5. Settle expression and status
         self.set_expression(expression)

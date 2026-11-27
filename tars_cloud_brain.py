@@ -97,14 +97,21 @@ class TarsCloudBrain:
         self.openrouter_api_key = openrouter_api_key or os.environ.get("OPENROUTER_API_KEY", "").strip()
         self.gemini_api_key = gemini_api_key or os.environ.get("GEMINI_API_KEY", "").strip()
 
-        try:
-            self.humor_percent = int(os.environ.get("TARS_HUMOR_PERCENT", humor_percent))
-        except (ValueError, TypeError):
+        # Constructor arguments take precedence over environment variables
+        env_humor = os.environ.get("TARS_HUMOR_PERCENT")
+        if humor_percent is not None:
+            self.humor_percent = int(humor_percent)
+        elif env_humor:
+            self.humor_percent = int(env_humor)
+        else:
             self.humor_percent = 75
 
-        try:
-            self.honesty_percent = int(os.environ.get("TARS_HONESTY_PERCENT", honesty_percent))
-        except (ValueError, TypeError):
+        env_honesty = os.environ.get("TARS_HONESTY_PERCENT")
+        if honesty_percent is not None:
+            self.honesty_percent = int(honesty_percent)
+        elif env_honesty:
+            self.honesty_percent = int(env_honesty)
+        else:
             self.honesty_percent = 90
 
         self.conversation_history: List[Dict[str, Any]] = []
@@ -174,7 +181,7 @@ class TarsCloudBrain:
         if not self.groq_api_key and not (self.cf_api_token and self.cf_account_id):
             raise RuntimeError("No speech-to-text API keys configured (set GROQ_API_KEY or CLOUDFLARE_API_TOKEN)")
 
-        return ""
+        raise RuntimeError("All configured speech-to-text tiers failed to transcribe audio")
 
     def _transcribe_groq(self, audio_bytes: bytes, filename: str) -> str:
         """Transcribes audio using Groq Whisper endpoint."""
@@ -290,7 +297,7 @@ class TarsCloudBrain:
         # Tier 4: Google Gemini API
         if self.gemini_api_key:
             try:
-                action = self._think_gemini(transcript, system_prompt, front_b64, back_b64)
+                action = self._think_gemini(transcript, system_prompt, front_b64, back_b64, active_history)
                 if action:
                     self._record_turn(active_history, transcript, action.get("speech", ""))
                     return action
@@ -371,7 +378,7 @@ class TarsCloudBrain:
     ) -> Optional[Dict[str, Any]]:
         """Queries Cloudflare Workers AI edge models."""
         has_vision = bool(front_b64 or back_b64)
-        model = "@cf/meta/llama-3.2-11b-vision-instruct" if has_vision else "@cf/meta/llama-3.3-70b-instruct"
+        model = "@cf/meta/llama-3.2-11b-vision-instruct" if has_vision else "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
         url = f"https://api.cloudflare.com/client/v4/accounts/{self.cf_account_id}/ai/run/{model}"
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -386,7 +393,7 @@ class TarsCloudBrain:
             "temperature": 0.6,
         }
         if has_vision and (front_b64 or back_b64):
-            # Cloudflare vision expects image array of integers or raw bytes
+            # Cloudflare vision model expects image array of bytes or raw buffer
             target_b64 = front_b64 or back_b64
             if target_b64:
                 raw_bytes = list(base64.b64decode(target_b64))
@@ -412,6 +419,11 @@ class TarsCloudBrain:
         history: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         """Queries OpenRouter free pooled models."""
+        has_vision = bool(front_b64 or back_b64)
+        if has_vision:
+            # Skip text-only OpenRouter free model when multimodal vision is required
+            return None
+
         url = "https://openrouter.ai/api/v1/chat/completions"
         model = "meta-llama/llama-3.3-70b-instruct:free"
 
@@ -445,29 +457,39 @@ class TarsCloudBrain:
         system_prompt: str,
         front_b64: Optional[str],
         back_b64: Optional[str],
+        history: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Queries Google Gemini API with multimodal payloads."""
+        """Queries Google Gemini API with multimodal payloads and conversational history."""
         model = "gemini-2.5-flash"
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.gemini_api_key}"
+        # API key securely passed in header rather than URL query parameter
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-        parts: List[Dict[str, Any]] = [{"text": f"{system_prompt}\n\nUser Input: {transcript}"}]
+        contents: List[Dict[str, Any]] = []
+        for turn in (history or [])[-4:]:
+            role = "model" if turn.get("role") == "assistant" else "user"
+            contents.append({"role": role, "parts": [{"text": str(turn.get("content", ""))}]})
+
+        current_parts: List[Dict[str, Any]] = [{"text": transcript if transcript else "Observing visual scene."}]
         if front_b64:
-            parts.append({
+            current_parts.append({
                 "inline_data": {
                     "mime_type": "image/jpeg",
                     "data": front_b64,
                 }
             })
         if back_b64:
-            parts.append({
+            current_parts.append({
                 "inline_data": {
                     "mime_type": "image/jpeg",
                     "data": back_b64,
                 }
             })
 
+        contents.append({"role": "user", "parts": current_parts})
+
         payload = {
-            "contents": [{"parts": parts}],
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": contents,
             "generationConfig": {
                 "temperature": 0.6,
                 "maxOutputTokens": 512,
@@ -477,7 +499,18 @@ class TarsCloudBrain:
         data_bytes = json.dumps(payload).encode("utf-8")
 
         req = urllib.request.Request(url, data=data_bytes, method="POST")
+        req.add_header("x-goog-api-key", self.gemini_api_key)
         req.add_header("Content-Type", "application/json")
+
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            candidates = data.get("candidates", [])
+            if candidates:
+                content_parts = candidates[0].get("content", {}).get("parts", [])
+                if content_parts:
+                    text = content_parts[0].get("text", "")
+                    return self._parse_action_json(text)
+        return None
 
         with urllib.request.urlopen(req, timeout=15.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -544,7 +577,15 @@ class TarsCloudBrain:
             except (ValueError, TypeError):
                 look_at = [0.0, 0.0]
 
-        torch = bool(action.get("torch", False))
+        torch_raw = action.get("torch", False)
+        if isinstance(torch_raw, str):
+            torch = torch_raw.strip().lower() in ("true", "1", "on", "yes")
+        elif isinstance(torch_raw, bool):
+            torch = torch_raw
+        elif isinstance(torch_raw, (int, float)):
+            torch = bool(torch_raw)
+        else:
+            torch = False
         haptic = action.get("haptic")
         if haptic not in ("pulse", "double", None):
             haptic = "pulse" if haptic else None
